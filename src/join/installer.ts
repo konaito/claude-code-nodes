@@ -10,14 +10,17 @@ APP="$HOME/.local/share/cc/app"
 BIN="$HOME/.local/bin"
 mkdir -p "$HOME/.local/share/cc" "$BIN"
 
-# 参加トークン。端末から1回だけ読む。パイプで渡されたときは標準入力
+# 参加トークン。端末から1回だけ読む。パイプで渡されたときは標準入力。末尾に改行が無いと read が非ゼロを返すので set -e で止めない
+# token-read-begin
+TOKEN=""
 if [ -r /dev/tty ] && [ -w /dev/tty ] && (exec < /dev/tty) 2>/dev/null; then
   printf '参加トークン: ' > /dev/tty
-  read -r TOKEN < /dev/tty
+  IFS= read -r TOKEN < /dev/tty || :
 else
-  read -r TOKEN
+  IFS= read -r TOKEN || :
 fi
 [ -n "$TOKEN" ] || { echo "参加トークンが空" >&2; exit 1; }
+# token-read-end
 
 OS=$(uname -s)
 case "$(uname -m)" in
