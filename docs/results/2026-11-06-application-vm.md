@@ -39,7 +39,7 @@
 | --- | --- |
 | 認証無しの`GET /api/host` | 302でAccessのログイン画面へ（`fybejp.cloudflareaccess.com/cdn-cgi/access/login/vm.cc.fybe.jp`） |
 | サービストークンで`GET /api/host` | 200。name vm、claude 2.1.318、account agent@fybe.jp、rateLimit付き |
-| `GET /api/peers` | 502。VMのcc.jsonのcfApiTokenがトークンの形でなく（108文字、空白を含む）、CF APIが400を返した。setupで貼ったものがトークンでなかった。本人に取り直しを頼んだ |
+| `GET /api/peers` | 最初は502。VMのcc.jsonのcfApiTokenがトークンの形でなく（108文字、空白を含む）、CF APIが400を返していた。setupで貼ったものがトークンでなかった。本人がダッシュボードで作り直し（cc-registry、Cloudflare Tunnel Read）、クリップボードからMacとVMのcc.jsonに入れてcc-nodeを再起動したら200で`[{"name":"vm","status":"healthy","self":true}]`が返った |
 | `POST /api/sessions`（x-cc-from agent:smoke） | 201。一覧にparent agent:smokeで出た |
 | SSE | `event: result`が流れた |
 | `POST .../messages`（Writeを頼む） | `{"delivered":"stdin"}`。`event: permission_request`が流れ、pendingに1件 |
