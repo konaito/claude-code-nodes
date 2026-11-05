@@ -74,7 +74,8 @@ test("createNodeTunnel runs create, config, dns, token in order and never prints
   const f = fakeCf();
   const r = await createNodeTunnel(f.cf, { name: "vm", hostname: "vm.cc.fybe.jp", port: 4322, zone: "fybe.jp" });
   expect(r).toEqual({ tunnelId: "tun-1", token: "TUNNEL-TOKEN" });
-  expect(f.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels create --name", "tunnels config update tun-1", "dns records create", "tunnels token get"]);
+  expect(f.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels create --name", "tunnels config update", "dns records create", "tunnels token get"]);
+  expect(f.calls[1]![3]).toBe("tun-1");
   expect(f.calls[0]).toContain("cc-vm");
   expect(f.calls[0]).toContain("cloudflare");
   expect(f.body(1)).toEqual({ config: { ingress: [{ hostname: "vm.cc.fybe.jp", service: "http://127.0.0.1:4322" }, { service: "http_status:404" }] } });
