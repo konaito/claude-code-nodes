@@ -70,3 +70,28 @@ test("start passes claudePath to the SDK as pathToClaudeCodeExecutable", async (
   expect(fake.lastOptions?.pathToClaudeCodeExecutable).toBe("/usr/local/bin/claude");
   await d.stop();
 });
+
+// --- 最終レビューの修正（I4、I7） ---
+test("bypassPermissions also sets allowDangerouslySkipPermissions for the SDK", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", permissionMode: "bypassPermissions" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  expect(fake.lastOptions?.allowDangerouslySkipPermissions).toBe(true);
+  await d.stop();
+});
+
+test("state is running right after start with a prompt", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", prompt: "hi" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  expect(d.summary().state).toBe("running");
+  await d.stop();
+});
+
+test("send while a permission is pending keeps waiting_permission", async () => {
+  const fake = makeFakeQuery({ permission: true });
+  const d = await NodeDriver.start({ cwd: "/tmp" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  await d.send("write");
+  await until(() => d.pending().length === 1);
+  await d.send("another");
+  expect(d.summary().state).toBe("waiting_permission");
+  await d.stop();
+});

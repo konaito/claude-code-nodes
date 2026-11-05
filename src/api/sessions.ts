@@ -27,8 +27,21 @@ export type Deps = {
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((r) => { const root = resolve(r); return cwd === root || cwd.startsWith(root + sep); });
 
+const CACHE_MS = 2000; // 一覧のたびに claude を起動しないための短いメモリキャッシュ
+
 export class Sessions {
+  private cache = new Map<string, { at: number; value: Promise<unknown> }>();
   constructor(private d: Deps) {}
+
+  private cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const hit = this.cache.get(key);
+    if (hit && Date.now() - hit.at < CACHE_MS) return hit.value as Promise<T>;
+    const value = fn();
+    this.cache.set(key, { at: Date.now(), value });
+    return value;
+  }
+  private agents() { return this.cached("agents", () => this.d.agents()); }
+  private past() { return this.cached("history", () => this.d.history.list()); }
 
   async host() {
     const h = await this.d.host();
@@ -37,9 +50,9 @@ export class Sessions {
   async list(parent: string | null): Promise<SessionSummary[]> {
     const live = this.d.store.list();
     const seen = new Set(live.map((s) => s.id));
-    const terms = (await this.d.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId)).map((a) => this.d.terminalFor(a).summary());
+    const terms = (await this.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId)).map((a) => this.d.terminalFor(a).summary());
     for (const t of terms) seen.add(t.id);
-    const past = (await this.d.history.list()).filter((h) => !seen.has(h.id));
+    const past = (await this.past()).filter((h) => !seen.has(h.id));
     const all = [...live, ...terms, ...past];
     return parent ? all.filter((s) => s.parent === parent) : all;
   }
@@ -51,6 +64,11 @@ export class Sessions {
     const st = await stat(cwd).catch(() => null);
     if (!st?.isDirectory()) throw new HttpError(400, { error: "cwd does not exist" });
     if (!body.prompt && !body.resume) throw new HttpError(400, { error: "prompt or resume is required" });
+    // 生きている id を fork 無しで resume すると古いプロセスが孤児になるので断る
+    if (body.resume && !body.fork) {
+      const liveOne = this.d.store.get(body.resume);
+      if (liveOne && liveOne.summary().state !== "exited") throw new HttpError(409, { error: "session is still running", hint: "delete first" });
+    }
     const caller = this.d.identity.callerOf(req);
     const opts: StartOptions = { ...body, cwd, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
     const driver = await this.d.startNode(opts, caller);
@@ -60,12 +78,13 @@ export class Sessions {
   async detail(id: string) {
     const driver = await this.find(id);
     if (driver) return { ...driver.summary(), pending: driver.pending() };
-    const past = (await this.d.history.list()).find((h) => h.id === id);
+    const past = await this.d.history.get(id);
     if (past) return { ...past, pending: [] };
     throw new HttpError(404, { error: "unknown session" });
   }
   async messages(id: string, after: number) {
-    if (this.d.store.get(id)) {
+    const liveOne = this.d.store.get(id);
+    if (liveOne && liveOne.summary().state !== "exited") {
       const events = this.d.store.eventsSince(id, after);
       return { messages: events, next: events.length ? events[events.length - 1]!.seq : undefined };
     }
@@ -114,7 +133,12 @@ export class Sessions {
   events(id: string, after: number): Response {
     if (!this.d.store.get(id)) throw new HttpError(404, { error: "no live session" });
     const src = this.d.store.subscribe(id, after);
-    return sse((async function* () { for await (const e of src) yield { id: e.seq, event: e.type, data: e.data }; })());
+    const trimmed = this.d.store.trimmedTo(id);
+    return sse((async function* () {
+      // カーソルが上限超えで捨てた範囲より前なら、欠落を先に知らせる
+      if (trimmed > after) yield { event: "gap", data: { from: after + 1, to: trimmed } };
+      for await (const e of src) yield { id: e.seq, event: e.type, data: e.data };
+    })());
   }
   allEvents(): Response {
     const src = this.d.store.subscribeAll();
@@ -124,7 +148,7 @@ export class Sessions {
   private async find(id: string): Promise<Driver | undefined> {
     const live = this.d.store.get(id);
     if (live) return live;
-    const a = (await this.d.agents()).find((x) => x.sessionId === id);
+    const a = (await this.agents()).find((x) => x.sessionId === id);
     return a ? this.d.terminalFor(a) : undefined;
   }
   private async must(id: string): Promise<Driver> {

@@ -54,3 +54,68 @@ test("subscribeAll emits when state changes", async () => {
   expect(v.value.summary.state).toBe("waiting_permission");
   expect(store.list().map((s) => s.id)).toEqual(["s4"]);
 });
+
+// --- 最終レビューの修正（C1、C2、I1、I2、I5、I9） ---
+test("re-adding the same id closes old subscribers and carries seq on", async () => {
+  const store = new SessionStore();
+  const d1 = new FakeDriver({ id: "r1", capabilities: all });
+  store.add(d1);
+  d1.push({ type: "assistant", data: 1 }); d1.push({ type: "assistant", data: 2 });
+  await settle();
+  const oldSub = store.subscribe("r1", 2)[Symbol.asyncIterator]();
+  const pending = oldSub.next();
+  const d2 = new FakeDriver({ id: "r1", capabilities: all });
+  store.add(d2);
+  expect((await pending).done).toBe(true);
+  d2.push({ type: "assistant", data: 3 });
+  await settle();
+  expect(store.eventsSince("r1", 2).map((e) => e.seq)).toEqual([3]);
+});
+
+test("subscribe after the driver ended replays and then ends", async () => {
+  const store = new SessionStore();
+  const d = new FakeDriver({ id: "e1", capabilities: all });
+  store.add(d);
+  d.push({ type: "assistant", data: 1 });
+  await d.stop();
+  await settle();
+  const it = store.subscribe("e1", 0)[Symbol.asyncIterator]();
+  expect((await it.next()).done).toBe(false);
+  expect((await it.next()).done).toBe(true);
+});
+
+test("a driver whose events() throws does not crash the store and closes subscribers", async () => {
+  const store = new SessionStore();
+  const d = new FakeDriver({ id: "t1", capabilities: all });
+  d.events = () => ({ [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new Error("driver iterator threw")) }) });
+  store.add(d);
+  const it = store.subscribe("t1", 0)[Symbol.asyncIterator]();
+  expect((await it.next()).done).toBe(true);
+  expect(store.get("t1")).toBeDefined();
+});
+
+test("stream_event is numbered but not buffered, and overflow records trimmedTo", async () => {
+  const store = new SessionStore({ maxEvents: 3 });
+  const d = new FakeDriver({ id: "o1", capabilities: all });
+  store.add(d);
+  d.push({ type: "stream_event", data: "s" });            // seq 1、ためない
+  for (let i = 0; i < 5; i++) d.push({ type: "assistant", data: i }); // seq 2..6
+  await settle();
+  const kept = store.eventsSince("o1", 0);
+  expect(kept.map((e) => e.seq)).toEqual([4, 5, 6]);
+  expect(store.trimmedTo("o1")).toBe(3);
+});
+
+test("after the driver exits only the last 50 events are kept and the summary stays", async () => {
+  const store = new SessionStore();
+  const d = new FakeDriver({ id: "x1", capabilities: all });
+  store.add(d);
+  for (let i = 1; i <= 60; i++) d.push({ type: "assistant", data: i });
+  await settle();
+  await d.stop();
+  await settle();
+  const kept = store.eventsSince("x1", 0);
+  expect(kept.length).toBe(50);
+  expect(kept[0]!.seq).toBe(11);
+  expect(store.get("x1")?.summary().state).toBe("exited");
+});

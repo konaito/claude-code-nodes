@@ -13,6 +13,8 @@ export function createApp(deps: Deps) {
 }
 
 const after = (url: URL) => Number(url.searchParams.get("after") ?? 0) || 0;
+// EventSource の再接続は Last-Event-ID を付けてくるので、あれば after より優先する
+const cursor = (req: Request, url: URL) => Number(req.headers.get("last-event-id") ?? "") || after(url);
 
 async function route(req: Request, s: Sessions): Promise<Response> {
   const url = new URL(req.url);
@@ -34,7 +36,7 @@ async function route(req: Request, s: Sessions): Promise<Response> {
         if (m === "GET") return json(await s.messages(id, after(url)));
         if (m === "POST") return json(await s.send(id, req));
       } else if (sub === "events" && !rid && m === "GET") {
-        return s.events(id, after(url));
+        return s.events(id, cursor(req, url));
       } else if (sub === "permissions" && rid && m === "POST") {
         return json(await s.answer(id, rid, req));
       } else if (sub === "interrupt" && !rid && m === "POST") {

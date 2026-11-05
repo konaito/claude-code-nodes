@@ -45,7 +45,7 @@ export class NodeDriver implements Driver {
 
   static async start(opts: StartOptions, deps: NodeDeps): Promise<NodeDriver> {
     const d = new NodeDriver(opts, deps);
-    if (opts.prompt) d.enqueueUser(opts.prompt);
+    if (opts.prompt) { d.enqueueUser(opts.prompt); d.state = "running"; }
     const init = new Promise<void>((resolve, reject) => { d.initResolve = resolve; d.initReject = reject; });
     init.catch(() => {}); // race の後に reject しても未処理にしない
     d.q = deps.queryFn({
@@ -53,6 +53,8 @@ export class NodeDriver implements Driver {
       options: {
         cwd: opts.cwd,
         permissionMode: opts.permissionMode,
+        // この層は呼び手を信じる設計なので、bypass を頼まれたら SDK の必須フラグも付ける
+        allowDangerouslySkipPermissions: opts.permissionMode === "bypassPermissions" ? true : undefined,
         model: opts.model,
         resume: opts.resume,
         forkSession: opts.fork,
@@ -67,8 +69,10 @@ export class NodeDriver implements Driver {
     });
     void d.pump();
     // init が来るまで待つ。resume で入力が無いと init が初回の文まで来ないことがあるので、そのときは resume の id で進める（実機で確かめる）
-    const timeout = new Promise<"timeout">((r) => setTimeout(() => r("timeout"), deps.initTimeoutMs ?? 15000));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((r) => { timer = setTimeout(() => r("timeout"), deps.initTimeoutMs ?? 15000); });
     const r = await Promise.race([init.then(() => "init" as const), timeout]);
+    clearTimeout(timer);
     if (r === "timeout" && !d.id) {
       if (opts.resume) d.id = opts.resume;
       else { await d.stop(); throw new Error("claude did not report system/init"); }
@@ -86,7 +90,7 @@ export class NodeDriver implements Driver {
   async send(text: string) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
     this.enqueueUser(text);
-    this.state = "running";
+    this.state = this.waiting.size ? "waiting_permission" : "running";
     this.lastActivityAt = Date.now();
     return { delivered: "stdin" as const };
   }

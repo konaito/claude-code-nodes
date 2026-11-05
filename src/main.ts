@@ -1,5 +1,5 @@
 // 組み立て。どの実装を使うかはここだけで決める。本物の SDK、claude、受信ソケットをつないで 127.0.0.1 で待つ
-import { query, listSessions, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
+import { query, listSessions, getSessionMessages, getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
 import { homedir, loadavg, userInfo } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
@@ -17,7 +17,7 @@ export function buildDeps(cfg: Config): Deps {
     roots: cfg.roots,
     store: new SessionStore(),
     identity: new HeaderIdentity(),
-    history: new History({ listSessions, getSessionMessages }),
+    history: new History({ listSessions, getSessionMessages, getSessionInfo }),
     startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined }),
     agents: () => listAgents(bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),

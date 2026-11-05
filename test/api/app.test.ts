@@ -28,6 +28,7 @@ function harness(over: Partial<Deps> = {}) {
         { id: "live1", kind: "node", capabilities: caps(false), cwd: "/home/u/proj", state: "exited", startedAt: 1, lastActivityAt: 1 },
       ],
       messages: async (_id: string, after = 0) => ({ messages: [{ type: "user", uuid: "u1", session_id: "old1", message: {}, parent_tool_use_id: null }], next: after + 1 }),
+      get: async (id: string) => (id === "old1" ? { id: "old1", kind: "node", capabilities: caps(false), cwd: "/home/u/x", state: "exited", startedAt: 1, lastActivityAt: 1, parent: "agent:lead" } : undefined),
     } as unknown as Deps["history"],
     startNode: async (opts, caller) => {
       startCalls.push({ opts, caller });
@@ -154,4 +155,68 @@ test("DELETE stops the session and removes it from the store", async () => {
 test("unknown session is 404", async () => {
   const { app } = harness();
   expect((await app.fetch(req("/api/sessions/nope"))).status).toBe(404);
+});
+
+// --- 最終レビューの修正（C1、I1、I3、I6、I8、I9） ---
+test("POST /api/sessions with resume of a live session is 409 unless fork", async () => {
+  const { app } = harness();
+  const r = await app.fetch(post("/api/sessions", { cwd: tmpdir(), resume: "live1", prompt: "hi" }));
+  expect(r.status).toBe(409);
+  expect((await r.json()).hint).toBe("delete first");
+  expect((await app.fetch(post("/api/sessions", { cwd: tmpdir(), resume: "live1", fork: true, prompt: "hi" }))).status).toBe(201);
+});
+
+test("GET events prefers Last-Event-ID over after", async () => {
+  const { app, live } = harness();
+  live.push({ type: "assistant", data: { n: 1 } });
+  live.push({ type: "assistant", data: { n: 2 } });
+  live.push({ type: "assistant", data: { n: 3 } });
+  await settle();
+  const r = await app.fetch(req("/api/sessions/live1/events?after=0", { headers: { "last-event-id": "2" } }));
+  const { value } = await r.body!.getReader().read();
+  expect(new TextDecoder().decode(value).startsWith("id: 3\n")).toBe(true);
+});
+
+test("GET events emits a gap frame when the cursor is older than the buffer", async () => {
+  const store = new SessionStore({ maxEvents: 2 });
+  const live = new FakeDriver({ id: "g1", capabilities: caps(true) });
+  store.add(live);
+  for (let i = 1; i <= 4; i++) live.push({ type: "assistant", data: i });
+  await settle();
+  const { app } = harness({ store });
+  const r = await app.fetch(req("/api/sessions/g1/events?after=0"));
+  const { value } = await r.body!.getReader().read();
+  const text = new TextDecoder().decode(value);
+  expect(text.startsWith("event: gap\ndata: ")).toBe(true);
+  expect(text).toContain('"to":2');
+});
+
+test("GET /api/sessions/:id for a past session uses history.get, not the list", async () => {
+  const { app } = harness({
+    history: {
+      list: async () => [],
+      get: async (id: string) => (id === "deep1" ? { id: "deep1", kind: "node", capabilities: caps(false), cwd: "/home/u/d", state: "exited", startedAt: 1, lastActivityAt: 1 } : undefined),
+      messages: async () => ({ messages: [] }),
+    } as unknown as Deps["history"],
+  });
+  const r = await app.fetch(req("/api/sessions/deep1"));
+  expect(r.status).toBe(200);
+  expect((await r.json()).pending).toEqual([]);
+});
+
+test("GET /api/sessions twice within the cache window runs claude agents once", async () => {
+  let calls = 0;
+  const { app } = harness({ agents: async () => { calls++; return [term]; } });
+  await app.fetch(req("/api/sessions"));
+  await app.fetch(req("/api/sessions"));
+  expect(calls).toBe(1);
+});
+
+test("GET messages of an exited live session falls back to history", async () => {
+  const { app, live } = harness();
+  live.push({ type: "assistant", data: { n: 1 } });
+  await live.stop();
+  await settle();
+  const b = await (await app.fetch(req("/api/sessions/live1/messages?after=0"))).json();
+  expect(b.messages[0].uuid).toBe("u1");
 });
