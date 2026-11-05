@@ -29,6 +29,7 @@ function world(over: Partial<JoinDeps> = {}, cfgOver: Partial<Config> = {}) {
     if (key.startsWith("zero-trust access service-tokens list")) return out([]);
     if (key.startsWith("zero-trust access service-tokens create")) return out({ id: "tok-1", client_id: "cid.new", client_secret: "csec.new" });
     if (key.startsWith("tunnels create")) return out({ id: "tun-1" });
+    if (key.startsWith("tunnels list")) return out([{ id: "tun-1", name: "cc-vm" }]);
     if (key.startsWith("tunnels config update") || key.startsWith("dns records create")) return out({});
     if (key.startsWith("tunnels token get")) return out("TUNNEL-TOKEN");
     return { stdout: "", code: 1 };
@@ -164,4 +165,13 @@ test("setup reads the CF API token from stdin with --cf-token-stdin and never pr
   expect(await main(["setup", "--hosts", "*.cc.fybe.jp", "--cf-token-stdin"], ctx)).toBe(0);
   expect(loadConfig(join(w.configDir, "cc.json")).cfApiToken).toBe("CF-FROM-STDIN");
   expect(w.lines.join("\n")).not.toContain("CF-FROM-STDIN");
+});
+
+test("node token re-issues the join token for an existing node", async () => {
+  const w = world();
+  saveConfig({ name: "pro", port: 4323, roots: [w.home], domain: "cc.fybe.jp", zone: "fybe.jp", teamDomain: "t", aud: "a", accountId: "acc", entry: "https://vm.cc.fybe.jp", serviceToken: { clientId: "cid", clientSecret: "csec" }, cfApiToken: "CF" }, join(w.configDir, "cc.json"));
+  expect(await main(["node", "token", "vm", "--port", "4322"], w.ctx)).toBe(0);
+  expect(w.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels list", "tunnels token get"]);
+  expect(w.clip.length).toBe(1);
+  expect(w.lines.join("\n")).not.toContain(w.clip[0]!);
 });

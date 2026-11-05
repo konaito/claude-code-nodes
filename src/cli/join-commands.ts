@@ -3,7 +3,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSy
 import { join } from "node:path";
 import { entryOf, loadConfig, saveConfig, type Config } from "../config";
 import type { Runner } from "../engine/agents";
-import { createNodeTunnel, ensureAccessApp, ensureBypassApp, ensureServiceToken, removeNodeTunnel, setEntry, type CfRunner } from "../join/cf";
+import { createNodeTunnel, ensureAccessApp, ensureBypassApp, ensureServiceToken, nodeTunnelToken, removeNodeTunnel, setEntry, type CfRunner } from "../join/cf";
 import { configFromToken, decodeJoinToken, encodeJoinToken, JoinTokenError, type JoinToken } from "../join/token";
 import type { Paths, Platform, ServiceManager } from "../join/services";
 import { withCrossSessionInbound, SettingsError } from "../join/settings";
@@ -71,13 +71,14 @@ export function joinCommands(d: JoinDeps) {
     return 0;
   }
 
-  async function nodeAdd(name: string | undefined, flags: Parsed["flags"], ctx: Ctx): Promise<number> {
-    if (!name) throw new CliError(1, "node add には <name> が要る");
+  // node add は作る。node token は既にあるトンネルのトークンを読み直して参加トークンを出し直す（クリップボードが上書きされたとき用）
+  async function nodeAdd(name: string | undefined, flags: Parsed["flags"], ctx: Ctx, reissue = false): Promise<number> {
+    if (!name) throw new CliError(1, `node ${reissue ? "token" : "add"} には <name> が要る`);
     const cfg = needSetup(loadConfig(configPath));
     const port = num(flags.port, 4322);
     const hostname = `${name}.${cfg.domain}`;
     const entry = entryOf(cfg)!;
-    const { tunnelId, token } = await createNodeTunnel(d.cf, { name, hostname, port, zone: cfg.zone });
+    const { tunnelId, token } = reissue ? await nodeTunnelToken(d.cf, { name }) : await createNodeTunnel(d.cf, { name, hostname, port, zone: cfg.zone });
     const jt: JoinToken = { v: 1, name, port, domain: cfg.domain, zone: cfg.zone, teamDomain: cfg.teamDomain, aud: cfg.aud, accountId: cfg.accountId, entry, tunnelToken: token, serviceToken: cfg.serviceToken, cfApiToken: cfg.cfApiToken };
     const enc = encodeJoinToken(jt);
     if (d.clipboard && (await d.clipboard(enc))) ctx.out("参加トークンをクリップボードに入れた（表示はしない）");
@@ -209,6 +210,7 @@ export function joinCommands(d: JoinDeps) {
       case "setup": return setup(flags, ctx);
       case "node":
         if (sub === "add") return nodeAdd(name, flags, ctx);
+        if (sub === "token") return nodeAdd(name, flags, ctx, true);
         if (sub === "remove") {
           if (!name) throw new CliError(1, "node remove には <name> が要る");
           const cfg = needSetup(loadConfig(configPath));
@@ -216,7 +218,7 @@ export function joinCommands(d: JoinDeps) {
           ctx.out(`トンネル cc-${name} と DNS を消した`);
           return 0;
         }
-        throw new CliError(1, "node add <name> か node remove <name>");
+        throw new CliError(1, "node add <name> か node token <name> か node remove <name>");
       case "entry": {
         if (!sub) throw new CliError(1, "entry には <name> が要る");
         const cfg = needSetup(loadConfig(configPath));

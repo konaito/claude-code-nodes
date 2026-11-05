@@ -100,6 +100,16 @@ export async function createNodeTunnel(cf: CfRunner, o: { name: string; hostname
   return { tunnelId: t.id, token };
 }
 
+// 既にあるノードのトンネルトークンを読み直す（参加トークンを出し直すとき用）
+export async function nodeTunnelToken(cf: CfRunner, o: { name: string }): Promise<{ tunnelId: string; token: string }> {
+  const t = await findTunnel(cf, o.name);
+  if (!t) throw new CfError(`tunnel ${tunnelName(o.name)} not found`);
+  const tok = await call<string | { token: string }>(cf, ["tunnels", "token", "get", t.id]);
+  const token = typeof tok === "string" ? tok : tok.token;
+  if (!token) throw new CfError("tunnel token is empty");
+  return { tunnelId: t.id, token };
+}
+
 export async function removeNodeTunnel(cf: CfRunner, o: { name: string; hostname: string; zone: string }): Promise<void> {
   await deleteCname(cf, o.zone, o.hostname);
   const t = await findTunnel(cf, o.name);

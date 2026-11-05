@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { ensureAccessApp, ensureBypassApp, ensureServiceToken, createNodeTunnel, removeNodeTunnel, setEntry, type CfRunner } from "../../src/join/cf";
+import { ensureAccessApp, ensureBypassApp, ensureServiceToken, createNodeTunnel, removeNodeTunnel, setEntry, nodeTunnelToken, type CfRunner } from "../../src/join/cf";
 
 // 偽の cf。args を記録し、コマンドの形で決まった JSON を返す
 function fakeCf(state: { apps?: unknown[]; tokens?: unknown[]; tunnels?: unknown[]; dns?: unknown[]; config?: unknown } = {}) {
@@ -105,4 +105,11 @@ test("setEntry appends the entry hostname to the ingress and points the cname", 
   ]);
   const dns = f.calls.findIndex((c) => c.slice(0, 3).join(" ") === "dns records create");
   expect(f.body(dns)).toEqual({ type: "CNAME", name: "cc.fybe.jp", content: "tun-1.cfargotunnel.com", proxied: true });
+});
+
+test("nodeTunnelToken re-reads the token of an existing tunnel without creating one", async () => {
+  const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }] });
+  expect(await nodeTunnelToken(f.cf, { name: "vm" })).toEqual({ tunnelId: "tun-1", token: "TUNNEL-TOKEN" });
+  expect(f.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels list", "tunnels token get"]);
+  await expect(nodeTunnelToken(f.cf, { name: "nope" })).rejects.toThrow(/cc-nope/);
 });
