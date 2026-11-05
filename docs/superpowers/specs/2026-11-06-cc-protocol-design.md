@@ -1,6 +1,6 @@
 # cc.fybe.jpをプロトコルとアプリケーションに分けて設計し直す（企画）
 
-2026-11-06。対象はkonaito/online-claudecodeの書き直し。実装先はこのセッションを始めた空の`/private/tmp/cc-web`になる見込み。
+2026-11-06。対象はkonaito/online-claudecodeの書き直し。実装先は`~/Documents/cc-web`（`/private/tmp/cc-web`で始め、2026-11-06に移した）。
 
 ## 何のためか
 

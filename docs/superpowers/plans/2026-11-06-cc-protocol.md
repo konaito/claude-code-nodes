@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- コードは`/private/tmp/cc-web`に新規に作る（git init、mainブランチ）。動くようになったらdocumentsスキルで`~/Documents`とGitHubに昇格する。仕様書と本計画はTask 0で`docs/superpowers/`に写す。
+- コードは`~/Documents/cc-web`（`/private/tmp/cc-web`で始め、2026-11-06にdocumentsスキルで移した。git、mainブランチ）。仕様書と本計画はTask 0で`docs/superpowers/`に写す。
 - 待ち受けは`127.0.0.1`だけ。既定のポートは`4322`。
 - ノードはファイルを書かない。持つのはプロセスのメモリだけ。設定は`~/.config/cc/cc.json`（無ければ既定値。nameはホスト名、rootsは`[$HOME]`、portは4322）。
 - SDKの`query()`には`settingSources: ['user', 'project', 'local']`を必ず渡す。`--bare`に当たるものは使わない。
