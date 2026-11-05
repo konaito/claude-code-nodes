@@ -2,6 +2,9 @@
 import { Sessions, type Deps } from "./sessions";
 import { HttpError, json, toResponse } from "./errors";
 import type { Caller } from "../identity/identity";
+import { installerScript } from "../join/installer";
+import { bundle } from "../join/bundle";
+import { CLI_NAME } from "../cli/name";
 export type { Deps, HostInfo } from "./sessions";
 
 // ブラウザ（Access の cookie を持つ人）からの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る
@@ -13,6 +16,18 @@ function guardCsrf(req: Request, url: URL, caller: Caller) {
   if (site && site !== "same-origin" && site !== "none") throw new HttpError(403, { error: "cross-site request" });
 }
 
+// インストーラとその実行物。入口の URL は要求のホスト名から決める（Cloudflare 経由なら公開ホスト名、手元なら 127.0.0.1）
+function install(req: Request, url: URL, appRoot: string): Response {
+  if (req.method !== "GET") throw new HttpError(405, { error: "method not allowed" });
+  if (url.pathname === "/install") {
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host;
+    const scheme = /^(127\.0\.0\.1|localhost)(:|$)/.test(host) ? "http" : "https";
+    return new Response(installerScript({ entry: `${scheme}://${host}`, cliName: CLI_NAME }), { headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+  if (url.pathname === "/install/cc.tar.gz") return new Response(bundle(appRoot), { headers: { "content-type": "application/gzip" } });
+  throw new HttpError(404, { error: "not found" });
+}
+
 // 呼び手の解決をしない経路（インストーラの配布）
 const isPublic = (path: string) => path === "/install" || path.startsWith("/install/");
 
@@ -22,7 +37,7 @@ export function createApp(deps: Deps) {
     async fetch(req: Request): Promise<Response> {
       try {
         const url = new URL(req.url);
-        if (isPublic(url.pathname)) return await route(req, s, { id: "local", kind: "local" });
+        if (isPublic(url.pathname)) return install(req, url, deps.appRoot);
         const caller = await deps.identity.callerOf(req);
         guardCsrf(req, url, caller);
         // /n/<peer>/api/... は中継。相手が自分なら手元で処理する

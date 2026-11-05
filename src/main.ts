@@ -29,6 +29,7 @@ export function buildDeps(cfg: Config): Deps {
     host: async () => ({ claudeVersion: (await bunRunner(["claude", "--version"])).stdout.trim(), account: await account(), load: loadavg() }),
     registry,
     relay: new Relay({ registry, nodeName: cfg.name, serviceToken: cfg.serviceToken }),
+    appRoot: join(import.meta.dir, ".."),
   };
 }
 

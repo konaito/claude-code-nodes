@@ -44,6 +44,7 @@ function harness(over: Partial<Deps> = {}) {
     terminalFor: (a) => new FakeDriver({ id: a.sessionId!, capabilities: { send: true, permissions: false, interrupt: false }, kind: "terminal" }),
     host: async () => ({ claudeVersion: "2.1.318", load: [0] }),
     registry: new StaticRegistry([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }, { name: "pro", url: "https://pro.cc.fybe.jp", status: "healthy", self: false }]),
+    appRoot: join(import.meta.dir, "..", ".."),
     ...over,
   };
   deps.relay ??= new Relay({ registry: deps.registry, nodeName: deps.nodeName, fetchFn: (async () => new Response("{}")) as typeof fetch });
@@ -313,4 +314,26 @@ test("relay forwards to a known peer and 404s an unknown one", async () => {
   expect((await (await app.fetch(req("/n/pro/api/sessions"))).json()).at).toBe("https://pro.cc.fybe.jp/api/sessions");
   expect((await app.fetch(req("/n/nope/api/sessions"))).status).toBe(404);
   expect((await app.fetch(req("/n/pro/index.html"))).status).toBe(404);
+});
+
+// --- Task 5: /install ---
+test("GET /install is public and names the entry from the host header", async () => {
+  const { app } = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "no"); } } });
+  const r = await app.fetch(new Request("http://127.0.0.1/install", { headers: { host: "vm.cc.fybe.jp", "x-forwarded-host": "vm.cc.fybe.jp" } }));
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toContain("text/plain");
+  expect(await r.text()).toContain("https://vm.cc.fybe.jp/install/cc.tar.gz");
+  const local = await (await app.fetch(new Request("http://127.0.0.1:4399/install", { headers: { host: "127.0.0.1:4399" } }))).text();
+  expect(local).toContain("http://127.0.0.1:4399/install/cc.tar.gz");
+});
+
+test("GET /install/cc.tar.gz is gzip", async () => {
+  const { app } = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "no"); } } });
+  const r = await app.fetch(req("/install/cc.tar.gz"));
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toBe("application/gzip");
+  const bytes = new Uint8Array(await r.arrayBuffer());
+  expect(bytes[0]).toBe(0x1f);
+  expect(bytes[1]).toBe(0x8b);
+  expect(bytes.length).toBeGreaterThan(1000);
 });

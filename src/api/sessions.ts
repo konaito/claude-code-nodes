@@ -27,6 +27,7 @@ export type Deps = {
   host: () => Promise<HostInfo>;
   registry: Registry;
   relay: Relay;
+  appRoot: string; // 実行物の置き場。/install が配る
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
