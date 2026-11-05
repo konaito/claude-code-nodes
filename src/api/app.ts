@@ -4,6 +4,15 @@ import { HttpError, json, toResponse } from "./errors";
 import type { Caller } from "../identity/identity";
 export type { Deps, HostInfo } from "./sessions";
 
+// ブラウザ（Access の cookie を持つ人）からの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る
+function guardCsrf(req: Request, url: URL, caller: Caller) {
+  if (caller.kind !== "user" || req.method === "GET" || req.method === "HEAD") return;
+  const origin = req.headers.get("origin");
+  if (origin && origin !== url.origin) throw new HttpError(403, { error: "cross-origin request" });
+  const site = req.headers.get("sec-fetch-site");
+  if (site && site !== "same-origin" && site !== "none") throw new HttpError(403, { error: "cross-site request" });
+}
+
 // 呼び手の解決をしない経路（インストーラの配布）
 const isPublic = (path: string) => path === "/install" || path.startsWith("/install/");
 
@@ -15,6 +24,7 @@ export function createApp(deps: Deps) {
         const url = new URL(req.url);
         if (isPublic(url.pathname)) return await route(req, s, { id: "local", kind: "local" });
         const caller = await deps.identity.callerOf(req);
+        guardCsrf(req, url, caller);
         return await route(req, s, caller);
       } catch (e) { return toResponse(e); }
     },

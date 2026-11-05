@@ -267,3 +267,17 @@ test("app returns the identity's status when it denies", async () => {
   expect(r.status).toBe(401);
   expect((await r.json()).error).toBe("access token required");
 });
+
+// --- Task 2: CSRF（Access の cookie を持つブラウザからの別サイトの POST） ---
+test("cross-site POST with a user jwt is 403", async () => {
+  const user = { callerOf: async () => ({ id: "ceo@fybe.jp", kind: "user" as const }) };
+  const { app } = harness({ identity: user });
+  const bad = await app.fetch(post("/api/sessions/live1/messages", { text: "hi" }, { origin: "https://evil.example" }));
+  expect(bad.status).toBe(403);
+  const badSite = await app.fetch(post("/api/sessions/live1/messages", { text: "hi" }, { "sec-fetch-site": "cross-site" }));
+  expect(badSite.status).toBe(403);
+  const ok = await app.fetch(post("/api/sessions/live1/messages", { text: "hi" }, { origin: "http://127.0.0.1", "sec-fetch-site": "same-origin" }));
+  expect(ok.status).toBe(200);
+  const get = await app.fetch(req("/api/host", { headers: { origin: "https://evil.example" } }));
+  expect(get.status).toBe(200);
+});
