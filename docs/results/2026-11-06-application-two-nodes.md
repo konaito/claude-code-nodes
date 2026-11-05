@@ -57,3 +57,7 @@ MacのリゾルバがDNSの負のキャッシュを持っていた間に、VMで
 | `cc stop` | 止まった |
 
 VMから`cc ls --peer konaito-pro`で、Macの端末セッション（この作業のcc-web-6cを含む）が読めた。
+
+## cc update（Macで、入口はVM）
+
+VMの実行物を最新のcheckoutに揃えてcc-nodeを再起動したあと、Macで`~/.local/share/cc/app/bin/cc update`を実行した。`https://vm.cc.fybe.jp/install/cc.tar.gz`を`app.new`に展開し、`bun install --production`、`app`と入れ替え、LaunchAgentのnodeを`launchctl kickstart -k`で再起動した。nodeのpidが90565から91982に変わり、`/api/host`が200、`app.new`と`app.old`は残っていない。
