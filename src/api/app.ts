@@ -42,6 +42,7 @@ async function route(req: Request, s: Sessions, caller: Caller): Promise<Respons
   if (parts[0] === "api") {
     if (parts[1] === "host" && parts.length === 2 && m === "GET") return json(await s.host());
     if (parts[1] === "events" && parts.length === 2 && m === "GET") return s.allEvents();
+    if (parts[1] === "peers" && parts.length === 2 && m === "GET") return json(await s.peers());
     if (parts[1] === "sessions") {
       const [, , id, sub, rid] = parts;
       if (!id) {

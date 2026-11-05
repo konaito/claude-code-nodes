@@ -1,6 +1,7 @@
 // API のエラーを HTTP の応答に統一する。境界の例外（能力なし、終了済み、ソケット無し、見つからない）をここで状態コードに変える
 import { CapabilityError, ExitedError, NotFoundError, SocketGoneError } from "../engine/driver";
 import { AccessDenied } from "../identity/identity";
+import { RegistryError } from "../registry/registry";
 
 export class HttpError extends Error {
   constructor(public status: number, public body: Record<string, unknown>) { super(String(body.error ?? status)); this.name = "HttpError"; }
@@ -11,6 +12,7 @@ export const json = (body: unknown, status = 200) =>
 export function toResponse(e: unknown): Response {
   if (e instanceof HttpError) return json(e.body, e.status);
   if (e instanceof AccessDenied) return json({ error: e.message }, e.status);
+  if (e instanceof RegistryError) return json({ error: e.message }, e.status);
   if (e instanceof CapabilityError) return json({ error: e.message, capability: e.capability }, 409);
   if (e instanceof ExitedError) return json({ error: e.message, hint: "resume" }, 409);
   if (e instanceof SocketGoneError) return json({ error: e.message }, 410);

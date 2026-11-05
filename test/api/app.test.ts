@@ -8,6 +8,7 @@ import { FakeDriver } from "../helpers/fake-driver";
 import { HeaderIdentity, AccessDenied } from "../../src/identity/identity";
 import { SocketGoneError } from "../../src/engine/terminal-driver";
 import type { AgentInfo } from "../../src/engine/agents";
+import { StaticRegistry } from "../../src/registry/registry";
 
 const caps = (p: boolean) => ({ send: true, permissions: p, interrupt: p, stop: p, events: p });
 const term: AgentInfo = { pid: 77, cwd: "/home/u/t", kind: "interactive", startedAt: 2, sessionId: "term1", status: "busy" };
@@ -41,6 +42,7 @@ function harness(over: Partial<Deps> = {}) {
     agents: async () => [term],
     terminalFor: (a) => new FakeDriver({ id: a.sessionId!, capabilities: { send: true, permissions: false, interrupt: false }, kind: "terminal" }),
     host: async () => ({ claudeVersion: "2.1.318", load: [0] }),
+    registry: new StaticRegistry([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }]),
     ...over,
   };
   return { app: createApp(deps), store, live, deps, startCalls };
@@ -280,4 +282,11 @@ test("cross-site POST with a user jwt is 403", async () => {
   expect(ok.status).toBe(200);
   const get = await app.fetch(req("/api/host", { headers: { origin: "https://evil.example" } }));
   expect(get.status).toBe(200);
+});
+
+// --- Task 3: 登録簿 ---
+test("GET /api/peers returns the registry", async () => {
+  const { app } = harness();
+  const b = await (await app.fetch(req("/api/peers"))).json();
+  expect(b).toEqual([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }]);
 });

@@ -10,6 +10,9 @@ import { History } from "./engine/history";
 import { NodeDriver } from "./engine/node-driver";
 import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
 import { listAgents, bunRunner } from "./engine/agents";
+import { StaticRegistry, type Registry } from "./registry/registry";
+import { CloudflareRegistry } from "./registry/cloudflare";
+import { entryOf } from "./config";
 
 export function buildDeps(cfg: Config): Deps {
   return {
@@ -22,7 +25,16 @@ export function buildDeps(cfg: Config): Deps {
     agents: () => listAgents(bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),
     host: async () => ({ claudeVersion: (await bunRunner(["claude", "--version"])).stdout.trim(), account: await account(), load: loadavg() }),
+    registry: registryFor(cfg),
   };
+}
+
+// 登録簿。CF API トークンとアカウントがあれば Cloudflare のトンネル一覧、無ければ自分だけ
+function registryFor(cfg: Config): Registry {
+  if (cfg.cfApiToken && cfg.accountId && cfg.domain) {
+    return new CloudflareRegistry({ accountId: cfg.accountId, apiToken: cfg.cfApiToken, domain: cfg.domain, selfName: cfg.name });
+  }
+  return new StaticRegistry([{ name: cfg.name, url: entryOf(cfg) ?? `http://127.0.0.1:${cfg.port}`, status: "healthy", self: true }]);
 }
 
 async function account(): Promise<string | undefined> {

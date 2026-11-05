@@ -8,6 +8,7 @@ import type { History } from "../engine/history";
 import type { SessionStore } from "../sessions/store";
 import type { PermissionAnswer, SessionSummary } from "../sessions/types";
 import type { Identity, Caller } from "../identity/identity";
+import type { Registry } from "../registry/registry";
 import { withFromLine } from "../identity/from-line";
 import { HttpError } from "./errors";
 import { sse } from "./sse";
@@ -23,6 +24,7 @@ export type Deps = {
   agents: () => Promise<AgentInfo[]>;
   terminalFor: (a: AgentInfo) => Driver;
   host: () => Promise<HostInfo>;
+  registry: Registry;
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
@@ -54,6 +56,7 @@ export class Sessions {
     const h = await this.d.host();
     return { name: this.d.nodeName, roots: this.d.roots, ...h, rateLimit: h.rateLimit ?? this.d.store.rateLimit() };
   }
+  peers() { return this.d.registry.peers(); }
   async list(parent: string | null): Promise<SessionSummary[]> {
     const live = this.d.store.list();
     const seen = new Set(live.map((s) => s.id));
