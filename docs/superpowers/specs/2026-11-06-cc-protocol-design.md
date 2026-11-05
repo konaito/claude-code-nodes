@@ -262,3 +262,13 @@ VMの127.0.0.1に立て、curlで作る、送る、SSEで読む、承認する�
 - 参加トークンの形式、設定ファイルの場所、常駐の名前、CLIの引数、イベントの正確なJSON、キャッシュの秒数。
 - SSEの途中参加で過去と現在をつなぐ方法。
 - 画面の作り。
+
+## 第2部で決めたこと（2026-11-06、本人が「いいよ」で承認）
+
+- Accessアプリは新規に`cc`を作る。ホスト名は`*.cc.fybe.jp`だけ、session 720h、方針はceo@fybe.jpのemail allowと、新しいサービストークン`cc-node`のnon_identity。既存のsession-inboxをcfで直す操作はPUT（全文送り）で、本番の方針を消す危険があるため触らない。移行日に旧2アプリ（session-inbox、session-inbox-nodes）を消してから`cc.fybe.jp`を足し、`cc.fybe.jp/install`のBypassアプリを作る。
+- 登録簿を読むCF APIトークン（Cloudflare Tunnel Read、アカウントfybe.jp）は本人がダッシュボードで1回作る。cfのOAuthログインでは`accounts tokens`も`user tokens`も403で作れない（2026-11-06に実測）。トークンは`cc node add`が/dev/ttyで読む。
+- ノードの置き場。`~/.config/cc/cc.json`（0600）に公開値（name、port、roots、domain、teamDomain、aud、entry）と秘密3つ（serviceTokenのclientIdとclientSecret、cfApiToken）をまとめる。トンネルトークンは`~/.config/cc/tunnel.token`（0600、cloudflaredの`--token-file`用）。全ノードで同じ1本を共有し、漏れたらrollして参加をやり直す。
+- cc CLIの命令。`peers`、`ls [--peer] [--mine]`、`show`、`new <dir> <文> [--peer] [--mode] [--model] [--resume]`、`send`、`read [--after] [--wait]`、`run`、`wait`、`allow`、`deny`、`interrupt`、`stop`、`serve`、`node add`、`node remove`、`update`、`uninstall`。対象は`<peer>/<sessionIdの先頭8文字以上>`かsessionId。`--as <役割>`の名乗りは`agent:<ノード名>/<自分のsessionIdの先頭8文字>/<役割>`。CLIは相手ノードを`https://<peer>.<domain>`に直接サービストークンで呼び、入口の中継は通さない。手元のノードは127.0.0.1に無認証で呼ぶ。
+- 画面は3段。パソコン一覧（登録簿と各ノードの`/api/host`。本人の追加要望）、選んだパソコンのセッション一覧、選んだセッションの会話。PWA（manifestとsw）はv1に入れない。Markdownは旧画面と同じ自前の最小実装（どちらもこちらの判断）。
+- 試作のVMは`vm.cc.fybe.jp`（トンネル`cc-vm`）。順序はAccessアプリ、AccessIdentity（JWTの無い外部を403）、DNSとcloudflaredの順で、DNSを先に向けない。
+- 確認事項8の答え。`cf tunnels list`は0.66秒。登録簿のキャッシュは10秒程度のメモリで足りる。
