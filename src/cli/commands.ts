@@ -151,7 +151,8 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     case "run": {
       need(2, "<対象> と <文>");
       await send(ctx, rest[0]!, rest[1]!, flags);
-      return read(ctx, rest[0]!, { ...flags, after: undefined as unknown as string });
+      const { after: _after, ...rest2 } = flags;
+      return read(ctx, rest[0]!, rest2);
     }
     case "wait": {
       need(1, "対象");

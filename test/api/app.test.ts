@@ -21,6 +21,7 @@ function harness(over: Partial<Deps> = {}) {
   live.cwd = "/home/u/proj";
   store.add(live);
   const startCalls: Array<{ opts: unknown; caller: unknown }> = [];
+  const registry = over.registry ?? new StaticRegistry([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }, { name: "pro", url: "https://pro.cc.fybe.jp", status: "healthy", self: false }]);
   const deps: Deps = {
     nodeName: "vm",
     roots: ["/home/u", tmpdir()],
@@ -43,11 +44,11 @@ function harness(over: Partial<Deps> = {}) {
     agents: async () => [term],
     terminalFor: (a) => new FakeDriver({ id: a.sessionId!, capabilities: { send: true, permissions: false, interrupt: false }, kind: "terminal" }),
     host: async () => ({ claudeVersion: "2.1.318", load: [0] }),
-    registry: new StaticRegistry([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }, { name: "pro", url: "https://pro.cc.fybe.jp", status: "healthy", self: false }]),
+    registry,
+    relay: new Relay({ registry, nodeName: "vm", fetchFn: (async () => new Response("{}")) as typeof fetch }),
     appRoot: join(import.meta.dir, "..", ".."),
     ...over,
   };
-  deps.relay ??= new Relay({ registry: deps.registry, nodeName: deps.nodeName, fetchFn: (async () => new Response("{}")) as typeof fetch });
   return { app: createApp(deps), store, live, deps, startCalls };
 }
 const req = (path: string, init?: RequestInit) => new Request(`http://127.0.0.1${path}`, init);
