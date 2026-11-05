@@ -35,7 +35,7 @@ if (import.meta.main) {
   const home = homedir();
   const join_ = joinCommands({
     cf: realCf,
-    services: serviceManager,
+    services: (platform, p) => serviceManager(platform, p, bunRunner),
     platform: process.platform === "darwin" ? "darwin" : "linux",
     home, configDir: join(home, ".config", "cc"), appDir: join(home, ".local", "share", "cc", "app"),
     bunPath: process.execPath, cloudflaredPath: Bun.which("cloudflared") ?? join(home, ".local", "bin", "cloudflared"), uid: userInfo().uid,

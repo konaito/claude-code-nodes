@@ -5,7 +5,7 @@ import { entryOf, loadConfig, saveConfig, type Config } from "../config";
 import type { Runner } from "../engine/agents";
 import { createNodeTunnel, ensureAccessApp, ensureBypassApp, ensureServiceToken, removeNodeTunnel, setEntry, type CfRunner } from "../join/cf";
 import { configFromToken, decodeJoinToken, encodeJoinToken, JoinTokenError, type JoinToken } from "../join/token";
-import { serviceManager, type Paths, type Platform, type ServiceManager } from "../join/services";
+import type { Paths, Platform, ServiceManager } from "../join/services";
 import { withCrossSessionInbound, SettingsError } from "../join/settings";
 import { linkSkill, realFs } from "../join/skill-links";
 import { BUNDLE_PATHS } from "../join/bundle";
