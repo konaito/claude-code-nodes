@@ -10,7 +10,7 @@ test("list maps SDKSessionInfo to SessionSummary", async () => {
   expect(list[0].id).toBe("h1");
   expect(list[0].title).toBe("T");
   expect(list[0].lastActivityAt).toBe(123);
-  expect(list[0].capabilities).toEqual({ send: false, permissions: false, interrupt: false });
+  expect(list[0].capabilities).toEqual({ send: false, permissions: false, interrupt: false, stop: false, events: false });
   expect(list[0].state).toBe("exited");
   expect(list[0].kind).toBe("node");
   expect(list[0].parent).toBe("agent:lead");

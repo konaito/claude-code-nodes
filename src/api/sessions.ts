@@ -1,6 +1,6 @@
 // セッションの監視と管理の処理。台帳（生きているもの）、agents（端末）、履歴（過去）を合成し、能力で振る舞いを決める
 import { resolve, sep } from "node:path";
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import type { Driver } from "../engine/driver";
 import type { AgentInfo } from "../engine/agents";
 import type { StartOptions } from "../engine/node-driver";
@@ -25,13 +25,20 @@ export type Deps = {
   host: () => Promise<HostInfo>;
 };
 
-const underRoot = (cwd: string, roots: string[]) => roots.some((r) => { const root = resolve(r); return cwd === root || cwd.startsWith(root + sep); });
+const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
 
 const CACHE_MS = 2000; // 一覧のたびに claude を起動しないための短いメモリキャッシュ
 
 export class Sessions {
   private cache = new Map<string, { at: number; value: Promise<unknown> }>();
+  private realRoots?: Promise<string[]>;
   constructor(private d: Deps) {}
+
+  // 根も symlink（macOS の /var など）を解いて比べる。解けない根はそのまま
+  private roots(): Promise<string[]> {
+    this.realRoots ??= Promise.all(this.d.roots.map((r) => realpath(resolve(r)).catch(() => resolve(r))));
+    return this.realRoots;
+  }
 
   private cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const hit = this.cache.get(key);
@@ -45,7 +52,7 @@ export class Sessions {
 
   async host() {
     const h = await this.d.host();
-    return { name: this.d.nodeName, roots: this.d.roots, ...h };
+    return { name: this.d.nodeName, roots: this.d.roots, ...h, rateLimit: h.rateLimit ?? this.d.store.rateLimit() };
   }
   async list(parent: string | null): Promise<SessionSummary[]> {
     const live = this.d.store.list();
@@ -59,10 +66,12 @@ export class Sessions {
   async create(req: Request) {
     const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown };
     if (typeof body.cwd !== "string" || !body.cwd) throw new HttpError(400, { error: "cwd is required" });
-    const cwd = resolve(body.cwd);
-    if (!underRoot(cwd, this.d.roots)) throw new HttpError(400, { error: "cwd is outside roots", roots: this.d.roots });
+    // symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
+    const cwd = await realpath(resolve(body.cwd)).catch(() => null);
+    if (!cwd) throw new HttpError(400, { error: "cwd does not exist" });
+    if (!underRoot(cwd, await this.roots())) throw new HttpError(400, { error: "cwd is outside roots", roots: this.d.roots });
     const st = await stat(cwd).catch(() => null);
-    if (!st?.isDirectory()) throw new HttpError(400, { error: "cwd does not exist" });
+    if (!st?.isDirectory()) throw new HttpError(400, { error: "cwd is not a directory" });
     if (!body.prompt && !body.resume) throw new HttpError(400, { error: "prompt or resume is required" });
     // 生きている id を fork 無しで resume すると古いプロセスが孤児になるので断る
     if (body.resume && !body.fork) {
@@ -122,16 +131,15 @@ export class Sessions {
     return driver.summary();
   }
   async remove(id: string) {
-    const driver = this.d.store.get(id);
-    if (!driver) {
-      if (await this.find(id)) throw new HttpError(409, { error: "terminal sessions cannot be stopped from here" });
-      throw new HttpError(404, { error: "unknown session" });
-    }
+    const driver = await this.must(id);
+    if (!driver.capabilities.stop) throw new HttpError(409, { error: "capability stop not available" });
     await driver.stop();
     this.d.store.remove(id);
   }
   events(id: string, after: number): Response {
-    if (!this.d.store.get(id)) throw new HttpError(404, { error: "no live session" });
+    const live = this.d.store.get(id);
+    if (!live) throw new HttpError(404, { error: "no live session" });
+    if (!live.capabilities.events) throw new HttpError(409, { error: "capability events not available" });
     const src = this.d.store.subscribe(id, after);
     const trimmed = this.d.store.trimmedTo(id);
     return sse((async function* () {

@@ -95,3 +95,13 @@ test("send while a permission is pending keeps waiting_permission", async () => 
   expect(d.summary().state).toBe("waiting_permission");
   await d.stop();
 });
+
+test("capabilities are all false after exit", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  expect(d.capabilities).toEqual({ send: true, permissions: true, interrupt: true, stop: true, events: true });
+  await d.stop();
+  await until(() => d.summary().state === "exited");
+  expect(d.capabilities).toEqual({ send: false, permissions: false, interrupt: false, stop: false, events: false });
+  expect(d.summary().capabilities.stop).toBe(false);
+});

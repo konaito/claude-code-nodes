@@ -1,7 +1,5 @@
 // API のエラーを HTTP の応答に統一する。境界の例外（能力なし、終了済み、ソケット無し、見つからない）をここで状態コードに変える
-import { CapabilityError } from "../engine/driver";
-import { ExitedError, NotFoundError } from "../engine/node-driver";
-import { SocketGoneError } from "../engine/terminal-driver";
+import { CapabilityError, ExitedError, NotFoundError, SocketGoneError } from "../engine/driver";
 
 export class HttpError extends Error {
   constructor(public status: number, public body: Record<string, unknown>) { super(String(body.error ?? status)); this.name = "HttpError"; }

@@ -5,7 +5,7 @@ import { parseFromLine } from "../identity/from-line";
 
 export type HistoryFns = { listSessions: typeof listSessions; getSessionMessages: typeof getSessionMessages; getSessionInfo: typeof getSessionInfo };
 const PAGE = 200;
-const NONE = { send: false, permissions: false, interrupt: false };
+const NONE = { send: false, permissions: false, interrupt: false, stop: false, events: false };
 
 export class History {
   constructor(private fns: HistoryFns) {}

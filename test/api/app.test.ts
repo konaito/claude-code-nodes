@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
+import { mkdtempSync, symlinkSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { createApp, type Deps } from "../../src/api/app";
 import { SessionStore } from "../../src/sessions/store";
 import { FakeDriver } from "../helpers/fake-driver";
@@ -7,7 +9,7 @@ import { HeaderIdentity } from "../../src/identity/identity";
 import { SocketGoneError } from "../../src/engine/terminal-driver";
 import type { AgentInfo } from "../../src/engine/agents";
 
-const caps = (p: boolean) => ({ send: true, permissions: p, interrupt: p });
+const caps = (p: boolean) => ({ send: true, permissions: p, interrupt: p, stop: p, events: p });
 const term: AgentInfo = { pid: 77, cwd: "/home/u/t", kind: "interactive", startedAt: 2, sessionId: "term1", status: "busy" };
 const settle = () => new Promise((r) => setTimeout(r, 10));
 
@@ -219,4 +221,41 @@ test("GET messages of an exited live session falls back to history", async () =>
   await settle();
   const b = await (await app.fetch(req("/api/sessions/live1/messages?after=0"))).json();
   expect(b.messages[0].uuid).toBe("u1");
+});
+
+// --- 第2部 Task 0（第1部の残件） ---
+test("DELETE on a session without stop capability is 409", async () => {
+  const noStop = new FakeDriver({ id: "ns1", capabilities: { send: true, permissions: true, interrupt: true, stop: false, events: true } });
+  const store = new SessionStore();
+  store.add(noStop);
+  const { app } = harness({ store });
+  const r = await app.fetch(req("/api/sessions/ns1", { method: "DELETE" }));
+  expect(r.status).toBe(409);
+  expect(store.get("ns1")).toBeDefined();
+});
+
+test("GET events on a session without events capability is 409", async () => {
+  const noEv = new FakeDriver({ id: "ne1", capabilities: { send: true, permissions: false, interrupt: false, stop: false, events: false } });
+  const store = new SessionStore();
+  store.add(noEv);
+  const { app } = harness({ store });
+  expect((await app.fetch(req("/api/sessions/ne1/events?after=0"))).status).toBe(409);
+});
+
+test("POST /api/sessions resolves a symlinked cwd before the roots check", async () => {
+  const base = mkdtempSync(join(tmpdir(), "cc-link-"));
+  symlinkSync("/etc", join(base, "out"));
+  symlinkSync(realpathSync(base), join(base, "in"));
+  const { app, startCalls } = harness();
+  expect((await app.fetch(post("/api/sessions", { cwd: join(base, "out"), prompt: "x" }))).status).toBe(400);
+  expect((await app.fetch(post("/api/sessions", { cwd: join(base, "in"), prompt: "x" }))).status).toBe(201);
+  expect((startCalls[0]!.opts as { cwd: string }).cwd).toBe(realpathSync(base));
+});
+
+test("GET /api/host carries the last rate_limit_event", async () => {
+  const { app, live } = harness();
+  live.push({ type: "rate_limit_event", data: { rate_limit_info: { status: "allowed", utilization: 0.4 } } });
+  await settle();
+  const b = await (await app.fetch(req("/api/host"))).json();
+  expect(b.rateLimit.rate_limit_info.utilization).toBe(0.4);
 });

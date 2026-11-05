@@ -1,6 +1,6 @@
 // セッションの型。API は種類（kind）ではなく能力（capabilities）で振る舞いを決める
 export type Kind = "node" | "terminal";
-export type Capabilities = { send: boolean; permissions: boolean; interrupt: boolean };
+export type Capabilities = { send: boolean; permissions: boolean; interrupt: boolean; stop: boolean; events: boolean };
 export type State = "running" | "waiting_permission" | "idle" | "exited";
 
 export type SessionSummary = {

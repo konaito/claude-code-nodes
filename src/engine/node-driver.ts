@@ -1,6 +1,8 @@
 // SDK を包む NodeDriver。query() に非同期の入力を渡し、権限要求を保留して API から答えられるようにする。完全制御のセッション
 import type { query, Query, PermissionMode, PermissionResult, SDKUserMessage, SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import type { Driver, RawEvent } from "./driver";
+import { ExitedError, NotFoundError } from "./driver";
+export { ExitedError, NotFoundError } from "./driver";
 import type { PendingPermission, PermissionAnswer, SessionSummary, State } from "../sessions/types";
 import { AsyncQueue } from "../sessions/async-queue";
 
@@ -17,14 +19,13 @@ export type StartOptions = {
 };
 export type NodeDeps = { queryFn: QueryFn; nodeName: string; caller?: string; initTimeoutMs?: number; claudePath?: string };
 
-export class ExitedError extends Error { constructor(reason?: string) { super(`session exited${reason ? `: ${reason}` : ""}`); this.name = "ExitedError"; } }
-export class NotFoundError extends Error { constructor(msg: string) { super(msg); this.name = "NotFoundError"; } }
 
 type Waiting = { p: PendingPermission; input: Record<string, unknown>; resolve: (r: PermissionResult) => void };
 
 export class NodeDriver implements Driver {
   readonly kind = "node" as const;
-  readonly capabilities = { send: true, permissions: true, interrupt: true };
+  // 終了したら何もできないので、能力も全部 false になる
+  get capabilities() { const on = this.state !== "exited"; return { send: on, permissions: on, interrupt: on, stop: on, events: on }; }
   id = "";
   private state: State = "idle";
   private input = new AsyncQueue<SDKUserMessage>();

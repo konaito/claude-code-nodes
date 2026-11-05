@@ -30,7 +30,7 @@ test("answer and interrupt throw CapabilityError", async () => {
   const d = new TerminalDriver(info, { uid: 501, connect: unixConnect });
   await expect(d.answer("r", { behavior: "allow" })).rejects.toBeInstanceOf(CapabilityError);
   await expect(d.interrupt()).rejects.toBeInstanceOf(CapabilityError);
-  expect(d.capabilities).toEqual({ send: true, permissions: false, interrupt: false });
+  expect(d.capabilities).toEqual({ send: true, permissions: false, interrupt: false, stop: false, events: false });
 });
 
 test("summary maps status to state", () => {

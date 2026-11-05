@@ -20,6 +20,7 @@ export class SessionStore {
   private entries = new Map<string, Entry>();
   private allSubs = new Set<AsyncQueue<Change>>();
   private maxEvents: number;
+  private lastRateLimit: unknown;
 
   constructor(opts: { maxEvents?: number } = {}) { this.maxEvents = opts.maxEvents ?? DEFAULT_MAX_EVENTS; }
 
@@ -45,6 +46,8 @@ export class SessionStore {
     return this.must(id).events.filter((ev) => ev.seq > after);
   }
   trimmedTo(id: string): number { return this.must(id).trimmedTo; }
+  // 全セッションで最後に流れた rate_limit_event の data（アカウントの枠はノードで1つ）
+  rateLimit(): unknown { return this.lastRateLimit; }
   subscribe(id: string, after: number): AsyncIterable<DriverEvent> {
     const e = this.must(id);
     const q = new AsyncQueue<DriverEvent>();
@@ -76,6 +79,7 @@ export class SessionStore {
         if (this.entries.get(e.driver.id) !== e) break;
         e.seq++;
         const ev: DriverEvent = { ...raw, seq: e.seq };
+        if (raw.type === "rate_limit_event") this.lastRateLimit = raw.data;
         // stream_event（トークンごとの断片）は番号は振るが、ためない。生きている購読にだけ流す
         if (raw.type !== "stream_event") {
           e.events.push(ev);

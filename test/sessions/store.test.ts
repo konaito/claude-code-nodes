@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { SessionStore } from "../../src/sessions/store";
 import { FakeDriver } from "../helpers/fake-driver";
 
-const all = { send: true, permissions: true, interrupt: true };
+const all = { send: true, permissions: true, interrupt: true, stop: true, events: true };
 const settle = () => new Promise((r) => setTimeout(r, 10));
 
 test("subscribe replays events after the cursor then continues", async () => {
