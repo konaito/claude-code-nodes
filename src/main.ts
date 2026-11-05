@@ -48,9 +48,11 @@ async function account(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-if (import.meta.main) {
-  const cfg = loadConfig();
+export function start(cfg: Config) {
   const app = createApp(buildDeps(cfg));
-  Bun.serve({ hostname: "127.0.0.1", port: cfg.port, fetch: app.fetch, idleTimeout: 0 });
-  console.log(`node on http://127.0.0.1:${cfg.port} (${cfg.name}, roots: ${cfg.roots.join(", ")})`);
+  const server = Bun.serve({ hostname: "127.0.0.1", port: cfg.port, fetch: app.fetch, idleTimeout: 0 });
+  console.log(`node on http://127.0.0.1:${cfg.port} (${cfg.name}, roots: ${cfg.roots.join(", ")}, ${cfg.teamDomain && cfg.aud ? "access" : "no access"})`);
+  return server;
 }
+
+if (import.meta.main) start(loadConfig());
