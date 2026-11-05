@@ -38,7 +38,8 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} allow <対象> [requestId]                 承認（保留が1件なら省略可）
   ${CLI_NAME} deny <対象> [requestId] <理由>           拒否
   ${CLI_NAME} interrupt <対象> / ${CLI_NAME} stop <対象>
-  ${CLI_NAME} serve / setup / node add|remove <名> / entry <名> / install / update / uninstall / doctor
+  ${CLI_NAME} setup --hosts <a,b> [--name] [--port] [--cf-token-stdin]   1回だけの準備（cf のある機械で）
+  ${CLI_NAME} node add <名> [--port] / node remove <名> / entry <名> / install [--from <dir>] / update / uninstall / doctor / serve
 <対象> は <peer>/<sessionId の先頭8文字以上> か sessionId。peer を省くと手元のノード`;
 
 const str = (v: string | true | undefined) => (typeof v === "string" ? v : undefined);

@@ -52,7 +52,8 @@ export function joinCommands(d: JoinDeps) {
     const email = str(flags.email) ?? DEFAULTS.email;
     const app = await ensureAccessApp(d.cf, { name: "cc", hosts, sessionDuration: "720h", email, serviceTokenId: tok.id });
     const bypass = await ensureBypassApp(d.cf, { name: "cc-install", hosts });
-    const cfApiToken = cfg.cfApiToken ?? (await d.tty("CF API トークン（Account / Cloudflare Tunnel / Read）: ")).trim();
+    // CF API トークンは手元の cc.json、無ければ標準入力（--cf-token-stdin。pbpaste | ... 用）、無ければ /dev/tty。argv と環境変数には出さない
+    const cfApiToken = cfg.cfApiToken ?? (flags["cf-token-stdin"] ? await ctx.stdin() : await d.tty("CF API トークン（Account / Cloudflare Tunnel / Read）: ")).trim();
     if (!cfApiToken) throw new CliError(1, "CF API トークンが空");
     const next: Config = {
       name: str(flags.name) ?? cfg.name, port: num(flags.port, cfg.port), roots: had ? cfg.roots : [d.home],

@@ -157,3 +157,11 @@ test("uninstall removes services and the cc directories", async () => {
   expect(existsSync(w.configDir)).toBe(false);
   expect(existsSync(join(w.home, ".local", "share", "cc"))).toBe(false);
 });
+
+test("setup reads the CF API token from stdin with --cf-token-stdin and never prompts", async () => {
+  const w = world({ tty: async () => { throw new Error("tty must not be used"); } });
+  const ctx = { ...w.ctx, stdin: async () => "CF-FROM-STDIN\n" };
+  expect(await main(["setup", "--hosts", "*.cc.fybe.jp", "--cf-token-stdin"], ctx)).toBe(0);
+  expect(loadConfig(join(w.configDir, "cc.json")).cfApiToken).toBe("CF-FROM-STDIN");
+  expect(w.lines.join("\n")).not.toContain("CF-FROM-STDIN");
+});
