@@ -38,7 +38,8 @@ export async function api<T = unknown>(c: Client, method: string, path: string, 
   const r = await request(c, method, path, body, fetchFn);
   const text = await r.text();
   let v: unknown;
-  try { v = text ? JSON.parse(text) : undefined; } catch { v = { error: text.slice(0, 200) }; }
+  // JSON でない応答（Cloudflare の 530 のページなど）はタグを落として1行に縮める
+  try { v = text ? JSON.parse(text) : undefined; } catch { v = { error: text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 60) }; }
   if (!r.ok) {
     const b = (v ?? {}) as { error?: string; hint?: string };
     throw new CliError(1, `${c.peer} ${method} ${path} → ${r.status} ${b.error ?? ""}${b.hint ? ` (hint: ${b.hint})` : ""}`.trim());

@@ -112,9 +112,10 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       return 0;
     }
     case "ls": {
-      const peers = str(flags.peer) ? [str(flags.peer)!] : (await peersOf(ctx).catch(() => [{ name: ctx.cfg.name }] as Peer[])).map((p) => p.name);
+      const all = str(flags.peer) ? [{ name: str(flags.peer)!, status: "healthy" } as Peer] : await peersOf(ctx).catch(() => [{ name: ctx.cfg.name, status: "healthy" }] as Peer[]);
       const mine = flags.mine ? `agent:${clientFor(ctx.cfg, undefined, undefined, ctx.env).headers["x-cc-from"]!.slice("agent:".length).split("/").slice(0, 2).join("/")}/` : undefined;
-      const rows = await Promise.all(peers.map(async (peer) => {
+      const rows = await Promise.all(all.map(async ({ name: peer, status }) => {
+        if (status !== "healthy" && status !== "degraded") return [`${peer}  (${status})`]; // 落ちている相手は呼ばない
         try {
           const c = clientFor(ctx.cfg, peer, undefined, ctx.env);
           const list = await api<SessionSummary[]>(c, "GET", "/api/sessions", undefined, ctx.fetchFn);

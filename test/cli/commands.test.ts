@@ -161,3 +161,16 @@ test("unknown command and missing config print usage and return 1", async () => 
   expect(await main([], c)).toBe(1);
   expect(c.lines.some((l) => l.includes("cc peers"))).toBe(true);
 });
+
+test("ls skips a down peer with one line instead of calling it", async () => {
+  const n = fakeNode();
+  const calls0 = n.calls.length;
+  const c = ctx((async (i: RequestInfo | URL, init?: RequestInit) => {
+    const u = new URL(new Request(i, init).url);
+    if (u.pathname === "/api/peers") return new Response(JSON.stringify([{ name: "pro", url: "http://127.0.0.1:4323", status: "healthy", self: true }, { name: "vm", url: "https://vm.cc.fybe.jp", status: "inactive", self: false }]), { headers: { "content-type": "application/json" } });
+    return n.fetchFn(i, init);
+  }) as typeof fetch);
+  expect(await main(["ls"], c)).toBe(0);
+  expect(c.lines.some((l) => l.startsWith("vm  (inactive)"))).toBe(true);
+  expect(n.calls.slice(calls0).some((x) => x.url.startsWith("https://vm.cc.fybe.jp"))).toBe(false);
+});

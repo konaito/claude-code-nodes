@@ -40,3 +40,12 @@ test("api parses json and turns non-2xx into CliError", async () => {
   expect((err as CliError).message).toContain("nope");
   expect((err as CliError).message).toContain("resume");
 });
+
+test("api shortens a non-json error body to one plain line", async () => {
+  const c = clientFor(cfg, "vm", undefined, env);
+  const fetchFn = (async () => new Response("<!doctype html><html><body><h1>530</h1><p>Origin unreachable</p></body></html>", { status: 530, headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
+  const err = await api(c, "GET", "/api/sessions", undefined, fetchFn).catch((e) => e);
+  expect((err as CliError).message).toContain("530");
+  expect((err as CliError).message).not.toContain("<");
+  expect((err as CliError).message.length).toBeLessThan(120);
+});
