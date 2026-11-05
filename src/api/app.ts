@@ -11,8 +11,13 @@ export type { Deps, HostInfo } from "./sessions";
 // ブラウザ（Access の cookie を持つ人）からの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る
 function guardCsrf(req: Request, url: URL, caller: Caller) {
   if (caller.kind !== "user" || req.method === "GET" || req.method === "HEAD") return;
+  // トンネルの裏ではノードは http で受けるが、ブラウザの Origin は https なので、scheme ではなく host で比べる
   const origin = req.headers.get("origin");
-  if (origin && origin !== url.origin) throw new HttpError(403, { error: "cross-origin request" });
+  if (origin) {
+    let host = "";
+    try { host = new URL(origin).host; } catch { host = ""; }
+    if (host !== url.host) throw new HttpError(403, { error: "cross-origin request" });
+  }
   const site = req.headers.get("sec-fetch-site");
   if (site && site !== "same-origin" && site !== "none") throw new HttpError(403, { error: "cross-site request" });
 }

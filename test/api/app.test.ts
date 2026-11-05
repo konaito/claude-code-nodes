@@ -351,3 +351,21 @@ test("GET / serves the page to an authenticated caller", async () => {
   const denied = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "no"); } } });
   expect((await denied.app.fetch(req("/"))).status).toBe(401);
 });
+
+// --- 試作前の補強: トンネル越しの Origin と、自分宛ての中継の POST ---
+test("same-host POST with https origin behind the tunnel is allowed", async () => {
+  const user = { callerOf: async () => ({ id: "ceo@fybe.jp", kind: "user" as const }) };
+  const { app, live } = harness({ identity: user });
+  const r = await app.fetch(new Request("http://vm.cc.fybe.jp/api/sessions/live1/messages", { method: "POST", headers: { "content-type": "application/json", origin: "https://vm.cc.fybe.jp", "sec-fetch-site": "same-origin" }, body: JSON.stringify({ text: "hi" }) }));
+  expect(r.status).toBe(200);
+  expect(live.sent.at(-1)).toContain("hi");
+  const other = await app.fetch(new Request("http://vm.cc.fybe.jp/api/sessions/live1/messages", { method: "POST", headers: { "content-type": "application/json", origin: "https://pro.cc.fybe.jp" }, body: JSON.stringify({ text: "hi" }) }));
+  expect(other.status).toBe(403);
+});
+
+test("self peer POST is handled locally with its body", async () => {
+  const { app, live } = harness();
+  const r = await app.fetch(post("/n/vm/api/sessions/live1/messages", { text: "via self" }));
+  expect(r.status).toBe(200);
+  expect(live.sent.at(-1)).toBe("from local via vm\n\nvia self");
+});

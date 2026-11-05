@@ -1,5 +1,5 @@
 // cc の参加側の命令。setup（1回だけの準備）、node add/remove、entry、install、update、uninstall、doctor、serve。cf、常駐、端末、ファイルは deps の裏
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { entryOf, loadConfig, saveConfig, type Config } from "../config";
 import type { Runner } from "../engine/agents";
@@ -8,6 +8,7 @@ import { configFromToken, decodeJoinToken, encodeJoinToken, JoinTokenError, type
 import { serviceManager, type Paths, type Platform, type ServiceManager } from "../join/services";
 import { withCrossSessionInbound, SettingsError } from "../join/settings";
 import { linkSkill, realFs } from "../join/skill-links";
+import { BUNDLE_PATHS } from "../join/bundle";
 import { CliError, clientFor, api } from "./client";
 import { readUntilResult } from "./read";
 import type { Ctx } from "./commands";
@@ -100,7 +101,14 @@ export function joinCommands(d: JoinDeps) {
     writeFileSync(tokenPath, token.tunnelToken, { mode: 0o600 });
     chmodSync(tokenPath, 0o600);
     const from = str(flags.from);
-    if (from) realFs.copyDir(from, d.appDir);
+    if (from) {
+      // ブートストラップ用。配布物と同じ範囲（BUNDLE_PATHS）だけ写し、依存を入れる
+      rmSync(d.appDir, { recursive: true, force: true });
+      mkdirSync(d.appDir, { recursive: true });
+      for (const rel of BUNDLE_PATHS) if (existsSync(join(from, rel))) cpSync(join(from, rel), join(d.appDir, rel), { recursive: true });
+      const inst = await d.run([d.bunPath, "install", "--frozen-lockfile", "--production", "--cwd", d.appDir]);
+      if (inst.code !== 0) throw new CliError(1, `bun install が失敗した: ${inst.stdout.slice(0, 300)}`);
+    }
     realFs.writeText(settingsPath, settingsNext);
     linkSkill({ home: d.home, appDir: d.appDir, configDir: d.configDir, now: d.now() }, realFs);
     await linkBin(ctx);
