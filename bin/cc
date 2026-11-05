@@ -1,0 +1,3 @@
+#!/bin/sh
+# cc の実行物。bun で src/cli/cc.ts を動かす
+exec bun run "$(dirname "$0")/../src/cli/cc.ts" "$@"
