@@ -15,7 +15,7 @@ export type StartOptions = {
   settingSources?: SettingSource[];
   mcpServers?: Record<string, unknown>;
 };
-export type NodeDeps = { queryFn: QueryFn; nodeName: string; caller?: string; initTimeoutMs?: number };
+export type NodeDeps = { queryFn: QueryFn; nodeName: string; caller?: string; initTimeoutMs?: number; claudePath?: string };
 
 export class ExitedError extends Error { constructor(reason?: string) { super(`session exited${reason ? `: ${reason}` : ""}`); this.name = "ExitedError"; } }
 export class NotFoundError extends Error { constructor(msg: string) { super(msg); this.name = "NotFoundError"; } }
@@ -60,6 +60,8 @@ export class NodeDriver implements Driver {
         includePartialMessages: true,
         mcpServers: opts.mcpServers as never,
         abortController: d.abort,
+        // 同梱の実行ファイルではなく、ログイン済みの PATH の claude を使う（版を揃えるため）
+        pathToClaudeCodeExecutable: deps.claudePath,
         canUseTool: (toolName, input, { signal, suggestions }) => d.onPermission(toolName, input, signal, suggestions),
       },
     });

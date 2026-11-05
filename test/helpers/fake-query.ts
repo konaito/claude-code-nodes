@@ -6,11 +6,13 @@ export function makeFakeQuery(opts: { permission?: boolean } = {}) {
   const received: string[] = [];
   const permissionResults: PermissionResult[] = [];
   const calls = { interrupt: 0, setPermissionMode: [] as string[] };
+  let lastOptions: any;
   let die!: () => void;
   const dead = new Promise<void>((r) => (die = r));
 
   const queryFn = ((params: { prompt: string | AsyncIterable<SDKUserMessage>; options?: any }) => {
     const options = params.options ?? {};
+    lastOptions = options;
     async function* gen() {
       yield { type: "system", subtype: "init", session_id: "fake-session", cwd: options.cwd, model: "fake-model", permissionMode: options.permissionMode ?? "default", tools: [] };
       const it = (params.prompt as AsyncIterable<SDKUserMessage>)[Symbol.asyncIterator]();
@@ -33,5 +35,5 @@ export function makeFakeQuery(opts: { permission?: boolean } = {}) {
     return g as Query;
   }) as unknown as QueryFn;
 
-  return { queryFn, received, permissionResults, calls, die: () => die() };
+  return { queryFn, received, permissionResults, calls, die: () => die(), get lastOptions() { return lastOptions; } };
 }

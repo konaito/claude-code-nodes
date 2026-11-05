@@ -63,3 +63,10 @@ test("send after exit rejects", async () => {
   await d.stop();
   await expect(d.send("x")).rejects.toThrow();
 });
+
+test("start passes claudePath to the SDK as pathToClaudeCodeExecutable", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp" }, { queryFn: fake.queryFn, nodeName: "vm", claudePath: "/usr/local/bin/claude" });
+  expect(fake.lastOptions?.pathToClaudeCodeExecutable).toBe("/usr/local/bin/claude");
+  await d.stop();
+});
