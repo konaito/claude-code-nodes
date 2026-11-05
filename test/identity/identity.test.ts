@@ -2,13 +2,15 @@ import { test, expect } from "bun:test";
 import { HeaderIdentity } from "../../src/identity/identity";
 import { fromLine, withFromLine, parseFromLine } from "../../src/identity/from-line";
 
-test("HeaderIdentity reads x-cc-from and x-cc-via", () => {
+test("HeaderIdentity reads x-cc-from and x-cc-via", async () => {
   const req = new Request("http://127.0.0.1/api/x", { headers: { "x-cc-from": "ceo@fybe.jp", "x-cc-via": "pro" } });
-  expect(new HeaderIdentity().callerOf(req)).toEqual({ id: "ceo@fybe.jp", via: "pro" });
+  expect(await new HeaderIdentity().callerOf(req)).toEqual({ id: "ceo@fybe.jp", via: "pro", kind: "local" });
 });
 
-test("HeaderIdentity defaults to local", () => {
-  expect(new HeaderIdentity().callerOf(new Request("http://127.0.0.1/api/x"))).toEqual({ id: "local" });
+test("HeaderIdentity is async and marks kind local", async () => {
+  const r = new HeaderIdentity().callerOf(new Request("http://127.0.0.1/api/x"));
+  expect(r).toBeInstanceOf(Promise);
+  expect(await r).toEqual({ id: "local", kind: "local" });
 });
 
 test("withFromLine prefixes one line and a blank line", () => {

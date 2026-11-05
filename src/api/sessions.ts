@@ -63,7 +63,7 @@ export class Sessions {
     const all = [...live, ...terms, ...past];
     return parent ? all.filter((s) => s.parent === parent) : all;
   }
-  async create(req: Request) {
+  async create(req: Request, caller: Caller) {
     const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown };
     if (typeof body.cwd !== "string" || !body.cwd) throw new HttpError(400, { error: "cwd is required" });
     // symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
@@ -78,7 +78,6 @@ export class Sessions {
       const liveOne = this.d.store.get(body.resume);
       if (liveOne && liveOne.summary().state !== "exited") throw new HttpError(409, { error: "session is still running", hint: "delete first" });
     }
-    const caller = this.d.identity.callerOf(req);
     const opts: StartOptions = { ...body, cwd, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
     const driver = await this.d.startNode(opts, caller);
     this.d.store.add(driver);
@@ -99,12 +98,11 @@ export class Sessions {
     }
     return this.d.history.messages(id, after);
   }
-  async send(id: string, req: Request) {
+  async send(id: string, req: Request, caller: Caller) {
     const driver = await this.must(id);
     if (driver.summary().state === "exited") throw new HttpError(409, { error: "session exited", hint: "resume" });
     const body = (await req.json().catch(() => ({}))) as { text?: unknown };
     if (typeof body.text !== "string" || !body.text.trim()) throw new HttpError(400, { error: "text is required" });
-    const caller = this.d.identity.callerOf(req);
     return driver.send(withFromLine(caller, this.d.nodeName, body.text));
   }
   async answer(id: string, requestId: string, req: Request) {

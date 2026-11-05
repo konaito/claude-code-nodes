@@ -1,9 +1,9 @@
 import { test, expect } from "bun:test";
 import { homedir, hostname } from "node:os";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/config";
+import { loadConfig, saveConfig, entryOf, APP_VERSION } from "../src/config";
 
 test("loadConfig falls back to hostname, 4322 and $HOME", () => {
   const c = loadConfig("/nonexistent/cc/cc.json");
@@ -16,4 +16,19 @@ test("loadConfig reads name, port, roots from cc.json", () => {
   const p = join(mkdtempSync(join(tmpdir(), "cc-conf-")), "cc.json");
   writeFileSync(p, JSON.stringify({ name: "vm", port: 4400, roots: ["/x"] }));
   expect(loadConfig(p)).toEqual({ name: "vm", port: 4400, roots: ["/x"] });
+});
+
+test("saveConfig writes 0600 and loadConfig reads it back", () => {
+  const p = join(mkdtempSync(join(tmpdir(), "cc-conf-")), "sub", "cc.json");
+  const cfg = { name: "vm", port: 4322, roots: ["/x"], domain: "cc.fybe.jp", teamDomain: "t.cloudflareaccess.com", aud: "a1", accountId: "acc", zone: "fybe.jp", entry: "https://vm.cc.fybe.jp", serviceToken: { clientId: "id", clientSecret: "sec" }, cfApiToken: "tok" };
+  saveConfig(cfg, p);
+  expect(statSync(p).mode & 0o777).toBe(0o600);
+  expect(loadConfig(p)).toEqual(cfg);
+});
+
+test("entryOf falls back to https://<domain>", () => {
+  expect(entryOf({ name: "vm", port: 4322, roots: [], domain: "cc.fybe.jp" })).toBe("https://cc.fybe.jp");
+  expect(entryOf({ name: "vm", port: 4322, roots: [], domain: "cc.fybe.jp", entry: "https://vm.cc.fybe.jp" })).toBe("https://vm.cc.fybe.jp");
+  expect(entryOf({ name: "vm", port: 4322, roots: [] })).toBeUndefined();
+  expect(APP_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
 });

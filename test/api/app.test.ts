@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createApp, type Deps } from "../../src/api/app";
 import { SessionStore } from "../../src/sessions/store";
 import { FakeDriver } from "../helpers/fake-driver";
-import { HeaderIdentity } from "../../src/identity/identity";
+import { HeaderIdentity, AccessDenied } from "../../src/identity/identity";
 import { SocketGoneError } from "../../src/engine/terminal-driver";
 import type { AgentInfo } from "../../src/engine/agents";
 
@@ -90,7 +90,7 @@ test("POST /api/sessions creates, prefixes the from line and registers", async (
   expect((await r.json()).id).toBe("new1");
   expect(store.get("new1")).toBeDefined();
   expect((startCalls[0]!.opts as { prompt: string }).prompt).toBe("from agent:lead via vm\n\nhi");
-  expect(startCalls[0]!.caller).toEqual({ id: "agent:lead" });
+  expect(startCalls[0]!.caller).toEqual({ id: "agent:lead", kind: "local" });
 });
 
 test("POST messages prefixes the from line and returns delivered", async () => {
@@ -258,4 +258,12 @@ test("GET /api/host carries the last rate_limit_event", async () => {
   await settle();
   const b = await (await app.fetch(req("/api/host"))).json();
   expect(b.rateLimit.rate_limit_info.utilization).toBe(0.4);
+});
+
+// --- Task 1: 呼び手の境界 ---
+test("app returns the identity's status when it denies", async () => {
+  const { app } = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "access token required"); } } });
+  const r = await app.fetch(req("/api/host"));
+  expect(r.status).toBe(401);
+  expect((await r.json()).error).toBe("access token required");
 });
