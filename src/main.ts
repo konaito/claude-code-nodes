@@ -12,9 +12,11 @@ import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
 import { listAgents, bunRunner } from "./engine/agents";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
+import { Relay } from "./relay/relay";
 import { entryOf } from "./config";
 
 export function buildDeps(cfg: Config): Deps {
+  const registry = registryFor(cfg);
   return {
     nodeName: cfg.name,
     roots: cfg.roots,
@@ -25,7 +27,8 @@ export function buildDeps(cfg: Config): Deps {
     agents: () => listAgents(bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),
     host: async () => ({ claudeVersion: (await bunRunner(["claude", "--version"])).stdout.trim(), account: await account(), load: loadavg() }),
-    registry: registryFor(cfg),
+    registry,
+    relay: new Relay({ registry, nodeName: cfg.name, serviceToken: cfg.serviceToken }),
   };
 }
 

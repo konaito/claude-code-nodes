@@ -9,6 +9,7 @@ import type { SessionStore } from "../sessions/store";
 import type { PermissionAnswer, SessionSummary } from "../sessions/types";
 import type { Identity, Caller } from "../identity/identity";
 import type { Registry } from "../registry/registry";
+import type { Relay } from "../relay/relay";
 import { withFromLine } from "../identity/from-line";
 import { HttpError } from "./errors";
 import { sse } from "./sse";
@@ -25,6 +26,7 @@ export type Deps = {
   terminalFor: (a: AgentInfo) => Driver;
   host: () => Promise<HostInfo>;
   registry: Registry;
+  relay: Relay;
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));

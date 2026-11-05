@@ -25,6 +25,13 @@ export function createApp(deps: Deps) {
         if (isPublic(url.pathname)) return await route(req, s, { id: "local", kind: "local" });
         const caller = await deps.identity.callerOf(req);
         guardCsrf(req, url, caller);
+        // /n/<peer>/api/... は中継。相手が自分なら手元で処理する
+        const n = url.pathname.match(/^\/n\/([^/]+)\/(api\/.*)$/);
+        if (n) {
+          const [, peer, rest] = n;
+          if (peer !== deps.nodeName) return await deps.relay.forward(peer!, rest!, req, caller);
+          return await route(new Request(new URL(`/${rest}${url.search}`, url).toString(), req), s, caller);
+        }
         return await route(req, s, caller);
       } catch (e) { return toResponse(e); }
     },

@@ -9,6 +9,7 @@ import { HeaderIdentity, AccessDenied } from "../../src/identity/identity";
 import { SocketGoneError } from "../../src/engine/terminal-driver";
 import type { AgentInfo } from "../../src/engine/agents";
 import { StaticRegistry } from "../../src/registry/registry";
+import { Relay } from "../../src/relay/relay";
 
 const caps = (p: boolean) => ({ send: true, permissions: p, interrupt: p, stop: p, events: p });
 const term: AgentInfo = { pid: 77, cwd: "/home/u/t", kind: "interactive", startedAt: 2, sessionId: "term1", status: "busy" };
@@ -42,9 +43,10 @@ function harness(over: Partial<Deps> = {}) {
     agents: async () => [term],
     terminalFor: (a) => new FakeDriver({ id: a.sessionId!, capabilities: { send: true, permissions: false, interrupt: false }, kind: "terminal" }),
     host: async () => ({ claudeVersion: "2.1.318", load: [0] }),
-    registry: new StaticRegistry([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }]),
+    registry: new StaticRegistry([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }, { name: "pro", url: "https://pro.cc.fybe.jp", status: "healthy", self: false }]),
     ...over,
   };
+  deps.relay ??= new Relay({ registry: deps.registry, nodeName: deps.nodeName, fetchFn: (async () => new Response("{}")) as typeof fetch });
   return { app: createApp(deps), store, live, deps, startCalls };
 }
 const req = (path: string, init?: RequestInit) => new Request(`http://127.0.0.1${path}`, init);
@@ -288,5 +290,27 @@ test("cross-site POST with a user jwt is 403", async () => {
 test("GET /api/peers returns the registry", async () => {
   const { app } = harness();
   const b = await (await app.fetch(req("/api/peers"))).json();
-  expect(b).toEqual([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }]);
+  expect(b).toEqual([{ name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: true }, { name: "pro", url: "https://pro.cc.fybe.jp", status: "healthy", self: false }]);
+});
+
+// --- Task 4: 中継 ---
+test("self peer is handled locally", async () => {
+  const { app } = harness();
+  const a = await (await app.fetch(req("/n/vm/api/host"))).json();
+  const b = await (await app.fetch(req("/api/host"))).json();
+  expect(a).toEqual(b);
+});
+
+test("relay without service token is 503", async () => {
+  const { app } = harness();
+  const r = await app.fetch(req("/n/pro/api/host"));
+  expect(r.status).toBe(503);
+});
+
+test("relay forwards to a known peer and 404s an unknown one", async () => {
+  const relay = new Relay({ registry: new StaticRegistry([{ name: "pro", url: "https://pro.cc.fybe.jp", status: "healthy", self: false }]), nodeName: "vm", serviceToken: { clientId: "a", clientSecret: "b" }, fetchFn: (async (i: RequestInfo | URL) => new Response(JSON.stringify({ at: new Request(i).url }), { headers: { "content-type": "application/json" } })) as typeof fetch });
+  const { app } = harness({ relay });
+  expect((await (await app.fetch(req("/n/pro/api/sessions"))).json()).at).toBe("https://pro.cc.fybe.jp/api/sessions");
+  expect((await app.fetch(req("/n/nope/api/sessions"))).status).toBe(404);
+  expect((await app.fetch(req("/n/pro/index.html"))).status).toBe(404);
 });
