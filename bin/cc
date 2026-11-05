@@ -1,3 +1,10 @@
 #!/bin/sh
-# cc の実行物。bun で src/cli/cc.ts を動かす
-exec bun run "$(dirname "$0")/../src/cli/cc.ts" "$@"
+# cc の実行物。symlink（~/.local/bin/cc）から呼ばれても、実体の隣の src/cli/cc.ts を bun で動かす
+self="$0"
+while [ -L "$self" ]; do
+  dir=$(cd "$(dirname "$self")" && pwd)
+  self=$(readlink "$self")
+  case "$self" in /*) ;; *) self="$dir/$self" ;; esac
+done
+root=$(cd "$(dirname "$self")/.." && pwd)
+exec bun run "$root/src/cli/cc.ts" "$@"
