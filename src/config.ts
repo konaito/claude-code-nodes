@@ -16,7 +16,8 @@ export type Config = {
   serviceToken?: { clientId: string; clientSecret: string }; // ノード用サービストークン
   cfApiToken?: string;   // 登録簿を読む CF API トークン（Cloudflare Tunnel Read）
 };
-export const defaultPath = () => join(homedir(), ".config", "cc", "cc.json");
+// CC_CONFIG で設定ファイルを差し替えられる（手元で別ポートのノードを試すとき用）
+export const defaultPath = () => process.env.CC_CONFIG ?? join(homedir(), ".config", "cc", "cc.json");
 export const APP_VERSION: string = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);

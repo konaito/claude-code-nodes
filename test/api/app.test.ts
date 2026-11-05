@@ -337,3 +337,17 @@ test("GET /install/cc.tar.gz is gzip", async () => {
   expect(bytes[1]).toBe(0x8b);
   expect(bytes.length).toBeGreaterThan(1000);
 });
+
+// --- Task 10: 画面 ---
+test("GET / serves the page to an authenticated caller", async () => {
+  const { app } = harness();
+  const r = await app.fetch(req("/"));
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toContain("text/html");
+  const html = await r.text();
+  expect(html).toContain("<title>cc</title>");
+  expect(html).toContain("/api/peers");
+  expect((await app.fetch(req("/index.html"))).status).toBe(200);
+  const denied = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "no"); } } });
+  expect((await denied.app.fetch(req("/"))).status).toBe(401);
+});

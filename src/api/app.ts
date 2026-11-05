@@ -5,6 +5,7 @@ import type { Caller } from "../identity/identity";
 import { installerScript } from "../join/installer";
 import { bundle } from "../join/bundle";
 import { CLI_NAME } from "../cli/name";
+import { pageHtml } from "../web/page";
 export type { Deps, HostInfo } from "./sessions";
 
 // ブラウザ（Access の cookie を持つ人）からの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る
@@ -61,6 +62,9 @@ async function route(req: Request, s: Sessions, caller: Caller): Promise<Respons
   const url = new URL(req.url);
   const parts = url.pathname.split("/").filter(Boolean);
   const m = req.method;
+  if ((url.pathname === "/" || url.pathname === "/index.html") && m === "GET") {
+    return new Response(await pageHtml(), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+  }
   if (parts[0] === "api") {
     if (parts[1] === "host" && parts.length === 2 && m === "GET") return json(await s.host());
     if (parts[1] === "events" && parts.length === 2 && m === "GET") return s.allEvents();
