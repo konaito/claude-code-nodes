@@ -14,8 +14,9 @@ print(f"CF-Access-Client-Secret: {c['clientSecret']}")
 PY
 }
 HDR=$(mktemp); hdr > "$HDR"; trap 'rm -f "$HDR"' EXIT
-c() { curl -sS -H "@$HDR" "$@"; }
-echo "== no auth"; curl -sS -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/api/host"
+# RESOLVE=<ip> を渡すと DNS を待たずに繋ぐ（伝播待ちの間の試験用）
+c() { curl -sS ${RESOLVE:+--resolve "$HOST:443:$RESOLVE"} -H "@$HDR" "$@"; }
+echo "== no auth"; curl -sS ${RESOLVE:+--resolve "$HOST:443:$RESOLVE"} -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/api/host" | cut -c1-120
 echo "== host"; c "$B/api/host"; echo
 echo "== peers"; c "$B/api/peers"; echo
 echo "== create"; ID=$(c -X POST "$B/api/sessions" -H 'content-type: application/json' -H 'x-cc-from: agent:smoke' -d "{\"cwd\":\"$CWD\",\"prompt\":\"reply with the single word ok\",\"permissionMode\":\"default\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])'); echo "$ID"

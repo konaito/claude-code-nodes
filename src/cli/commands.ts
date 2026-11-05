@@ -166,7 +166,7 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       const { c, s } = await resolve(ctx, rest[0]!);
       const d = await api<Detail>(c, "GET", `/api/sessions/${s.id}`, undefined, ctx.fetchFn);
       const pending = d.pending ?? [];
-      let rid = rest[1];
+      let rid: string | undefined = rest[1];
       let reason = rest[2];
       if (cmd === "deny" && rid && !reason && !pending.some((p) => p.requestId === rid)) { reason = rid; rid = undefined; }
       if (!rid) {

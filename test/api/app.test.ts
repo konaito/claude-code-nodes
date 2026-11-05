@@ -42,10 +42,10 @@ function harness(over: Partial<Deps> = {}) {
       return d;
     },
     agents: async () => [term],
-    terminalFor: (a) => new FakeDriver({ id: a.sessionId!, capabilities: { send: true, permissions: false, interrupt: false }, kind: "terminal" }),
+    terminalFor: (a) => new FakeDriver({ id: a.sessionId!, capabilities: { send: true, permissions: false, interrupt: false, stop: false, events: false }, kind: "terminal" }),
     host: async () => ({ claudeVersion: "2.1.318", load: [0] }),
     registry,
-    relay: new Relay({ registry, nodeName: "vm", fetchFn: (async () => new Response("{}")) as typeof fetch }),
+    relay: new Relay({ registry, nodeName: "vm", fetchFn: (async () => new Response("{}")) as unknown as typeof fetch }),
     appRoot: join(import.meta.dir, "..", ".."),
     ...over,
   };
@@ -146,7 +146,7 @@ test("pending permission shows in GET /api/sessions/:id", async () => {
 });
 
 test("POST messages when the socket is gone is 410", async () => {
-  const gone = new FakeDriver({ id: "term1", capabilities: { send: true, permissions: false, interrupt: false }, kind: "terminal" });
+  const gone = new FakeDriver({ id: "term1", capabilities: { send: true, permissions: false, interrupt: false, stop: false, events: false }, kind: "terminal" });
   gone.send = async () => { throw new SocketGoneError(["/tmp/cc-socks/77.sock"]); };
   const { app } = harness({ terminalFor: () => gone });
   const r = await app.fetch(post("/api/sessions/term1/messages", { text: "hi" }));
