@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync } from "node:fs";
+import { decodeJoinToken } from "../../src/join/token";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { main, type Ctx } from "../../src/cli/commands";
@@ -174,4 +175,15 @@ test("node token re-issues the join token for an existing node", async () => {
   expect(w.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels list", "tunnels token get"]);
   expect(w.clip.length).toBe(1);
   expect(w.lines.join("\n")).not.toContain(w.clip[0]!);
+});
+
+test("node token --to writes the join token to a 0600 file instead of the clipboard", async () => {
+  const w = world();
+  saveConfig({ name: "pro", port: 4323, roots: [w.home], domain: "cc.fybe.jp", zone: "fybe.jp", teamDomain: "t", aud: "a", accountId: "acc", entry: "https://vm.cc.fybe.jp", serviceToken: { clientId: "cid", clientSecret: "csec" }, cfApiToken: "CF" }, join(w.configDir, "cc.json"));
+  const out = join(w.home, "join.token");
+  expect(await main(["node", "token", "vm", "--to", out], w.ctx)).toBe(0);
+  expect(statSync(out).mode & 0o777).toBe(0o600);
+  expect(decodeJoinToken(readFileSync(out, "utf8")).name).toBe("vm");
+  expect(w.clip.length).toBe(0);
+  expect(w.lines.join("\n")).not.toContain(readFileSync(out, "utf8").trim());
 });

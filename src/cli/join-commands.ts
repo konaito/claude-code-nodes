@@ -81,7 +81,13 @@ export function joinCommands(d: JoinDeps) {
     const { tunnelId, token } = reissue ? await nodeTunnelToken(d.cf, { name }) : await createNodeTunnel(d.cf, { name, hostname, port, zone: cfg.zone });
     const jt: JoinToken = { v: 1, name, port, domain: cfg.domain, zone: cfg.zone, teamDomain: cfg.teamDomain, aud: cfg.aud, accountId: cfg.accountId, entry, tunnelToken: token, serviceToken: cfg.serviceToken, cfApiToken: cfg.cfApiToken };
     const enc = encodeJoinToken(jt);
-    if (d.clipboard && (await d.clipboard(enc))) ctx.out("参加トークンをクリップボードに入れた（表示はしない）");
+    const to = str(flags.to);
+    if (to) {
+      // ファイルに出す（0600）。scp やパイプで運ぶとき用。argv に出るのはパスだけ
+      writeFileSync(to, enc + "\n", { mode: 0o600 });
+      chmodSync(to, 0o600);
+      ctx.out(`参加トークンを ${to} に書いた（0600。貼り終えたら消す）`);
+    } else if (d.clipboard && (await d.clipboard(enc))) ctx.out("参加トークンをクリップボードに入れた（表示はしない）");
     else { d.ttyWrite(enc + "\n"); ctx.out("参加トークンを端末に出した"); }
     ctx.out(`トンネル cc-${name} (${tunnelId})、ホスト名 ${hostname} → 127.0.0.1:${port}`);
     ctx.out(`新しい機械で: curl -fsSL ${entry}/install | sh`);
