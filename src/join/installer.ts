@@ -57,6 +57,5 @@ rm -rf "$APP.old"
 
 cd "$APP"
 printf '%s' "$TOKEN" | bun run src/cli/cc.ts install
-echo "done: $CLI は $BIN/$CLI"
 `;
 }

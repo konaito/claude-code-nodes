@@ -122,6 +122,7 @@ export function joinCommands(d: JoinDeps) {
     await services().install();
     ctx.out(`設定 ${configPath}、常駐を入れた（${d.platform === "darwin" ? "LaunchAgent jp.fybe.cc.*" : "systemd --user cc-*"}）`);
     await doctor(ctx);
+    ctx.out(`done: 実行物は ${join(d.appDir, "bin", "cc")}`);
     return 0;
   }
 
@@ -189,11 +190,10 @@ export function joinCommands(d: JoinDeps) {
     const host = await api<{ name: string }>(local, "GET", "/api/host", undefined, ctx.fetchFn).catch(() => undefined);
     line(!!host, `手元の API http://127.0.0.1:${cfg.port}/api/host${host ? ` (${host.name})` : ""}`);
     if (cfg.domain && cfg.serviceToken) {
-      const remote = await api<{ name: string }>(clientFor(cfg, `${cfg.name}`, "doctor", { ...ctx.env, CLAUDE_CODE_SESSION_ID: undefined }), "GET", "/api/host", undefined, ctx.fetchFn).catch(() => undefined);
-      // clientFor は自分の名前だと 127.0.0.1 に向くので、外からの経路は URL を直接組む
+      // clientFor は自分の名前だと 127.0.0.1 に向くので、外からの経路（Access → トンネル → ノード）は URL を直接組む
       const url = `https://${cfg.name}.${cfg.domain}/api/host`;
       const r = await ctx.fetchFn(url, { headers: { "cf-access-client-id": cfg.serviceToken.clientId, "cf-access-client-secret": cfg.serviceToken.clientSecret } }).catch(() => undefined);
-      line(!!(r && r.ok) || !!remote, `外からの API ${url}${r ? ` → ${r.status}` : ""}`);
+      line(!!(r && r.ok), `外からの API ${url}${r ? ` → ${r.status}` : "（繋がらない）"}`);
     } else {
       ctx.out("-- 外からの API: cc.json に domain か serviceToken が無いので飛ばす");
     }

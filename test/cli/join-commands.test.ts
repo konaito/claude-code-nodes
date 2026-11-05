@@ -187,3 +187,15 @@ test("node token --to writes the join token to a 0600 file instead of the clipbo
   expect(w.clip.length).toBe(0);
   expect(w.lines.join("\n")).not.toContain(readFileSync(out, "utf8").trim());
 });
+
+test("doctor reports ng when the external API returns 530", async () => {
+  const w = world();
+  saveConfig({ name: "pro", port: 4323, roots: [w.home], domain: "cc.fybe.jp", serviceToken: { clientId: "cid", clientSecret: "csec" } }, join(w.configDir, "cc.json"));
+  const ctx = { ...w.ctx, fetchFn: (async (i: RequestInfo | URL) => {
+    const u = new URL(new Request(i).url);
+    if (u.hostname === "pro.cc.fybe.jp") return new Response("error code: 530", { status: 530 });
+    return new Response(u.pathname.endsWith("/events") ? "" : JSON.stringify({ name: "pro", id: "s1", pending: [], state: "idle", capabilities: { events: true } }), { headers: { "content-type": "application/json" } });
+  }) as unknown as typeof fetch };
+  expect(await main(["doctor"], ctx)).toBe(1);
+  expect(w.lines.some((l) => l.startsWith("ng 外からの API") && l.includes("530"))).toBe(true);
+});
