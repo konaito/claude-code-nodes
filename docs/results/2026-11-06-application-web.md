@@ -21,3 +21,10 @@
 
 - 再開すると台帳のイベントが新しいプロセスの分からになるので、再開前の会話は画面に出ない（NonDBの帰結。jsonlにはある）。出したければ、生きているセッションでもSDKの履歴を先に読んで前に付ける。
 - 拡張のresize_windowは効かず、375px幅の確認は手元のノードでagent-browserで行った分（Task 10）だけ。
+
+## 最終レビューで見つけて直したこと
+
+- 手元のノード（127.0.0.1）は、JWTが無い要求を宛先も見ずにlocalとして通し、CSRFの検査も人のemailのときしかしていなかった。同じMacのブラウザで開いた任意のページから、`fetch(…, {mode:"no-cors"})`でbypassPermissionsのセッションを立てられた。DNS rebindingでGETも読めた。直したあと、実機でMac（4323）とVM（4322）とも別サイトのPOSTは403、`Host: evil.example`は401になった。
+- 直す前の確認で、Macのノードに別サイトを装ったPOSTが1回通り、cwdがホームでbypassPermissionsのセッションが1つ立った。文は「x」だけで、Claudeは返事の文を書いただけでツールは使っていない。すぐにDELETEで止めた。
+- `/install/cc.tar.gz`はCloudflareに4時間cacheされていた（`cf-cache-status: HIT`、`max-age=14400`）。`cache-control: no-store`を付け、`cf cache purge`で消した。以後は`BYPASS`。上の「cc update」の記録のうち、中身が新しい版だったかは確かめていなかった。
+- 中継先のCloudflareの5xx（530など）のHTMLを、502と相手の名前に変えた。`cc new`の相対パスは、手元のノードならCLIの場所で解き、相手のノードなら断る。
