@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
 import { createApp, type Deps } from "./api/app";
 import { SessionStore } from "./sessions/store";
-import { HeaderIdentity } from "./identity/identity";
+import { HeaderIdentity, type Identity } from "./identity/identity";
+import { AccessIdentity } from "./identity/access";
 import { History } from "./engine/history";
 import { NodeDriver } from "./engine/node-driver";
 import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
@@ -21,7 +22,7 @@ export function buildDeps(cfg: Config): Deps {
     nodeName: cfg.name,
     roots: cfg.roots,
     store: new SessionStore(),
-    identity: new HeaderIdentity(),
+    identity: identityFor(cfg),
     history: new History({ listSessions, getSessionMessages, getSessionInfo }),
     startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined }),
     agents: () => listAgents(bunRunner),
@@ -31,6 +32,11 @@ export function buildDeps(cfg: Config): Deps {
     relay: new Relay({ registry, nodeName: cfg.name, serviceToken: cfg.serviceToken }),
     appRoot: join(import.meta.dir, ".."),
   };
+}
+
+// 呼び手。Access の teamDomain と aud があれば JWT を検証する（仕様 2.1）。無ければ 127.0.0.1 の試験用にヘッダだけを見る
+function identityFor(cfg: Config): Identity {
+  return cfg.teamDomain && cfg.aud ? new AccessIdentity({ teamDomain: cfg.teamDomain, aud: cfg.aud }) : new HeaderIdentity();
 }
 
 // 登録簿。CF API トークンとアカウントがあれば Cloudflare のトンネル一覧、無ければ自分だけ

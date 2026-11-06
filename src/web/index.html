@@ -398,7 +398,7 @@ function watchChat(id) {
     if (ev.type === "permission_answered") { pending.delete(data.requestId); renderPending(); return; }
     if (ev.type === "exited") { bump(); }
     const html = itemHtml(item);
-    if (html) { const atBottom = nearBottom(); $("feed").insertAdjacentHTML("beforeend", html); if (atBottom) scrollBottom(); }
+    if (html) appendFeed(html);
     if (ev.type === "result" || ev.type === "assistant" || ev.type === "exited" || ev.type === "system") bump();
   };
   for (const t of ["system", "assistant", "user", "result", "permission_request", "permission_answered", "exited", "gap", "rate_limit_event"]) es.addEventListener(t, onFrame);
@@ -407,6 +407,13 @@ function watchChat(id) {
 let bumpTimer = null;
 function bump() { clearTimeout(bumpTimer); bumpTimer = setTimeout(async () => { try { detail = await api(cur.peer, `/sessions/${cur.id}`); renderHead(); loadSessions(); } catch {} }, 300); }
 const nearBottom = () => { const el = $("scroll"); return el.scrollHeight - el.scrollTop - el.clientHeight < 80; };
+// 会話に1件足す。最初の「まだ何も無い」の札は消す
+function appendFeed(html) {
+  const atBottom = nearBottom();
+  const empty = $("feed").querySelector(":scope > .empty"); if (empty) empty.remove();
+  $("feed").insertAdjacentHTML("beforeend", html);
+  if (atBottom) scrollBottom();
+}
 const scrollBottom = () => { const el = $("scroll"); el.scrollTop = el.scrollHeight; };
 
 // 1件を HTML に。live のイベント（{seq,type,data}）でも履歴の行（{type,message}）でも
@@ -483,7 +490,9 @@ async function send() {
   try {
     const r = await api(cur.peer, `/sessions/${cur.id}/messages`, { method: "POST", body: JSON.stringify({ text }) });
     $("text").value = ""; autosize(); store.set(`cc.draft.${cur.id}`, null);
-    if (!es) { $("feed").insertAdjacentHTML("beforeend", `<div class="note">送った（${esc(r.delivered)}）。端末の返事は一覧の更新で読む</div>`); scrollBottom(); }
+    // ノードが立てたセッションは自分の文をイベントとして流さないので、送った文はここで出す
+    appendFeed(userHtml(text, Date.now()));
+    if (!es) appendFeed(`<div class="note">送った（${esc(r.delivered)}）。端末の返事は一覧の更新で読む</div>`);
   } catch (err) { alert(`送れない: ${err.message}`); }
   $("send").disabled = false; $("text").focus();
 }
@@ -524,7 +533,8 @@ $("newform").addEventListener("submit", async (e) => {
     const abs = cwd.startsWith("~") ? cwd.replace(/^~/, root.replace(/\/$/, "")) : cwd;
     const r = await api(peer, "/sessions", { method: "POST", body: JSON.stringify({ cwd: abs, prompt: promptText, permissionMode: mode }) });
     $("new-msg").textContent = ""; $("newform").hidden = true; $("new-prompt").value = "";
-    await openPeer(peer, true); openChat(r.id);
+    await openPeer(peer, true); await openChat(r.id);
+    appendFeed(userHtml(promptText, Date.now()));
   } catch (err) { $("new-msg").textContent = `失敗: ${err.message}`; }
 });
 
