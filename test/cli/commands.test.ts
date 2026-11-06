@@ -174,3 +174,12 @@ test("ls skips a down peer with one line instead of calling it", async () => {
   expect(c.lines.some((l) => l.startsWith("vm  (inactive)"))).toBe(true);
   expect(n.calls.slice(calls0).some((x) => x.url.startsWith("https://vm.cc.fybe.jp"))).toBe(false);
 });
+
+test("new resolves a relative dir for the local node and refuses it for a remote one", async () => {
+  const n = fakeNode();
+  const c = ctx(n.fetchFn);
+  expect(await main(["new", ".", "x"], c)).toBe(0);
+  expect((n.calls[0]!.body as { cwd: string }).cwd).toBe(process.cwd());
+  expect(await main(["new", "rel/dir", "x", "--peer", "vm"], c)).toBe(1);
+  expect(n.calls.length).toBe(1);
+});

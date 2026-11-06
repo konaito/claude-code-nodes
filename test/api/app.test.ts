@@ -370,3 +370,17 @@ test("self peer POST is handled locally with its body", async () => {
   expect(r.status).toBe(200);
   expect(live.sent.at(-1)).toBe("from local via vm\n\nvia self");
 });
+
+// --- 最終レビュー: ブラウザからの手元のノードへの攻撃 ---
+test("cross-site POST to a local node is 403 even without a JWT", async () => {
+  const { app, startCalls } = harness();
+  const r = await app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "text/plain", origin: "https://evil.example", "sec-fetch-site": "cross-site" }, body: JSON.stringify({ cwd: tmpdir(), prompt: "x", permissionMode: "bypassPermissions" }) }));
+  expect(r.status).toBe(403);
+  expect(startCalls.length).toBe(0);
+});
+
+test("install endpoints are not cached", async () => {
+  const { app } = harness();
+  expect((await app.fetch(req("/install"))).headers.get("cache-control")).toBe("no-store");
+  expect((await app.fetch(req("/install/cc.tar.gz"))).headers.get("cache-control")).toBe("no-store");
+});

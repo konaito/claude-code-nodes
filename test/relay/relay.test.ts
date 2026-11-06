@@ -68,3 +68,14 @@ test("no first byte within timeoutMs is PeerUnreachableError", async () => {
   const err = await relay.forward("pro", "api/host", new Request("https://vm.cc.fybe.jp/n/pro/api/host"), { id: "x" }).catch((e) => e);
   expect(err).toBeInstanceOf(PeerUnreachableError);
 });
+
+test("a Cloudflare 5xx html page from the peer is PeerUnreachableError", async () => {
+  const { fetchFn } = fakeFetch(() => new Response("<!doctype html><title>530</title>", { status: 530, headers: { "content-type": "text/html", "cf-ray": "abc" } }));
+  const relay = new Relay({ registry, nodeName: "vm", serviceToken: token, fetchFn });
+  const err = await relay.forward("pro", "api/host", new Request("https://vm.cc.fybe.jp/n/pro/api/host"), { id: "x" }).catch((e) => e);
+  expect(err).toBeInstanceOf(PeerUnreachableError);
+  expect((err as Error).message).toContain("530");
+  const ok = fakeFetch(() => new Response(JSON.stringify({ error: "boom" }), { status: 500, headers: { "content-type": "application/json" } }));
+  const r = await new Relay({ registry, nodeName: "vm", serviceToken: token, fetchFn: ok.fetchFn }).forward("pro", "api/host", new Request("https://vm.cc.fybe.jp/n/pro/api/host"), { id: "x" });
+  expect(r.status).toBe(500);
+});

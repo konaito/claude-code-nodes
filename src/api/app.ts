@@ -8,9 +8,10 @@ import { CLI_NAME } from "../cli/name";
 import { pageHtml } from "../web/page";
 export type { Deps, HostInfo } from "./sessions";
 
-// ブラウザ（Access の cookie を持つ人）からの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る
-function guardCsrf(req: Request, url: URL, caller: Caller) {
-  if (caller.kind !== "user" || req.method === "GET" || req.method === "HEAD") return;
+// ブラウザからの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る。
+// 呼び手の種類は問わない（手元のノードも、同じ機械のブラウザで開いた罠のページから狙われる）。CLI と中継は Origin を送らない
+function guardCsrf(req: Request, url: URL, _caller: Caller) {
+  if (req.method === "GET" || req.method === "HEAD") return;
   // トンネルの裏ではノードは http で受けるが、ブラウザの Origin は https なので、scheme ではなく host で比べる
   const origin = req.headers.get("origin");
   if (origin) {
@@ -26,11 +27,15 @@ function guardCsrf(req: Request, url: URL, caller: Caller) {
 function install(req: Request, url: URL, appRoot: string): Response {
   if (req.method !== "GET") throw new HttpError(405, { error: "method not allowed" });
   if (url.pathname === "/install") {
-    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host;
+    // スクリプトに埋め込むので、ホスト名の文字だけを通す
+    const raw = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host;
+    if (!/^[A-Za-z0-9.:[\]-]+$/.test(raw)) throw new HttpError(400, { error: "bad host" });
+    const host = raw;
     const scheme = /^(127\.0\.0\.1|localhost)(:|$)/.test(host) ? "http" : "https";
-    return new Response(installerScript({ entry: `${scheme}://${host}`, cliName: CLI_NAME }), { headers: { "content-type": "text/plain; charset=utf-8" } });
+    return new Response(installerScript({ entry: `${scheme}://${host}`, cliName: CLI_NAME }), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
   }
-  if (url.pathname === "/install/cc.tar.gz") return new Response(bundle(appRoot), { headers: { "content-type": "application/gzip" } });
+  // Cloudflare は .gz を既定で cache するので、古い実行物を配らないよう no-store を付ける
+  if (url.pathname === "/install/cc.tar.gz") return new Response(bundle(appRoot), { headers: { "content-type": "application/gzip", "cache-control": "no-store" } });
   throw new HttpError(404, { error: "not found" });
 }
 

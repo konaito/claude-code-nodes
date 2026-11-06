@@ -1,6 +1,6 @@
 // cc の親向けの命令。peers、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { Config } from "../config";
 import type { SessionSummary } from "../sessions/types";
 import { parseArgs, type Parsed } from "./args";
@@ -139,7 +139,13 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     case "new": {
       need(2, "<dir> と <文>");
       const c = clientFor(ctx.cfg, str(flags.peer), str(flags.as), ctx.env);
-      const body: Record<string, unknown> = { cwd: rest[0], prompt: rest[1], permissionMode: str(flags.mode) ?? "bypassPermissions" };
+      // 相対パスはノードの作業ディレクトリ（ホーム）で解かれてしまうので、手元なら CLI の場所で解き、相手なら断る
+      let cwd = rest[0]!;
+      if (!isAbsolute(cwd)) {
+        if (c.peer !== ctx.cfg.name) throw new CliError(1, `相手のノード（${c.peer}）には絶対パスで指定する: ${cwd}`);
+        cwd = resolvePath(cwd);
+      }
+      const body: Record<string, unknown> = { cwd, prompt: rest[1], permissionMode: str(flags.mode) ?? "bypassPermissions" };
       if (str(flags.model)) body.model = str(flags.model);
       if (str(flags.resume)) body.resume = str(flags.resume);
       const r = await api<{ id: string }>(c, "POST", "/api/sessions", body, ctx.fetchFn);

@@ -84,3 +84,13 @@ test("unknown kid refetches the jwks once", async () => {
   expect((err as AccessDenied).status).toBe(403);
   expect(fetches()).toBe(2);
 });
+
+test("a request without a JWT for a non-loopback host is 401 (DNS rebinding)", async () => {
+  const { id } = await setup();
+  const err = await id.callerOf(new Request("http://evil.example:4322/api/sessions")).catch((e) => e);
+  expect(err).toBeInstanceOf(AccessDenied);
+  expect((err as AccessDenied).status).toBe(401);
+  for (const h of ["http://127.0.0.1:4322/api/x", "http://localhost:4322/api/x", "http://[::1]:4322/api/x"]) {
+    expect((await id.callerOf(new Request(h))).kind).toBe("local");
+  }
+});

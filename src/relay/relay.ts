@@ -48,6 +48,11 @@ export class Relay {
     } catch (e) {
       throw new PeerUnreachableError(peer, e);
     }
+    // Cloudflare の縁が返す 5xx の HTML（530 はトンネル切れ、502 はノード切れ）は、相手に届かなかったものとして扱う
+    if (upstream.status >= 500 && (upstream.headers.get("content-type") ?? "").includes("text/html")) {
+      await upstream.body?.cancel().catch(() => {});
+      throw new PeerUnreachableError(peer, `upstream ${upstream.status}`);
+    }
     const out = new Headers();
     for (const h of COPY_RES) { const v = upstream.headers.get(h); if (v) out.set(h, v); }
     return new Response(upstream.body, { status: upstream.status, headers: out });

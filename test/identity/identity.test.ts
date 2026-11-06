@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { HeaderIdentity } from "../../src/identity/identity";
+import { HeaderIdentity, AccessDenied } from "../../src/identity/identity";
 import { fromLine, withFromLine, parseFromLine } from "../../src/identity/from-line";
 
 test("HeaderIdentity reads x-cc-from and x-cc-via", async () => {
@@ -22,4 +22,9 @@ test("parseFromLine reads the caller back", () => {
   expect(parseFromLine("from agent:lead via vm\n\nhi")).toEqual({ id: "agent:lead", via: "vm" });
   expect(parseFromLine("hi")).toBeUndefined();
   expect(parseFromLine("")).toBeUndefined();
+});
+
+test("HeaderIdentity refuses non-loopback hosts", async () => {
+  const err = await new HeaderIdentity().callerOf(new Request("http://evil.example:4399/api/x")).catch((e) => e);
+  expect(err).toBeInstanceOf(AccessDenied);
 });
