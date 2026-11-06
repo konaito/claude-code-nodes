@@ -86,7 +86,8 @@ async function createCname(cf: CfRunner, zone: string, name: string, tunnelId: s
 }
 async function deleteCname(cf: CfRunner, zone: string, name: string) {
   const list = await call<Dns[]>(cf, ["dns", "records", "list", "-z", zone]);
-  for (const r of (list ?? []).filter((d) => d.name === name && d.type === "CNAME")) await call(cf, ["dns", "records", "delete", r.id, "-z", zone]);
+  // cf は削除の前に確認を求め、非対話では止まるので --force を付ける
+  for (const r of (list ?? []).filter((d) => d.name === name && d.type === "CNAME")) await call(cf, ["dns", "records", "delete", r.id, "-z", zone, "--force"]);
 }
 
 // リモート管理のトンネルを作り、ingress と DNS を向け、トークンを返す。トークンは呼び手が端末にだけ出す
@@ -113,7 +114,7 @@ export async function nodeTunnelToken(cf: CfRunner, o: { name: string }): Promis
 export async function removeNodeTunnel(cf: CfRunner, o: { name: string; hostname: string; zone: string }): Promise<void> {
   await deleteCname(cf, o.zone, o.hostname);
   const t = await findTunnel(cf, o.name);
-  if (t) await call(cf, ["tunnels", "delete", t.id]);
+  if (t) await call(cf, ["tunnels", "delete", t.id, "--force"]);
 }
 
 // 入口。そのノードのトンネルの ingress に cc.fybe.jp を足し、CNAME を向ける（移行日用）

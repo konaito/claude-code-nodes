@@ -113,3 +113,11 @@ test("nodeTunnelToken re-reads the token of an existing tunnel without creating 
   expect(f.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels list", "tunnels token get"]);
   await expect(nodeTunnelToken(f.cf, { name: "nope" })).rejects.toThrow(/cc-nope/);
 });
+
+test("deletes pass --force because cf asks for confirmation otherwise", async () => {
+  const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }], dns: [{ id: "dns-1", name: "vm.cc.fybe.jp", type: "CNAME" }] });
+  await removeNodeTunnel(f.cf, { name: "vm", hostname: "vm.cc.fybe.jp", zone: "fybe.jp" });
+  const deletes = f.calls.filter((c) => c.includes("delete"));
+  expect(deletes.length).toBe(2);
+  for (const c of deletes) expect(c).toContain("--force");
+});
