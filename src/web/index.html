@@ -512,7 +512,8 @@ $("resume").addEventListener("click", async () => {
   try {
     const r = await api(cur.peer, "/sessions", { method: "POST", body: JSON.stringify({ cwd: s.cwd, resume: s.id, prompt: text }) });
     $("text").value = ""; store.set(`cc.draft.${cur.id}`, null);
-    await loadSessions(); openChat(r.id);
+    await loadSessions(); await openChat(r.id);
+    appendFeed(userHtml(text, Date.now()));
   } catch (err) { alert(`再開できない: ${err.message}`); }
 });
 
