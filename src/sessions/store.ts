@@ -1,0 +1,104 @@
+// メモリの台帳。Driver を登録し、イベントに seq を振ってため、SSE 用の購読を出す。ファイルには何も書かない
+import type { Driver, DriverEvent } from "../engine/driver";
+import type { SessionSummary } from "./types";
+import { AsyncQueue } from "./async-queue";
+
+const DEFAULT_MAX_EVENTS = 2000;
+const KEEP_AFTER_EXIT = 50; // 終了後に残す末尾の件数。遅れて繋いだ購読者が終わりの理由を読めるように
+type Change = { id: string; summary: SessionSummary };
+type Entry = {
+  driver: Driver;
+  events: DriverEvent[];
+  seq: number;        // この id で最後に振った番号。同じ id を入れ直しても引き継ぐ
+  trimmedTo: number;  // 上限超えで捨てた最後の seq。これ以前のカーソルは欠落がある
+  ended: boolean;
+  subs: Set<AsyncQueue<DriverEvent>>;
+  lastState: string;
+};
+
+export class SessionStore {
+  private entries = new Map<string, Entry>();
+  private allSubs = new Set<AsyncQueue<Change>>();
+  private maxEvents: number;
+  private lastRateLimit: unknown;
+
+  constructor(opts: { maxEvents?: number } = {}) { this.maxEvents = opts.maxEvents ?? DEFAULT_MAX_EVENTS; }
+
+  add(d: Driver) {
+    const old = this.entries.get(d.id);
+    if (old) { for (const s of old.subs) s.close(); old.subs.clear(); }
+    const e: Entry = { driver: d, events: [], seq: old?.seq ?? 0, trimmedTo: old?.trimmedTo ?? 0, ended: false, subs: new Set(), lastState: d.summary().state };
+    this.entries.set(d.id, e);
+    this.emitChange(d);
+    void this.pump(e);
+  }
+  get(id: string): Driver | undefined { return this.entries.get(id)?.driver; }
+  list(): SessionSummary[] { return [...this.entries.values()].map((e) => e.driver.summary()); }
+  remove(id: string) {
+    const e = this.entries.get(id);
+    if (!e) return;
+    this.entries.delete(id);
+    for (const s of e.subs) s.close();
+    e.subs.clear();
+    this.emitChange(e.driver);
+  }
+  eventsSince(id: string, after: number): DriverEvent[] {
+    return this.must(id).events.filter((ev) => ev.seq > after);
+  }
+  trimmedTo(id: string): number { return this.must(id).trimmedTo; }
+  // 全セッションで最後に流れた rate_limit_event の data（アカウントの枠はノードで1つ）
+  rateLimit(): unknown { return this.lastRateLimit; }
+  subscribe(id: string, after: number): AsyncIterable<DriverEvent> {
+    const e = this.must(id);
+    const q = new AsyncQueue<DriverEvent>();
+    for (const ev of this.eventsSince(id, after)) q.push(ev);
+    if (e.ended) { q.close(); return q; }
+    e.subs.add(q);
+    q.onClose = () => e.subs.delete(q);
+    return q;
+  }
+  subscribeAll(): AsyncIterable<Change> {
+    const q = new AsyncQueue<Change>();
+    this.allSubs.add(q);
+    q.onClose = () => this.allSubs.delete(q);
+    return q;
+  }
+
+  private must(id: string): Entry {
+    const e = this.entries.get(id);
+    if (!e) throw new Error(`unknown session: ${id}`);
+    return e;
+  }
+  private emitChange(d: Driver) {
+    const c = { id: d.id, summary: d.summary() };
+    for (const s of this.allSubs) s.push(c);
+  }
+  private async pump(e: Entry) {
+    try {
+      for await (const raw of e.driver.events()) {
+        if (this.entries.get(e.driver.id) !== e) break;
+        e.seq++;
+        const ev: DriverEvent = { ...raw, seq: e.seq };
+        if (raw.type === "rate_limit_event") this.lastRateLimit = raw.data;
+        // stream_event（トークンごとの断片）は番号は振るが、ためない。生きている購読にだけ流す
+        if (raw.type !== "stream_event") {
+          e.events.push(ev);
+          while (e.events.length > this.maxEvents) e.trimmedTo = e.events.shift()!.seq;
+        }
+        for (const s of e.subs) s.push(ev);
+        const st = e.driver.summary().state;
+        if (st !== e.lastState) { e.lastState = st; this.emitChange(e.driver); }
+      }
+    } catch (err) {
+      console.error(`session ${e.driver.id}: driver events failed:`, err);
+    }
+    // Driver が終わった。購読を閉じ、末尾だけ残し、状態の変化を知らせる。台帳の項目は残す（exited として見える）
+    if (this.entries.get(e.driver.id) !== e) return;
+    e.ended = true;
+    for (const s of e.subs) s.close();
+    e.subs.clear();
+    if (e.events.length > KEEP_AFTER_EXIT) e.events.splice(0, e.events.length - KEEP_AFTER_EXIT);
+    const st = e.driver.summary().state;
+    if (st !== e.lastState) { e.lastState = st; this.emitChange(e.driver); }
+  }
+}

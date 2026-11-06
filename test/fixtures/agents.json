@@ -1,0 +1,28 @@
+[
+  {
+    "pid": 14356,
+    "cwd": "/Users/konaito/Documents/warehouse-game",
+    "kind": "interactive",
+    "startedAt": 1793890733893,
+    "sessionId": "bfa86f8f-1741-459d-9473-052f8c0aa56f",
+    "name": "warehouse-game-a5",
+    "status": "busy"
+  },
+  {
+    "pid": 29375,
+    "cwd": "/private/tmp/cc-web",
+    "kind": "interactive",
+    "startedAt": 1793893000000,
+    "sessionId": "6a296a1a-a69e-4832-bbe6-616d9e392db4",
+    "status": "waiting",
+    "waitingFor": "permission prompt"
+  },
+  {
+    "pid": 46130,
+    "cwd": "/Users/konaito/Documents/allalarm",
+    "kind": "interactive",
+    "startedAt": 1793897000000,
+    "sessionId": "5afbfd36-208c-46cf-9d1d-d6fb438a6071",
+    "status": "idle"
+  }
+]

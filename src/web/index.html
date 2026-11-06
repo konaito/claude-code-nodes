@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff">
+<title>cc</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+JP:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #ffffff; --wash: #f5f5f2; --wash-2: #efefeb; --line: #e7e7e2;
+    --ink: #18181b; --sub: #66666b; --faint: #a0a0a5;
+    --shu: #d2452c; --shu-ink: #a8321c; --shu-wash: #fcefea; --ok: #2f7d5b; --ok-wash: #eaf4ee;
+    --sans: "IBM Plex Sans JP", -apple-system, "Hiragino Sans", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--paper); color: var(--ink); }
+  body { font: 15px/1.7 var(--sans); -webkit-font-smoothing: antialiased; -webkit-text-size-adjust: 100%; }
+  button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+  input, select, textarea { font: inherit; color: inherit; }
+  .app { display: grid; grid-template-columns: 240px 340px minmax(0, 1fr); height: 100dvh; }
+  .col { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); }
+  .col:last-child { border-right: 0; }
+  .head { display: flex; align-items: center; gap: 10px; padding: calc(14px + env(safe-area-inset-top)) 16px 10px; min-height: 56px; }
+  .head h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .02em; }
+  .head .sub { color: var(--faint); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .head .grow { flex: 1; min-width: 0; }
+  .h-t { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .h-s { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+  .back { display: none; width: 34px; height: 34px; margin-left: -8px; border-radius: 8px; align-items: center; justify-content: center; flex: none; }
+  .back:hover { background: var(--wash); }
+  .pill { flex: none; font-size: 12px; color: var(--sub); padding: 4px 10px; border-radius: 999px; background: var(--wash); }
+  .pill:hover { background: var(--wash-2); color: var(--ink); }
+  .pill.arm { color: var(--paper); background: var(--shu); }
+  .pill.ink { color: var(--paper); background: var(--ink); }
+  .pill[disabled] { opacity: .4; cursor: default; }
+  .scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 0 8px calc(12px + env(safe-area-inset-bottom)); }
+  .empty { color: var(--faint); font-size: 14px; padding: 28px 16px; line-height: 1.8; }
+
+  /* 行（パソコンとセッションで共通） */
+  .row { display: block; width: 100%; text-align: left; padding: 11px 12px 12px; border-radius: 10px; position: relative; min-width: 0; overflow: hidden; }
+  .row + .row::before { content: ""; position: absolute; top: 0; left: 12px; right: 12px; border-top: 1px solid var(--line); }
+  .row:hover { background: var(--wash); }
+  .row:hover::before, .row:hover + .row::before, .row.on::before, .row.on + .row::before { border-color: transparent; }
+  .row.on { background: var(--wash-2); }
+  .l1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .ttl { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .when { color: var(--faint); font-size: 12px; flex: none; font-variant-numeric: tabular-nums; }
+  .l2 { color: var(--faint); font-size: 12px; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+  .l3 { display: flex; align-items: center; gap: 8px; margin-top: 5px; font-size: 12.5px; color: var(--sub); min-width: 0; }
+  .l3 .txt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; position: relative; }
+  .dot.ok { background: var(--ok); }
+  .dot.busy { background: var(--shu); }
+  .dot.busy::after { content: ""; position: absolute; inset: -4px; border-radius: 50%; border: 1.5px solid var(--shu); opacity: 0; animation: ring 1.8s ease-out infinite; }
+  .dot.wait { background: var(--shu); box-shadow: 0 0 0 3px var(--shu-wash); }
+  @keyframes ring { 0% { transform: scale(.4); opacity: .7; } 100% { transform: scale(1.4); opacity: 0; } }
+  .tag { font-family: var(--mono); font-size: 11px; color: var(--sub); background: var(--wash); padding: 1px 6px; border-radius: 4px; flex: none; }
+  .tag.term { color: var(--shu-ink); background: var(--shu-wash); }
+  .row.off { opacity: .55; }
+
+  /* 新しく */
+  .newform { margin: 0 12px 10px; padding: 10px; border-radius: 10px; background: var(--wash); display: grid; gap: 8px; }
+  .newform[hidden] { display: none; }
+  .newform select, .newform input, .newform textarea { font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); width: 100%; }
+  .newform textarea { min-height: 64px; resize: vertical; }
+  .newform-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .newform-row .msg { color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+
+  /* 会話 */
+  .chat-head { border-bottom: 1px solid var(--line); background: rgba(255,255,255,.92); backdrop-filter: blur(8px); position: relative; z-index: 2; padding-left: 24px; padding-right: 24px; }
+  .state { flex: none; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--sub); padding: 4px 10px 4px 9px; border-radius: 999px; background: var(--wash); }
+  .state.busy { color: var(--shu-ink); background: var(--shu-wash); }
+  .state.gone { color: var(--faint); }
+  #feed { max-width: 760px; margin: 0 auto; padding: 20px 24px 28px; }
+  .msg { margin: 0 0 18px; }
+  .who { font-size: 12px; color: var(--faint); margin-bottom: 2px; display: flex; gap: 8px; align-items: baseline; }
+  .who .from { color: var(--shu-ink); font-family: var(--mono); }
+  .me .say { background: var(--wash); padding: 10px 14px; border-radius: 12px 12px 12px 4px; display: inline-block; max-width: 100%; }
+  .say { word-break: break-word; }
+  .say p { margin: 0 0 .7em; } .say p:last-child { margin-bottom: 0; }
+  .say h1, .say h2, .say h3, .say h4 { font-size: 15px; font-weight: 600; margin: 1.1em 0 .4em; }
+  .say ul, .say ol { margin: 0 0 .7em; padding-left: 1.4em; } .say li { margin: .15em 0; }
+  .say code { font-family: var(--mono); font-size: .88em; background: var(--wash); padding: .1em .35em; border-radius: 4px; }
+  .say pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--wash); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 0 0 .8em; }
+  .say pre code { background: none; padding: 0; font-size: inherit; }
+  .say a { color: var(--shu-ink); text-underline-offset: 2px; }
+  .say blockquote { margin: 0 0 .7em; padding-left: 12px; border-left: 2px solid var(--line); color: var(--sub); }
+  .say .tbl { overflow-x: auto; margin: 0 0 .8em; } .say table { border-collapse: collapse; font-size: 13px; } .say th, .say td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+  details.tool { margin: 0 0 6px; font-size: 13px; color: var(--sub); }
+  details.tool summary { cursor: pointer; list-style: none; display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+  details.tool summary::-webkit-details-marker { display: none; }
+  details.tool summary .n { font-family: var(--mono); font-size: 12px; color: var(--ink); flex: none; }
+  details.tool summary .d { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  details.tool pre { font-family: var(--mono); font-size: 12px; line-height: 1.55; background: var(--wash); padding: 10px 12px; border-radius: 8px; overflow-x: auto; margin: 6px 0 0; max-height: 320px; white-space: pre-wrap; }
+  .result { font-size: 12px; color: var(--faint); font-family: var(--mono); margin: -8px 0 18px; }
+  .note { font-size: 12.5px; color: var(--sub); margin: 0 0 14px; padding: 8px 12px; border-radius: 8px; background: var(--wash); }
+  .note.bad { color: var(--shu-ink); background: var(--shu-wash); }
+  .perm { margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; border: 1.5px solid var(--shu); background: var(--paper); }
+  .perm .pt { font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+  .perm .pt .n { font-family: var(--mono); font-size: 13px; }
+  .perm pre { font-family: var(--mono); font-size: 12px; background: var(--wash); padding: 8px 10px; border-radius: 6px; margin: 8px 0; max-height: 200px; overflow: auto; white-space: pre-wrap; }
+  .perm .acts { display: flex; gap: 8px; }
+  .compose { border-top: 1px solid var(--line); padding: 10px 24px calc(12px + env(safe-area-inset-bottom)); display: flex; gap: 10px; align-items: flex-end; background: var(--paper); }
+  .compose textarea { flex: 1; min-height: 44px; max-height: 40vh; resize: none; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--wash); }
+  .compose textarea:focus { outline: none; border-color: var(--faint); background: var(--paper); }
+  .compose .send { flex: none; height: 44px; padding: 0 16px; border-radius: 10px; background: var(--shu); color: var(--paper); font-weight: 500; }
+  .compose .send[disabled] { background: var(--faint); }
+  .hint { font-size: 12px; color: var(--faint); padding: 4px 24px 0; }
+
+  @media (max-width: 900px) {
+    .app { grid-template-columns: minmax(0, 1fr); }
+    .col { grid-area: 1 / 1; border-right: 0; }
+    .app.view-peers .sessions, .app.view-peers .chat, .app.view-sessions .peers, .app.view-sessions .chat, .app.view-chat .peers, .app.view-chat .sessions { display: none; }
+    .back { display: inline-flex; }
+    .chat-head, .compose { padding-left: 16px; padding-right: 16px; }
+    #feed { padding: 16px 16px 24px; }
+    .hint { padding-left: 16px; }
+    textarea { font-size: 16px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .dot::after { animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="app view-peers" id="app">
+  <section class="col peers">
+    <div class="head">
+      <h1>cc</h1>
+      <span class="sub grow" id="peers-sub">登録簿を読んでいる</span>
+      <button class="pill" id="new-btn">新しく</button>
+    </div>
+    <form class="newform" id="newform" hidden>
+      <select id="new-peer"></select>
+      <input id="new-cwd" placeholder="作業ディレクトリ（例 ~/work）" autocomplete="off">
+      <textarea id="new-prompt" placeholder="最初の文"></textarea>
+      <select id="new-mode">
+        <option value="default">default（承認を聞く）</option>
+        <option value="acceptEdits">acceptEdits</option>
+        <option value="bypassPermissions">bypassPermissions</option>
+        <option value="plan">plan</option>
+      </select>
+      <div class="newform-row"><button type="submit" class="pill ink">立てる</button><button type="button" class="pill" id="new-cancel">やめる</button><span class="msg" id="new-msg"></span></div>
+    </form>
+    <div class="scroll" id="peers"><div class="empty">まだ無い</div></div>
+  </section>
+
+  <section class="col sessions">
+    <div class="head">
+      <button class="back" data-to="peers" aria-label="戻る">←</button>
+      <div class="grow"><div class="h-t" id="sess-title">セッション</div><div class="h-s" id="sess-sub"></div></div>
+      <button class="pill" id="sess-reload">更新</button>
+    </div>
+    <div class="scroll" id="sessions"><div class="empty">パソコンを選ぶ</div></div>
+  </section>
+
+  <section class="col chat">
+    <div class="head chat-head">
+      <button class="back" data-to="sessions" aria-label="戻る">←</button>
+      <div class="grow"><div class="h-t" id="h-title">会話</div><div class="h-s" id="h-sub"></div></div>
+      <span class="state" id="h-state" hidden></span>
+      <button class="pill" id="interrupt" hidden>中断</button>
+      <button class="pill" id="stop" hidden>停止</button>
+      <button class="pill" id="resume" hidden>続きから</button>
+    </div>
+    <div class="scroll" id="scroll"><div id="feed"><div class="empty">セッションを選ぶ</div></div></div>
+    <div class="hint" id="hint"></div>
+    <div class="compose" id="compose" hidden>
+      <textarea id="text" rows="1" placeholder="文を送る（⌘/Ctrl+Enter）"></textarea>
+      <button class="send" id="send">送る</button>
+    </div>
+  </section>
+</div>
+
+<script>
+// ---------- 道具 ----------
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+const home = (p) => String(p || "").replace(/^\/(Users|home)\/[^/]+/, "~");
+const base = (p) => String(p || "").split("/").filter(Boolean).pop() || p || "";
+const clock = (ts) => ts ? new Date(ts).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }) : "";
+function ago(ts) {
+  if (!ts) return "";
+  const s = Math.max(0, (Date.now() - ts) / 1000);
+  if (s < 60) return "今";
+  if (s < 3600) return `${Math.floor(s / 60)}分`;
+  if (s < 86400) return `${Math.floor(s / 3600)}時間`;
+  return `${Math.floor(s / 86400)}日`;
+}
+const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} } };
+const apiOf = (peer) => `/n/${encodeURIComponent(peer)}/api`;
+async function api(peer, path, init) {
+  const r = await fetch(apiOf(peer) + path, { ...init, headers: { ...(init && init.body ? { "content-type": "application/json" } : {}), ...(init && init.headers || {}) } });
+  const text = await r.text();
+  let v; try { v = text ? JSON.parse(text) : undefined; } catch { v = { error: text.slice(0, 200) }; }
+  if (!r.ok) throw new Error((v && v.error) || `${r.status}`);
+  return v;
+}
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+
+// 小さな Markdown。先に全部エスケープしてから、決まった形だけタグに戻す
+function md(src) {
+  const blocks = [];
+  let s = String(src).replace(/```[^\n]*\n([\s\S]*?)```/g, (_, code) => { blocks.push(`<pre><code>${esc(code.replace(/\n$/, ""))}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
+  const inline = (t) => esc(t)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  const out = [];
+  const lines = s.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const ph = l.match(/^\u0000(\d+)\u0000$/);
+    if (ph) { out.push(blocks[+ph[1]]); continue; }
+    if (/^\s*\|.*\|\s*$/.test(l)) {
+      const rows = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(lines[i++]);
+      i--;
+      const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const body = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
+      const [h, ...rest] = body;
+      out.push(`<div class="tbl"><table><thead><tr>${cells(h).map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rest.map((r) => `<tr>${cells(r).map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`);
+      continue;
+    }
+    if (/^\s*([-*]|\d+\.)\s+/.test(l)) {
+      const ordered = /^\s*\d+\./.test(l);
+      const items = [];
+      while (i < lines.length && /^\s*([-*]|\d+\.)\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*([-*]|\d+\.)\s+/, ""));
+      i--;
+      out.push(`<${ordered ? "ol" : "ul"}>${items.map((t) => `<li>${inline(t)}</li>`).join("")}</${ordered ? "ol" : "ul"}>`);
+      continue;
+    }
+    const h = l.match(/^(#{1,4})\s+(.*)$/);
+    if (h) { out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
+    if (/^\s*>\s?/.test(l)) { out.push(`<blockquote>${inline(l.replace(/^\s*>\s?/, ""))}</blockquote>`); continue; }
+    if (/^\s*(---|\*\*\*)\s*$/.test(l)) { out.push("<hr>"); continue; }
+    if (!l.trim()) { out.push(""); continue; }
+    const para = [l];
+    while (i + 1 < lines.length && lines[i + 1].trim() && !/^(\s*([-*]|\d+\.)\s+|#{1,4}\s|\s*\||\s*>|\u0000)/.test(lines[i + 1])) para.push(lines[++i]);
+    out.push(`<p>${para.map(inline).join("<br>")}</p>`);
+  }
+  return out.join("\n");
+}
+
+// ---------- 状態 ----------
+let peers = [];            // 登録簿
+const hosts = {};          // peer → /api/host
+const counts = {};         // peer → 動いている数
+let sessions = [];         // 選んだ peer のセッション
+let cur = { peer: store.get("cc.peer") || null, id: store.get("cc.session") || null };
+let es = null;             // 会話の SSE
+let listEs = null;         // 一覧の SSE
+let lastSeq = 0;
+let detail = null;         // 会話中のセッションの詳細
+const pending = new Map(); // requestId → 承認の要求
+const dotOf = (s) => s.state === "running" ? "busy" : s.state === "waiting_permission" ? "wait" : s.state === "exited" ? "" : "ok";
+const stateJa = { running: "動いている", waiting_permission: "承認待ち", idle: "待機", exited: "終了" };
+function view(name) { $("app").className = `app view-${name}`; }
+
+// ---------- パソコン ----------
+async function loadPeers() {
+  try {
+    const r = await fetch("/api/peers");
+    const v = await r.json();
+    if (!r.ok) throw new Error(v.error || r.status);
+    peers = Array.isArray(v) ? v : [];
+  } catch (e) { $("peers-sub").textContent = `登録簿が読めない: ${e.message}`; return; }
+  $("peers-sub").textContent = `${peers.length} 台`;
+  renderPeers();
+  fillNewPeers();
+  await Promise.all(peers.map(async (p) => {
+    if (p.status !== "healthy" && p.status !== "degraded") { delete hosts[p.name]; return; }
+    try {
+      const [h, list] = await Promise.all([withTimeout(api(p.name, "/host"), 6000), withTimeout(api(p.name, "/sessions"), 6000)]);
+      hosts[p.name] = h;
+      counts[p.name] = list.filter((s) => s.state === "running" || s.state === "waiting_permission").length;
+    } catch (e) { hosts[p.name] = { error: e.message }; }
+    renderPeers();
+  }));
+  if (cur.peer && peers.some((p) => p.name === cur.peer)) openPeer(cur.peer, true);
+}
+function renderPeers() {
+  if (!peers.length) { $("peers").innerHTML = `<div class="empty">ノードが無い</div>`; return; }
+  $("peers").innerHTML = peers.map((p) => {
+    const h = hosts[p.name];
+    const up = p.status === "healthy" || p.status === "degraded";
+    const l2 = h && !h.error ? `claude ${esc(String(h.claudeVersion || "?").replace(/\s*\(Claude Code\)/, ""))} · ${esc(h.account || "")}` : h && h.error ? `届かない: ${esc(h.error)}` : up ? "読んでいる" : esc(p.status);
+    const busy = counts[p.name] || 0;
+    const l3 = h && !h.error ? `<span class="dot ${busy ? "busy" : "ok"}"></span><span class="txt">${busy ? `${busy} 件が動いている` : "静か"} · 負荷 ${esc((h.load && h.load[0] != null ? h.load[0].toFixed(2) : "?"))}</span>` : `<span class="dot"></span><span class="txt">${up ? "" : "down"}</span>`;
+    return `<button class="row ${cur.peer === p.name ? "on" : ""} ${up ? "" : "off"}" data-peer="${esc(p.name)}">
+      <div class="l1"><span class="ttl">${esc(p.name)}${p.self ? ' <span class="tag">ここ</span>' : ""}</span><span class="when">${esc(p.status)}</span></div>
+      <div class="l2">${l2}</div>
+      <div class="l3">${l3}</div></button>`;
+  }).join("");
+}
+$("peers").addEventListener("click", (e) => { const b = e.target.closest("[data-peer]"); if (b) openPeer(b.dataset.peer); });
+
+// ---------- セッション ----------
+async function openPeer(name, keep) {
+  cur.peer = name; store.set("cc.peer", name);
+  if (!keep) { cur.id = null; store.set("cc.session", null); closeChat(); }
+  renderPeers();
+  $("sess-title").textContent = name;
+  $("sess-sub").textContent = hosts[name] && !hosts[name].error ? home((hosts[name].roots || [])[0] || "") : "";
+  view("sessions");
+  await loadSessions();
+  watchList(name);
+  if (keep && cur.id) openChat(cur.id, true);
+}
+async function loadSessions() {
+  if (!cur.peer) return;
+  try { sessions = await api(cur.peer, "/sessions"); } catch (e) { $("sessions").innerHTML = `<div class="empty">読めない: ${esc(e.message)}</div>`; return; }
+  renderSessions();
+}
+function renderSessions() {
+  if (!sessions.length) { $("sessions").innerHTML = `<div class="empty">セッションが無い</div>`; return; }
+  const live = sessions.filter((s) => s.state !== "exited");
+  const past = sessions.filter((s) => s.state === "exited");
+  const row = (s) => `<button class="row ${cur.id === s.id ? "on" : ""} ${s.state === "exited" ? "off" : ""}" data-id="${esc(s.id)}">
+    <div class="l1"><span class="ttl">${esc(s.title || base(s.cwd) || s.id.slice(0, 8))}</span><span class="when">${esc(ago(s.lastActivityAt))}</span></div>
+    <div class="l2">${esc(home(s.cwd))}</div>
+    <div class="l3"><span class="dot ${dotOf(s)}"></span><span class="tag ${s.kind === "terminal" ? "term" : ""}">${esc(s.kind)}</span><span class="txt">${esc(stateJa[s.state] || s.state)}${s.parent ? ` · ${esc(s.parent)}` : ""}</span></div></button>`;
+  $("sessions").innerHTML = [...live.map(row), past.length ? `<div class="empty" style="padding:14px 16px 4px">過去 ${past.length} 件</div>` : "", ...past.slice(0, 50).map(row)].join("");
+}
+$("sessions").addEventListener("click", (e) => { const b = e.target.closest("[data-id]"); if (b) openChat(b.dataset.id); });
+$("sess-reload").addEventListener("click", loadSessions);
+function watchList(peer) {
+  if (listEs) listEs.close();
+  listEs = new EventSource(apiOf(peer) + "/events");
+  listEs.addEventListener("session", () => loadSessions());
+}
+setInterval(() => { if (cur.peer && !document.hidden) loadSessions(); }, 10000);
+
+// ---------- 会話 ----------
+const session = () => sessions.find((s) => s.id === cur.id);
+function closeChat() {
+  if (es) { es.close(); es = null; }
+  pending.clear(); detail = null;
+  $("feed").innerHTML = `<div class="empty">セッションを選ぶ</div>`;
+  $("h-title").textContent = "会話"; $("h-sub").textContent = "";
+  for (const id of ["h-state", "interrupt", "stop", "resume", "compose"]) $(id).hidden = true;
+}
+async function openChat(id, keep) {
+  cur.id = id; store.set("cc.session", id);
+  renderSessions();
+  view("chat");
+  if (es) { es.close(); es = null; }
+  pending.clear();
+  $("feed").innerHTML = `<div class="empty">読んでいる</div>`;
+  let s = session();
+  try { detail = await api(cur.peer, `/sessions/${id}`); } catch (e) { $("feed").innerHTML = `<div class="empty">読めない: ${esc(e.message)}</div>`; return; }
+  s = s || detail;
+  renderHead();
+  for (const p of detail.pending || []) pending.set(p.requestId, p);
+  let items = [];
+  try {
+    const r = await api(cur.peer, `/sessions/${id}/messages?after=0`);
+    items = r.messages || [];
+    lastSeq = items.length && items[items.length - 1].seq != null ? items[items.length - 1].seq : 0;
+    // 履歴はページ単位なので、続きがあれば読み切る
+    let next = r.next;
+    while (next != null && items.length && items[items.length - 1].seq == null && items.length < 4000) {
+      const more = await api(cur.peer, `/sessions/${id}/messages?after=${next}`);
+      if (!more.messages || !more.messages.length) break;
+      items = items.concat(more.messages); next = more.next;
+    }
+  } catch (e) { $("feed").innerHTML = `<div class="empty">読めない: ${esc(e.message)}</div>`; return; }
+  $("feed").innerHTML = items.map(itemHtml).filter(Boolean).join("") || `<div class="empty">まだ何も無い</div>`;
+  renderPending();
+  scrollBottom();
+  const draft = store.get(`cc.draft.${id}`); $("text").value = draft || ""; autosize();
+  if (detail.capabilities && detail.capabilities.events && detail.state !== "exited") watchChat(id);
+  if (!keep) $("text").focus();
+}
+function renderHead() {
+  const s = detail || session() || {};
+  $("h-title").textContent = s.title || base(s.cwd) || (s.id || "").slice(0, 8);
+  $("h-sub").textContent = `${cur.peer} · ${home(s.cwd)} · ${s.kind || ""}${s.model ? ` · ${s.model}` : ""}${s.permissionMode ? ` · ${s.permissionMode}` : ""}${s.parent ? ` · ${s.parent}` : ""}`;
+  const st = $("h-state"); st.hidden = false;
+  st.className = `state ${s.state === "running" || s.state === "waiting_permission" ? "busy" : s.state === "exited" ? "gone" : ""}`;
+  st.innerHTML = `<span class="dot ${dotOf(s)}"></span>${esc(stateJa[s.state] || s.state || "")}`;
+  const caps = s.capabilities || {};
+  $("interrupt").hidden = !caps.interrupt; $("stop").hidden = !caps.stop;
+  $("resume").hidden = !(s.state === "exited" && s.kind === "node");
+  $("compose").hidden = !caps.send;
+  $("hint").textContent = caps.send ? (s.kind === "terminal" ? "端末のセッション。文は「別セッションからのメッセージ」として届く。承認と中断はできない" : "") : s.state === "exited" ? "終了している。「続きから」で同じ会話を再開できる" : "";
+}
+function watchChat(id) {
+  es = new EventSource(`${apiOf(cur.peer)}/sessions/${id}/events?after=${lastSeq}`);
+  const onFrame = (ev) => {
+    let data; try { data = JSON.parse(ev.data); } catch { return; }
+    if (ev.lastEventId) lastSeq = Number(ev.lastEventId) || lastSeq;
+    const item = { seq: lastSeq, type: ev.type, data };
+    if (ev.type === "permission_request") { pending.set(data.requestId, data); renderPending(); bump(); return; }
+    if (ev.type === "permission_answered") { pending.delete(data.requestId); renderPending(); return; }
+    if (ev.type === "exited") { bump(); }
+    const html = itemHtml(item);
+    if (html) appendFeed(html);
+    if (ev.type === "result" || ev.type === "assistant" || ev.type === "exited" || ev.type === "system") bump();
+  };
+  for (const t of ["system", "assistant", "user", "result", "permission_request", "permission_answered", "exited", "gap", "rate_limit_event"]) es.addEventListener(t, onFrame);
+  es.onerror = () => { /* EventSource が Last-Event-ID で繋ぎ直す */ };
+}
+let bumpTimer = null;
+function bump() { clearTimeout(bumpTimer); bumpTimer = setTimeout(async () => { try { detail = await api(cur.peer, `/sessions/${cur.id}`); renderHead(); loadSessions(); } catch {} }, 300); }
+const nearBottom = () => { const el = $("scroll"); return el.scrollHeight - el.scrollTop - el.clientHeight < 80; };
+// 会話に1件足す。最初の「まだ何も無い」の札は消す
+function appendFeed(html) {
+  const atBottom = nearBottom();
+  const empty = $("feed").querySelector(":scope > .empty"); if (empty) empty.remove();
+  $("feed").insertAdjacentHTML("beforeend", html);
+  if (atBottom) scrollBottom();
+}
+const scrollBottom = () => { const el = $("scroll"); el.scrollTop = el.scrollHeight; };
+
+// 1件を HTML に。live のイベント（{seq,type,data}）でも履歴の行（{type,message}）でも
+function itemHtml(ev) {
+  const m = ev.data && typeof ev.data === "object" ? ev.data : ev;
+  const t = m.type;
+  if (t === "assistant") {
+    const content = m.message && m.message.content;
+    const parts = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
+    const html = parts.map((b) => {
+      if (b.type === "text" && b.text && b.text.trim()) return `<div class="say">${md(b.text)}</div>`;
+      if (b.type === "tool_use") return toolHtml(b.name, b.input);
+      return "";
+    }).join("");
+    return html ? `<div class="msg ai"><div class="who">Claude <span>${esc(clock(ev.at))}</span></div>${html}</div>` : "";
+  }
+  if (t === "user") {
+    const content = m.message && m.message.content;
+    if (typeof content === "string") return userHtml(content, ev.at);
+    if (Array.isArray(content)) {
+      const texts = content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+      const results = content.filter((b) => b.type === "tool_result").map((b) => {
+        const body = typeof b.content === "string" ? b.content : Array.isArray(b.content) ? b.content.map((c) => c.text || "").join("\n") : JSON.stringify(b.content);
+        return `<details class="tool"><summary><span class="n">結果</span><span class="d">${esc(String(body).split("\n")[0].slice(0, 120))}</span></summary><pre>${esc(String(body).slice(0, 4000))}</pre></details>`;
+      }).join("");
+      return (texts.trim() ? userHtml(texts, ev.at) : "") + results;
+    }
+    return "";
+  }
+  if (t === "result") return `<div class="result">${esc(m.subtype || "result")}${m.duration_ms ? ` · ${(m.duration_ms / 1000).toFixed(1)}s` : ""}${m.total_cost_usd != null ? ` · $${Number(m.total_cost_usd).toFixed(3)}` : ""}</div>`;
+  if (t === "exited") return `<div class="note bad">終了: ${esc(m.reason || "")}</div>`;
+  if (t === "gap") return `<div class="note">${esc(m.from)}〜${esc(m.to)} は流れた</div>`;
+  if (t === "rate_limit_event") return "";
+  return "";
+}
+function userHtml(text, at) {
+  const m = String(text).match(/^from (\S+) via (\S+)\s*\n\n?([\s\S]*)$/);
+  const from = m ? `<span class="from">${esc(m[1])} · ${esc(m[2])}</span>` : "";
+  const body = m ? m[3] : text;
+  return `<div class="msg me"><div class="who">${from || "あなた"} <span>${esc(clock(at))}</span></div><div class="say">${md(body)}</div></div>`;
+}
+function toolHtml(name, input) {
+  const i = input || {};
+  const d = i.description || i.file_path || i.command || i.pattern || i.url || i.prompt || "";
+  return `<details class="tool"><summary><span class="n">${esc(name)}</span><span class="d">${esc(String(d).split("\n")[0].slice(0, 140))}</span></summary><pre>${esc(JSON.stringify(i, null, 1).slice(0, 4000))}</pre></details>`;
+}
+function renderPending() {
+  const old = document.querySelectorAll("#feed .perm"); old.forEach((n) => n.remove());
+  const html = [...pending.values()].map((p) => `<div class="perm" data-rid="${esc(p.requestId)}">
+    <div class="pt"><span>承認を待っている</span><span class="n">${esc(p.toolName)}</span><span class="d">${esc(p.description || "")}</span></div>
+    <pre>${esc(JSON.stringify(p.input || {}, null, 1).slice(0, 2000))}</pre>
+    <div class="acts"><button class="pill ink" data-act="allow">許可</button><button class="pill arm" data-act="deny">拒否</button></div></div>`).join("");
+  if (html) { const atBottom = nearBottom(); $("feed").insertAdjacentHTML("beforeend", html); if (atBottom) scrollBottom(); }
+}
+$("feed").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-act]"); if (!b) return;
+  const rid = b.closest(".perm").dataset.rid;
+  const act = b.dataset.act;
+  let body = { behavior: "allow" };
+  if (act === "deny") { const reason = prompt("拒否の理由（Claude に伝える）", "今はやらない"); if (reason == null) return; body = { behavior: "deny", message: reason }; }
+  b.disabled = true;
+  try { await api(cur.peer, `/sessions/${cur.id}/permissions/${rid}`, { method: "POST", body: JSON.stringify(body) }); pending.delete(rid); renderPending(); bump(); }
+  catch (err) { alert(`失敗: ${err.message}`); b.disabled = false; }
+});
+
+// 送る
+function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * .4) + "px"; }
+$("text").addEventListener("input", () => { autosize(); store.set(`cc.draft.${cur.id}`, $("text").value || null); });
+$("text").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); } });
+$("send").addEventListener("click", send);
+async function send() {
+  const text = $("text").value.trim(); if (!text || !cur.id) return;
+  $("send").disabled = true;
+  try {
+    const r = await api(cur.peer, `/sessions/${cur.id}/messages`, { method: "POST", body: JSON.stringify({ text }) });
+    $("text").value = ""; autosize(); store.set(`cc.draft.${cur.id}`, null);
+    // ノードが立てたセッションは自分の文をイベントとして流さないので、送った文はここで出す
+    appendFeed(userHtml(text, Date.now()));
+    if (!es) appendFeed(`<div class="note">送った（${esc(r.delivered)}）。端末の返事は一覧の更新で読む</div>`);
+  } catch (err) { alert(`送れない: ${err.message}`); }
+  $("send").disabled = false; $("text").focus();
+}
+$("interrupt").addEventListener("click", async () => { try { await api(cur.peer, `/sessions/${cur.id}/interrupt`, { method: "POST", body: "{}" }); } catch (err) { alert(`中断できない: ${err.message}`); } });
+let stopArmed = null;
+$("stop").addEventListener("click", async () => {
+  const b = $("stop");
+  if (!b.classList.contains("arm")) { b.classList.add("arm"); b.textContent = "本当に止める"; clearTimeout(stopArmed); stopArmed = setTimeout(() => { b.classList.remove("arm"); b.textContent = "停止"; }, 4000); return; }
+  b.classList.remove("arm"); b.textContent = "停止";
+  try { await api(cur.peer, `/sessions/${cur.id}`, { method: "DELETE" }); if (es) { es.close(); es = null; } await loadSessions(); detail = await api(cur.peer, `/sessions/${cur.id}`).catch(() => detail); renderHead(); }
+  catch (err) { alert(`止められない: ${err.message}`); }
+});
+$("resume").addEventListener("click", async () => {
+  const s = detail || session(); if (!s) return;
+  const text = $("text").value.trim() || prompt("再開の最初の文", "続きを");
+  if (!text) return;
+  try {
+    const r = await api(cur.peer, "/sessions", { method: "POST", body: JSON.stringify({ cwd: s.cwd, resume: s.id, prompt: text }) });
+    $("text").value = ""; store.set(`cc.draft.${cur.id}`, null);
+    await loadSessions(); await openChat(r.id);
+    appendFeed(userHtml(text, Date.now()));
+  } catch (err) { alert(`再開できない: ${err.message}`); }
+});
+
+// 新しく
+function fillNewPeers() {
+  const sel = $("new-peer");
+  sel.innerHTML = peers.filter((p) => p.status === "healthy" || p.status === "degraded").map((p) => `<option value="${esc(p.name)}" ${p.name === cur.peer ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+}
+$("new-btn").addEventListener("click", () => { $("newform").hidden = !$("newform").hidden; if (!$("newform").hidden) { fillNewPeers(); $("new-cwd").focus(); } });
+$("new-cancel").addEventListener("click", () => { $("newform").hidden = true; });
+$("newform").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const peer = $("new-peer").value; const cwd = $("new-cwd").value.trim(); const promptText = $("new-prompt").value.trim(); const mode = $("new-mode").value;
+  if (!peer || !cwd || !promptText) { $("new-msg").textContent = "全部入れる"; return; }
+  $("new-msg").textContent = "立てている";
+  try {
+    const root = (hosts[peer] && hosts[peer].roots && hosts[peer].roots[0]) || "";
+    const abs = cwd.startsWith("~") ? cwd.replace(/^~/, root.replace(/\/$/, "")) : cwd;
+    const r = await api(peer, "/sessions", { method: "POST", body: JSON.stringify({ cwd: abs, prompt: promptText, permissionMode: mode }) });
+    $("new-msg").textContent = ""; $("newform").hidden = true; $("new-prompt").value = "";
+    await openPeer(peer, true); await openChat(r.id);
+    appendFeed(userHtml(promptText, Date.now()));
+  } catch (err) { $("new-msg").textContent = `失敗: ${err.message}`; }
+});
+
+// 戻る
+document.querySelectorAll(".back").forEach((b) => b.addEventListener("click", () => view(b.dataset.to)));
+document.addEventListener("visibilitychange", () => { if (!document.hidden && cur.peer) loadSessions(); });
+
+loadPeers();
+</script>
+</body>
+</html>
