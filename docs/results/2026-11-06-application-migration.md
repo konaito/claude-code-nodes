@@ -25,3 +25,25 @@
 - 何が起きた: `cc.fybe.jp/n/vm/...`の中継が502になった。incertotechからもこのMacからも、`vm.cc.fybe.jp`、`konaito-pro.cc.fybe.jp`、`incertotech.cc.fybe.jp`へのTLSがSNIの段で`alert 40 handshake failure`になる。`cc.fybe.jp`、`fybe.jp`、他の1階層のサブドメインは通る。
 - 原因: `fybe.jp, cc.fybe.jp, *.cc.fybe.jp`のAdvanced証明書パックが無くなっていた。このアカウントにはAdvanced Certificate Managerが無く（`quota advanced allocated 0`、作ろうとすると`[1450] … available with the Advanced Certificate Manager`）、一覧にある他のAdvancedパック（x-game、bridge、jiku、note、contextcap、jpyc-hensachi）はどれもWorkerのカスタムドメインに付いて自動で出たもの。`*.cc.fybe.jp`のパックも旧Worker `session-inbox-hub`のカスタムドメイン`cc.fybe.jp`に付いていて、Workerを消したときに一緒に消えた。設計書の「Advanced証明書パックが既にあり有効」は、この依存を見ていなかった。
 - 影響: `cc.fybe.jp`（Universalの`*.fybe.jp`で覆われる）と入口のincertotechのセッションは使える。各ノードのホスト名（`<name>.cc.fybe.jp`）は全部TLSで弾かれるので、中継、CLIの相手ノード呼び出し、`cc doctor`の外からのAPIが失敗する。
+
+## 直し方A: ノードのホスト名を1階層にした（本人が選んだ）
+
+- コード: ホスト名の組み立てを`config.ts`の`nodeHost(name, cfg)`（`cc-<name>.<zone>`）の1か所に集め、登録簿、CLI、`node add`、`node remove`、doctorがそれを使う（8a06a1c）。
+- Access: `cc setup --hosts 'cc-*.fybe.jp,cc.fybe.jp'`。アプリ`cc`は`cc-*.fybe.jp`と`cc.fybe.jp`、`cc-install`は`cc-*.fybe.jp/install`と`cc.fybe.jp/install`。部分ワイルドカードは、APIが受け付けたうえで、`cc-vm.fybe.jp`への認証無しの要求がAccessのログインへ302になることで効いていると確かめた。
+- トンネルとDNS: 3台ともingressを`cc-<name>.fybe.jp`に張り替え（incertotechは`cc.fybe.jp`も残す）、CNAMEを作り、旧の`<name>.cc.fybe.jp`を消した。
+- 実行物: incertotechにはsshでcheckoutを入れ、MacとVMは`cc update`で`https://cc.fybe.jp/install/cc.tar.gz`から入れた。
+- 確認:
+  - 3台ともdoctorの「外からのAPI」が200（`https://cc-<name>.fybe.jp/api/host`）。
+  - `https://cc.fybe.jp/api/peers`に3台healthy。`/n/vm`、`/n/konaito-pro`、`/n/incertotech`の中継がどれも200。
+  - Macの端末から`cc new /Users/konaito "…" --peer incertotech --as review --mode plan`、`cc read`で`ok`、`cc stop`。
+  - 本人のChromeで`https://cc.fybe.jp/`を開くと、3台が並び、3台ともセッション一覧が読めた（vm 14件、konaito-pro 100件、incertotech 23件）。
+
+## 移行後の構成
+
+| もの | 値 |
+| --- | --- |
+| 入口 | `cc.fybe.jp` → トンネル`cc-incertotech` |
+| ノード | `cc-incertotech.fybe.jp`（4323）、`cc-konaito-pro.fybe.jp`（4323）、`cc-vm.fybe.jp`（4322） |
+| Access | アプリ`cc`（720h、owner allowとnodes non_identity）、`cc-install`（bypass） |
+| サービストークン | `cc-node`だけ |
+| 旧の控え | `~/.config/session-inbox/migration-backup-20261106/`（Macとincertotech） |
