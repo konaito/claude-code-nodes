@@ -119,6 +119,8 @@ test("node add never writes the token to stdout", async () => {
   expect(all).not.toContain("TUNNEL-TOKEN");
   expect(all).toContain("curl -fsSL https://vm.cc.fybe.jp/install | sh");
   expect(w.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels create --name", "tunnels config update", "dns records create", "tunnels token get"]);
+  const dns = w.calls.find((c) => c.slice(0, 3).join(" ") === "dns records create")!;
+  expect(JSON.parse(dns[dns.indexOf("--body") + 1]!).name).toBe("cc-vm.fybe.jp");
   const noClip = world({ clipboard: async () => false });
   saveConfig(loadConfig(join(w.configDir, "cc.json")), join(noClip.configDir, "cc.json"));
   await main(["node", "add", "vm2"], noClip.ctx);
@@ -193,7 +195,7 @@ test("doctor reports ng when the external API returns 530", async () => {
   saveConfig({ name: "pro", port: 4323, roots: [w.home], domain: "cc.fybe.jp", serviceToken: { clientId: "cid", clientSecret: "csec" } }, join(w.configDir, "cc.json"));
   const ctx = { ...w.ctx, fetchFn: (async (i: RequestInfo | URL) => {
     const u = new URL(new Request(i).url);
-    if (u.hostname === "pro.cc.fybe.jp") return new Response("error code: 530", { status: 530 });
+    if (u.hostname === "cc-pro.fybe.jp") return new Response("error code: 530", { status: 530 });
     return new Response(u.pathname.endsWith("/events") ? "" : JSON.stringify({ name: "pro", id: "s1", pending: [], state: "idle", capabilities: { events: true } }), { headers: { "content-type": "application/json" } });
   }) as unknown as typeof fetch };
   expect(await main(["doctor"], ctx)).toBe(1);

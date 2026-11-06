@@ -1,7 +1,7 @@
 // cc の参加側の命令。setup（1回だけの準備）、node add/remove、entry、install、update、uninstall、doctor、serve。cf、常駐、端末、ファイルは deps の裏
 import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { entryOf, loadConfig, saveConfig, type Config } from "../config";
+import { entryOf, loadConfig, nodeHost, saveConfig, type Config } from "../config";
 import type { Runner } from "../engine/agents";
 import { createNodeTunnel, ensureAccessApp, ensureBypassApp, ensureServiceToken, nodeTunnelToken, removeNodeTunnel, setEntry, type CfRunner } from "../join/cf";
 import { configFromToken, decodeJoinToken, encodeJoinToken, JoinTokenError, type JoinToken } from "../join/token";
@@ -42,7 +42,7 @@ export function joinCommands(d: JoinDeps) {
 
   async function setup(flags: Parsed["flags"], ctx: Ctx): Promise<number> {
     const hosts = (str(flags.hosts) ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    if (!hosts.length) throw new CliError(1, "--hosts <a,b> が要る（例: '*.cc.fybe.jp'）");
+    if (!hosts.length) throw new CliError(1, "--hosts <a,b> が要る（例: 'cc-*.fybe.jp,cc.fybe.jp'）");
     const had = existsSync(configPath);
     const cfg = loadConfig(configPath);
     const tok = await ensureServiceToken(d.cf, { name: "cc-node", duration: "8760h" });
@@ -76,7 +76,7 @@ export function joinCommands(d: JoinDeps) {
     if (!name) throw new CliError(1, `node ${reissue ? "token" : "add"} には <name> が要る`);
     const cfg = needSetup(loadConfig(configPath));
     const port = num(flags.port, 4322);
-    const hostname = `${name}.${cfg.domain}`;
+    const hostname = nodeHost(name, cfg);
     const entry = entryOf(cfg)!;
     const { tunnelId, token } = reissue ? await nodeTunnelToken(d.cf, { name }) : await createNodeTunnel(d.cf, { name, hostname, port, zone: cfg.zone });
     const jt: JoinToken = { v: 1, name, port, domain: cfg.domain, zone: cfg.zone, teamDomain: cfg.teamDomain, aud: cfg.aud, accountId: cfg.accountId, entry, tunnelToken: token, serviceToken: cfg.serviceToken, cfApiToken: cfg.cfApiToken };
@@ -189,9 +189,9 @@ export function joinCommands(d: JoinDeps) {
     const local = clientFor(cfg, undefined, "doctor", ctx.env);
     const host = await api<{ name: string }>(local, "GET", "/api/host", undefined, ctx.fetchFn).catch(() => undefined);
     line(!!host, `手元の API http://127.0.0.1:${cfg.port}/api/host${host ? ` (${host.name})` : ""}`);
-    if (cfg.domain && cfg.serviceToken) {
+    if ((cfg.zone || cfg.domain) && cfg.serviceToken) {
       // clientFor は自分の名前だと 127.0.0.1 に向くので、外からの経路（Access → トンネル → ノード）は URL を直接組む
-      const url = `https://${cfg.name}.${cfg.domain}/api/host`;
+      const url = `https://${nodeHost(cfg.name, cfg)}/api/host`;
       const r = await ctx.fetchFn(url, { headers: { "cf-access-client-id": cfg.serviceToken.clientId, "cf-access-client-secret": cfg.serviceToken.clientSecret } }).catch(() => undefined);
       line(!!(r && r.ok), `外からの API ${url}${r ? ` → ${r.status}` : "（繋がらない）"}`);
     } else {
@@ -220,7 +220,7 @@ export function joinCommands(d: JoinDeps) {
         if (sub === "remove") {
           if (!name) throw new CliError(1, "node remove には <name> が要る");
           const cfg = needSetup(loadConfig(configPath));
-          await removeNodeTunnel(d.cf, { name, hostname: `${name}.${cfg.domain}`, zone: cfg.zone });
+          await removeNodeTunnel(d.cf, { name, hostname: nodeHost(name, cfg), zone: cfg.zone });
           ctx.out(`トンネル cc-${name} と DNS を消した`);
           return 0;
         }

@@ -1,10 +1,11 @@
 // Cloudflare のトンネル一覧を登録簿として読む。名前が cc- で始まるトンネルを全部ノードとみなす。許可リストは持たない
 import { RegistryError, type Peer, type PeerStatus, type Registry } from "./registry";
+import { nodeHost } from "../config";
 
 export type CloudflareDeps = {
   accountId: string;
   apiToken: string;    // Cloudflare Tunnel Read
-  domain: string;      // <name>.<domain> がノードの URL
+  zone: string;        // https://cc-<name>.<zone> がノードの URL（トンネル名と同じ）
   selfName: string;
   prefix?: string;     // 既定 "cc-"
   fetchFn?: typeof fetch;
@@ -42,7 +43,7 @@ export class CloudflareRegistry implements Registry {
     const body = (await r.json()) as { result?: Tunnel[] };
     return (body.result ?? [])
       .filter((t) => t.name.startsWith(this.prefix))
-      .map((t) => { const name = t.name.slice(this.prefix.length); return { name, url: `https://${name}.${this.deps.domain}`, status: t.status, self: name === this.deps.selfName }; })
+      .map((t) => { const name = t.name.slice(this.prefix.length); return { name, url: `https://${nodeHost(name, { zone: this.deps.zone })}`, status: t.status, self: name === this.deps.selfName }; })
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 }

@@ -46,6 +46,14 @@ export function saveConfig(cfg: Config, path = defaultPath()): void {
   chmodSync(path, 0o600);
 }
 
+// ノードのホスト名。1階層の cc-<name>.<zone>（トンネル名と同じ）にして、無料の証明書 *.<zone> で覆う。
+// 2階層（<name>.cc.fybe.jp）は Advanced 証明書が要り、このアカウントには無い（2026-11-06 の移行で分かった）
+export function nodeHost(name: string, cfg: { zone?: string; domain?: string }): string {
+  const zone = cfg.zone ?? cfg.domain?.split(".").slice(1).join(".");
+  if (!zone) throw new Error("cc.json に zone も domain も無い");
+  return `cc-${name}.${zone}`;
+}
+
 export function entryOf(cfg: Config): string | undefined {
   return cfg.entry ?? (cfg.domain ? `https://${cfg.domain}` : undefined);
 }

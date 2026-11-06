@@ -3,7 +3,7 @@ import { homedir, hostname } from "node:os";
 import { mkdtempSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, saveConfig, entryOf, APP_VERSION } from "../src/config";
+import { loadConfig, saveConfig, entryOf, nodeHost, APP_VERSION } from "../src/config";
 
 test("loadConfig falls back to hostname, 4322 and $HOME", () => {
   const c = loadConfig("/nonexistent/cc/cc.json");
@@ -31,4 +31,11 @@ test("entryOf falls back to https://<domain>", () => {
   expect(entryOf({ name: "vm", port: 4322, roots: [], domain: "cc.fybe.jp", entry: "https://vm.cc.fybe.jp" })).toBe("https://vm.cc.fybe.jp");
   expect(entryOf({ name: "vm", port: 4322, roots: [] })).toBeUndefined();
   expect(APP_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+});
+
+// ノードのホスト名は1階層（cc-<name>.<zone>）。無料の証明書（*.fybe.jp）で覆える
+test("nodeHost is cc-<name>.<zone>, derived from domain when zone is missing", () => {
+  expect(nodeHost("vm", { zone: "fybe.jp" })).toBe("cc-vm.fybe.jp");
+  expect(nodeHost("konaito-pro", { domain: "cc.fybe.jp" })).toBe("cc-konaito-pro.fybe.jp");
+  expect(() => nodeHost("vm", {})).toThrow();
 });

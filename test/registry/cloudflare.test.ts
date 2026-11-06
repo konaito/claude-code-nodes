@@ -15,14 +15,14 @@ function fakeFetch(status = 200, body: unknown = { result: tunnels }) {
   }) as typeof fetch;
   return { fetchFn, calls };
 }
-const deps = (fetchFn: typeof fetch, extra = {}) => ({ accountId: "acc", apiToken: "tok", domain: "cc.fybe.jp", selfName: "pro", fetchFn, ...extra });
+const deps = (fetchFn: typeof fetch, extra = {}) => ({ accountId: "acc", apiToken: "tok", zone: "fybe.jp", selfName: "pro", fetchFn, ...extra });
 
 test("maps cc- tunnels to peers with urls and marks self", async () => {
   const { fetchFn } = fakeFetch();
   const peers = await new CloudflareRegistry(deps(fetchFn)).peers();
   expect(peers).toEqual([
-    { name: "pro", url: "https://pro.cc.fybe.jp", status: "down", self: true },
-    { name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: false },
+    { name: "pro", url: "https://cc-pro.fybe.jp", status: "down", self: true },
+    { name: "vm", url: "https://cc-vm.fybe.jp", status: "healthy", self: false },
   ]);
 });
 

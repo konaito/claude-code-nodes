@@ -41,8 +41,9 @@ function identityFor(cfg: Config): Identity {
 
 // 登録簿。CF API トークンとアカウントがあれば Cloudflare のトンネル一覧、無ければ自分だけ
 function registryFor(cfg: Config): Registry {
-  if (cfg.cfApiToken && cfg.accountId && cfg.domain) {
-    return new CloudflareRegistry({ accountId: cfg.accountId, apiToken: cfg.cfApiToken, domain: cfg.domain, selfName: cfg.name });
+  const zone = cfg.zone ?? cfg.domain?.split(".").slice(1).join(".");
+  if (cfg.cfApiToken && cfg.accountId && zone) {
+    return new CloudflareRegistry({ accountId: cfg.accountId, apiToken: cfg.cfApiToken, zone, selfName: cfg.name });
   }
   return new StaticRegistry([{ name: cfg.name, url: entryOf(cfg) ?? `http://127.0.0.1:${cfg.port}`, status: "healthy", self: true }]);
 }

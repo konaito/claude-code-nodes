@@ -18,7 +18,7 @@ test("clientFor targets localhost without a service token and peers with it", ()
   expect(local.headers).toEqual({ "x-cc-from": "agent:pro/abcdef12/lead", "x-cc-via": "pro" });
   expect(clientFor(cfg, "pro", "lead", env).base).toBe("http://127.0.0.1:4323");
   const remote = clientFor(cfg, "vm", undefined, env);
-  expect(remote.base).toBe("https://vm.cc.fybe.jp");
+  expect(remote.base).toBe("https://cc-vm.fybe.jp");
   expect(remote.headers["cf-access-client-id"]).toBe("cid");
   expect(remote.headers["cf-access-client-secret"]).toBe("csec");
   expect(remote.headers["x-cc-from"]).toBe("agent:pro/abcdef12/parent");

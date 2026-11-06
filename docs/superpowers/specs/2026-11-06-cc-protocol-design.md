@@ -272,3 +272,4 @@ VMの127.0.0.1に立て、curlで作る、送る、SSEで読む、承認する�
 - 画面は3段。パソコン一覧（登録簿と各ノードの`/api/host`。本人の追加要望）、選んだパソコンのセッション一覧、選んだセッションの会話。PWA（manifestとsw）はv1に入れない。Markdownは旧画面と同じ自前の最小実装（どちらもこちらの判断）。
 - 試作のVMは`vm.cc.fybe.jp`（トンネル`cc-vm`）。順序はAccessアプリ、AccessIdentity（JWTの無い外部を403）、DNSとcloudflaredの順で、DNSを先に向けない。
 - 確認事項8の答え。`cf tunnels list`は0.66秒。登録簿のキャッシュは10秒程度のメモリで足りる。
+- ノードのホスト名を`<name>.cc.fybe.jp`から`cc-<name>.fybe.jp`（トンネル名と同じ1階層）に変えた（2026-11-06、本人が選んだ）。2階層を覆うAdvanced証明書は旧Workerのカスタムドメインに付いて自動で出ていたもので、Workerを消すと一緒に消え、このアカウントにはAdvanced Certificate Managerが無く作り直せない。1階層ならUniversalの`*.fybe.jp`で覆える。Accessアプリ`cc`は`cc-*.fybe.jp`と`cc.fybe.jp`を覆う。画面の入口`cc.fybe.jp`は変わらない。
