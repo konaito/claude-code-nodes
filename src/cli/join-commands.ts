@@ -1,5 +1,5 @@
-// cc の参加側の命令。setup（1回だけの準備）、node add/remove、entry、install、update、uninstall、doctor、serve。cf、常駐、端末、ファイルは deps の裏
-import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+// ccn の参加側の命令。setup（1回だけの準備）、node add/remove、entry、install、update、uninstall、doctor、serve。cf、常駐、端末、ファイルは deps の裏
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { entryOf, loadConfig, nodeHost, saveConfig, type Config } from "../config";
 import type { Runner } from "../engine/agents";
@@ -13,7 +13,7 @@ import { CliError, clientFor, api } from "./client";
 import { readUntilResult } from "./read";
 import type { Ctx } from "./commands";
 import type { Parsed } from "./args";
-import { CLI_NAME } from "./name";
+import { CLI_NAME, OLD_CLI_NAMES } from "./name";
 
 export type JoinDeps = {
   cf: CfRunner;
@@ -122,46 +122,64 @@ export function joinCommands(d: JoinDeps) {
     await services().install();
     ctx.out(`設定 ${configPath}、常駐を入れた（${d.platform === "darwin" ? "LaunchAgent jp.fybe.cc.*" : "systemd --user cc-*"}）`);
     await doctor(ctx);
-    ctx.out(`done: 実行物は ${join(d.appDir, "bin", "cc")}`);
+    ctx.out(`done: 実行物は ${binOf()}（${CLI_NAME}）`);
     return 0;
   }
 
-  // ~/.local/bin/<CLI_NAME> → <appDir>/bin/cc。PATH に別の同名の命令（macOS の /usr/bin/cc など）があれば置かずに案内する
-  async function linkBin(ctx: Ctx) {
-    const link = join(d.home, ".local", "bin", CLI_NAME);
-    const other = await d.run(["sh", "-c", `command -v ${CLI_NAME}`]);
-    const found = other.code === 0 ? other.stdout.trim() : "";
-    if (found && found !== link) { ctx.out(`PATH に ${found} があるので ${link} は置かない。使うときは ${join(d.appDir, "bin", "cc")} を呼ぶか alias を作る`); return; }
-    mkdirSync(join(d.home, ".local", "bin"), { recursive: true });
-    rmSync(link, { force: true });
-    symlinkSync(join(d.appDir, "bin", "cc"), link);
+  const binOf = () => join(d.appDir, "bin", CLI_NAME);
+  const localBin = (name: string) => join(d.home, ".local", "bin", name);
+  // 改名前の ~/.local/bin/cc のうち、実行物を指すリンクだけを消す。他人の cc（C コンパイラなど）には触らない
+  function dropOldLinks() {
+    for (const name of OLD_CLI_NAMES) {
+      const p = localBin(name);
+      try { if (lstatSync(p).isSymbolicLink() && readlinkSync(p) === join(d.appDir, "bin", name)) rmSync(p, { force: true }); } catch { /* 無い */ }
+    }
   }
 
-  async function update(ctx: Ctx): Promise<number> {
-    const cfg = loadConfig(configPath);
-    const entry = entryOf(cfg);
-    if (!entry) throw new CliError(1, "cc.json に entry も domain も無い");
-    const r = await ctx.fetchFn(`${entry}/install/cc.tar.gz`);
-    if (!r.ok) throw new CliError(1, `${entry}/install/cc.tar.gz → ${r.status}`);
-    const bytes = new Uint8Array(await r.arrayBuffer());
+  // ~/.local/bin/<CLI_NAME> → <appDir>/bin/<CLI_NAME>。PATH に別の同名の命令があれば置かずに案内する
+  async function linkBin(ctx: Ctx) {
+    dropOldLinks();
+    const link = localBin(CLI_NAME);
+    const other = await d.run(["sh", "-c", `command -v ${CLI_NAME}`]);
+    const found = other.code === 0 ? other.stdout.trim() : "";
+    if (found && found !== link) { ctx.out(`PATH に ${found} があるので ${link} は置かない。使うときは ${binOf()} を呼ぶか alias を作る`); return; }
+    mkdirSync(join(d.home, ".local", "bin"), { recursive: true });
+    rmSync(link, { force: true });
+    symlinkSync(binOf(), link);
+  }
+
+  // 入口の束（または --from の checkout）を app.new に広げて依存を入れ、app と入れ替える。リンクと child.md も新しい版に合わせる
+  async function update(flags: Parsed["flags"], ctx: Ctx): Promise<number> {
     const newDir = `${d.appDir}.new`;
     const oldDir = `${d.appDir}.old`;
-    const tgz = `${d.appDir}.new.tgz`;
     rmSync(newDir, { recursive: true, force: true });
     mkdirSync(newDir, { recursive: true });
-    writeFileSync(tgz, bytes);
-    const tar = Bun.spawn(["tar", "xzf", tgz, "-C", newDir], { stdout: "ignore", stderr: "pipe" });
-    const code = await tar.exited;
-    rmSync(tgz, { force: true });
-    if (code !== 0) throw new CliError(1, `tar が失敗した: ${await new Response(tar.stderr).text()}`);
+    const from = str(flags.from);
+    if (from) {
+      for (const rel of BUNDLE_PATHS) if (existsSync(join(from, rel))) cpSync(join(from, rel), join(newDir, rel), { recursive: true });
+    } else {
+      const cfg = loadConfig(configPath);
+      const entry = entryOf(cfg);
+      if (!entry) throw new CliError(1, "cc.json に entry も domain も無い");
+      const r = await ctx.fetchFn(`${entry}/install/cc.tar.gz`);
+      if (!r.ok) throw new CliError(1, `${entry}/install/cc.tar.gz → ${r.status}`);
+      const tgz = `${d.appDir}.new.tgz`;
+      writeFileSync(tgz, new Uint8Array(await r.arrayBuffer()));
+      const tar = Bun.spawn(["tar", "xzf", tgz, "-C", newDir], { stdout: "ignore", stderr: "pipe" });
+      const code = await tar.exited;
+      rmSync(tgz, { force: true });
+      if (code !== 0) throw new CliError(1, `tar が失敗した: ${await new Response(tar.stderr).text()}`);
+    }
     const inst = await d.run([d.bunPath, "install", "--frozen-lockfile", "--production", "--cwd", newDir]);
     if (inst.code !== 0) throw new CliError(1, `bun install が失敗した: ${inst.stdout.slice(0, 300)}`);
     rmSync(oldDir, { recursive: true, force: true });
     if (existsSync(d.appDir)) renameSync(d.appDir, oldDir);
     renameSync(newDir, d.appDir);
     rmSync(oldDir, { recursive: true, force: true });
+    linkSkill({ home: d.home, appDir: d.appDir, configDir: d.configDir, now: d.now() }, realFs);
+    await linkBin(ctx);
     await services().restart("node");
-    ctx.out(`更新した: ${d.appDir}。node を再起動した`);
+    ctx.out(`更新した: ${d.appDir}。node を再起動した。実行物は ${CLI_NAME}`);
     return 0;
   }
 
@@ -169,7 +187,8 @@ export function joinCommands(d: JoinDeps) {
     await services().uninstall();
     rmSync(join(d.home, ".local", "share", "cc"), { recursive: true, force: true });
     rmSync(d.configDir, { recursive: true, force: true });
-    rmSync(join(d.home, ".local", "bin", CLI_NAME), { force: true });
+    rmSync(localBin(CLI_NAME), { force: true });
+    dropOldLinks();
     ctx.out("常駐と ~/.local/share/cc と ~/.config/cc を消した。~/.claude/settings.json の crossSessionInbound とスキルのリンクは残している");
     return 0;
   }
@@ -233,7 +252,7 @@ export function joinCommands(d: JoinDeps) {
         return 0;
       }
       case "install": return install(flags, ctx);
-      case "update": return update(ctx);
+      case "update": return update(flags, ctx);
       case "uninstall": return uninstall(ctx);
       case "doctor": return doctor(ctx);
       case "serve": {

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-cc-web は cc.fybe.jp の中身。各機械で動くノードが、その機械の Claude Code セッションを HTTP と SSE で開放する。複数のノードを Cloudflare Tunnel と Access でつなぎ、画面（`/`）と CLI の `cc` から一覧、送信、権限応答、中断、停止を行う。設計の正本は `docs/superpowers/specs/2026-11-06-cc-protocol-design.md` で、作業の前に読む。
+cc-web は cc.fybe.jp の中身。各機械で動くノードが、その機械の Claude Code セッションを HTTP と SSE で開放する。複数のノードを Cloudflare Tunnel と Access でつなぎ、画面（`/`）と CLI の `ccn` から一覧、送信、権限応答、中断、停止を行う。設計の正本は `docs/superpowers/specs/2026-11-06-cc-protocol-design.md` で、作業の前に読む。
 
 ## コマンド
 
@@ -18,7 +18,7 @@ scripts/smoke.sh <port> [cwd]              # 127.0.0.1 のノードを curl で�
 scripts/smoke-remote.sh                    # サービストークンで外から叩く
 ```
 
-`bin/cc` は `bun run src/cli/cc.ts` を呼ぶだけの sh。CI は無いので、push の前に `bun test` と `tsc` を手元で回す。
+`bin/ccn` は `bun run src/cli/cc.ts` を呼ぶだけの sh で、`~/.local/bin/ccn` にリンクして使う。CI は無いので、push の前に `bun test` と `tsc` を手元で回す。
 
 ## 全体の形
 
@@ -37,11 +37,12 @@ scripts/smoke-remote.sh                    # サービストークンで外か�
 - 親子は保存しない。子に届く文の1行目の from 行（`src/identity/from-line.ts`、`from <呼び手> via <ノード>`）から、`History` と `GET /api/sessions?parent=` が導く。
 - `SessionStore` はメモリの台帳で、イベントに seq を振って SSE の購読に配る。
 - CLI は `src/cli/commands.ts`（セッション操作）と `src/cli/join-commands.ts`（setup、node add/token/remove、entry、install、update、uninstall、doctor、serve）に分かれる。`src/join/` はインストーラ、tar の束、launchd と systemd --user、cf CLI の呼び出しを持つ。
-- `skills/session-inbox/` は利用者の機械に配るスキルと child.md の正本。`cc install` が `~/.agents/skills/session-inbox` へリンクする。
+- `skills/session-inbox/` は利用者の機械に配るスキルと child.md の正本。`ccn install` が `~/.agents/skills/session-inbox` へリンクする。
 
 ## 決まっていること
 
 - 設定と秘密は `~/.config/cc/cc.json`（0600）にまとめる。トンネルトークンは別のファイル。秘密をシェル履歴、ps、リポジトリ、ログに残さない。
+- CLI の名前は `ccn`（`src/cli/name.ts`）。macOS には C コンパイラの `/usr/bin/cc` が必ずあり、`cc` にすると `~/.local/bin` にリンクを置けない。設定とアプリの置き場（`~/.config/cc`、`~/.local/share/cc`）は改名前のまま。
 - ノードのホスト名は `cc-<name>.fybe.jp`（1階層）。`*.cc.fybe.jp` を覆う証明書はもう無く、ACM も無いので、2階層のホスト名に戻さない。経緯は `docs/results/2026-11-06-application-migration.md`。
 - Cloudflare の操作は `cf` CLI で行う。削除とキャッシュの purge は `--force` が無いと非対話で止まる。
 - `@anthropic-ai/claude-agent-sdk` は CLI と同じ版（0.3.318）に固定し、`test/smoke.test.ts` が確かめる。

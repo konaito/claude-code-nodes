@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, existsSync, symlinkSync, readlinkSync, lstatSync } from "node:fs";
 import { decodeJoinToken } from "../../src/join/token";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,7 +62,7 @@ test("install writes cc.json and tunnel.token with 0600 and refuses a broken tok
   mkdirSync(join(src, "skills", "session-inbox"), { recursive: true });
   writeFileSync(join(src, "skills", "session-inbox", "child.md"), "child");
   writeFileSync(join(src, "package.json"), '{"version":"0.0.1"}');
-  mkdirSync(join(src, "bin")); writeFileSync(join(src, "bin", "cc"), "#!/bin/sh\n");
+  mkdirSync(join(src, "bin")); writeFileSync(join(src, "bin", "ccn"), "#!/bin/sh\n");
   expect(await main(["install", "--from", src], w.ctx)).toBe(0);
   expect(statSync(join(w.configDir, "cc.json")).mode & 0o777).toBe(0o600);
   expect(statSync(join(w.configDir, "tunnel.token")).mode & 0o777).toBe(0o600);
@@ -150,6 +150,69 @@ test("update swaps app.new into app and restarts node", async () => {
   expect(existsSync(`${w.appDir}.new`)).toBe(false);
   expect(w.runs.some((r) => r[0] === "/bun" && r[1] === "install")).toBe(true);
   expect(w.svc.restarts).toEqual(["node"]);
+});
+
+const isLink = (p: string) => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
+// macOS には /usr/bin/cc が必ずある。CLI の名前（ccn）はそれと被らないので、リンクは必ず置く
+const macRun = (runs: string[][]): JoinDeps["run"] => async (cmd) => {
+  runs.push(cmd);
+  if (cmd[0] === "sh") return / cc$/.test(cmd[2] ?? "") ? { stdout: "/usr/bin/cc\n", code: 0 } : { stdout: "", code: 1 };
+  return { stdout: "", code: 0 };
+};
+function bundleSrc(child = "child") {
+  const src = mkdtempSync(join(tmpdir(), "cc-src-"));
+  mkdirSync(join(src, "skills", "session-inbox"), { recursive: true });
+  writeFileSync(join(src, "skills", "session-inbox", "child.md"), child);
+  writeFileSync(join(src, "package.json"), '{"version":"9.9.9"}');
+  mkdirSync(join(src, "bin")); writeFileSync(join(src, "bin", "ccn"), "#!/bin/sh\n");
+  return src;
+}
+
+test("install links ~/.local/bin/ccn on a Mac that has /usr/bin/cc and drops the old cc link into the app", async () => {
+  const runs: string[][] = [];
+  const w = world({ run: macRun(runs) });
+  const bin = join(w.home, ".local", "bin");
+  mkdirSync(bin, { recursive: true });
+  symlinkSync(join(w.appDir, "bin", "cc"), join(bin, "cc"));
+  expect(await main(["install", "--from", bundleSrc()], w.ctx)).toBe(0);
+  expect(readlinkSync(join(bin, "ccn"))).toBe(join(w.appDir, "bin", "ccn"));
+  expect(isLink(join(bin, "cc"))).toBe(false);
+});
+
+test("update --from <dir> installs that checkout, relinks ccn and refreshes child.md", async () => {
+  const runs: string[][] = [];
+  const w = world({ run: macRun(runs) });
+  mkdirSync(w.appDir, { recursive: true });
+  writeFileSync(join(w.appDir, "old.txt"), "old");
+  saveConfig({ name: "vm", port: 4322, roots: [w.home], domain: "cc.fybe.jp" }, join(w.configDir, "cc.json"));
+  mkdirSync(join(w.home, ".config", "session-inbox"), { recursive: true });
+  writeFileSync(join(w.home, ".config", "session-inbox", "child.md"), "old child");
+  const ctx = { ...w.ctx, fetchFn: (async () => { throw new Error("must not fetch"); }) as unknown as typeof fetch };
+  expect(await main(["update", "--from", bundleSrc("new child")], ctx)).toBe(0);
+  expect(readFileSync(join(w.appDir, "package.json"), "utf8")).toBe('{"version":"9.9.9"}');
+  expect(existsSync(join(w.appDir, "old.txt"))).toBe(false);
+  expect(readlinkSync(join(w.home, ".local", "bin", "ccn"))).toBe(join(w.appDir, "bin", "ccn"));
+  expect(readFileSync(join(w.home, ".config", "session-inbox", "child.md"), "utf8")).toBe("new child");
+  expect(readFileSync(join(w.home, ".config", "session-inbox", "child.md.old-20261106-1234"), "utf8")).toBe("old child");
+  expect(w.svc.restarts).toEqual(["node"]);
+});
+
+test("uninstall removes the ccn link and an old cc link into the app, but keeps a foreign cc", async () => {
+  const w = world();
+  const bin = join(w.home, ".local", "bin");
+  mkdirSync(bin, { recursive: true });
+  symlinkSync(join(w.appDir, "bin", "ccn"), join(bin, "ccn"));
+  symlinkSync(join(w.appDir, "bin", "cc"), join(bin, "cc"));
+  saveConfig({ name: "vm", port: 4322, roots: [] }, join(w.configDir, "cc.json"));
+  expect(await main(["uninstall"], w.ctx)).toBe(0);
+  expect(isLink(join(bin, "ccn"))).toBe(false);
+  expect(isLink(join(bin, "cc"))).toBe(false);
+  const v = world();
+  const vbin = join(v.home, ".local", "bin");
+  mkdirSync(vbin, { recursive: true });
+  writeFileSync(join(vbin, "cc"), "someone else's cc");
+  expect(await main(["uninstall"], v.ctx)).toBe(0);
+  expect(readFileSync(join(vbin, "cc"), "utf8")).toBe("someone else's cc");
 });
 
 test("uninstall removes services and the cc directories", async () => {

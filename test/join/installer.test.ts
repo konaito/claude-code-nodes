@@ -3,7 +3,7 @@ import { installerScript } from "../../src/join/installer";
 import { BUNDLE_PATHS } from "../../src/join/bundle";
 
 test("installer reads the token from /dev/tty or stdin and never from argv", () => {
-  const s = installerScript({ entry: "https://vm.cc.fybe.jp", cliName: "cc" });
+  const s = installerScript({ entry: "https://vm.cc.fybe.jp", cliName: "ccn" });
   expect(s.startsWith("#!/bin/sh\n")).toBe(true);
   expect(s).toContain("/dev/tty");
   expect(s).toContain("read -r");
@@ -19,7 +19,7 @@ test("bundle paths are the source and nothing else", () => {
 
 // pbpaste のように末尾に改行が無い入力でも、read が EOF で止まらずにトークンを受け取る
 test("installer token read survives input without a trailing newline", async () => {
-  const s = installerScript({ entry: "https://vm.cc.fybe.jp", cliName: "cc" });
+  const s = installerScript({ entry: "https://vm.cc.fybe.jp", cliName: "ccn" });
   const begin = s.indexOf("# token-read-begin"); const end = s.indexOf("# token-read-end");
   expect(begin).toBeGreaterThan(0); expect(end).toBeGreaterThan(begin);
   const snippet = "set -eu\n" + s.slice(begin, end) + '\nprintf "%s" "$TOKEN"\n';
