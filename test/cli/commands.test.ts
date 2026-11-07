@@ -159,7 +159,7 @@ test("unknown command and missing config print usage and return 1", async () => 
   const c = ctx(fakeNode().fetchFn);
   expect(await main(["nope"], c)).toBe(1);
   expect(await main([], c)).toBe(1);
-  expect(c.lines.some((l) => l.includes("cc peers"))).toBe(true);
+  expect(c.lines.some((l) => l.includes("ccn peers"))).toBe(true);
 });
 
 test("ls skips a down peer with one line instead of calling it", async () => {

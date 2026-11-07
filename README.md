@@ -3,7 +3,7 @@
 cc.fybe.jp の中身。各機械で動くノードが、その機械の Claude Code セッションを HTTP と SSE で開放する。ノードは Cloudflare Tunnel と Access でつながり、どのノードも同じコードで動く。
 
 - https://cc.fybe.jp を開くと、つながっているパソコン、セッション、会話の3列が出る。画面から文を送り、権限に答え、中断と停止ができる。
-- 別の Claude Code からは CLI の `cc` で子セッションを立てて動かす。使い方は `skills/session-inbox/SKILL.md` にある。
+- 別の Claude Code からは CLI の `ccn` で子セッションを立てて動かす。使い方は `skills/session-inbox/SKILL.md` にある。
 - 設計は `docs/superpowers/specs/`、計画は `docs/superpowers/plans/`、試験と移行の記録は `docs/results/` にある。
 
 ## 機械を足す
@@ -11,7 +11,7 @@ cc.fybe.jp の中身。各機械で動くノードが、その機械の Claude C
 足す側の機械（cf にログイン済み）で参加トークンを作る。
 
 ```bash
-cc node add <name>       # トンネル cc-<name> と DNS を作り、参加トークンを1つ出す
+ccn node add <name>       # トンネル cc-<name> と DNS を作り、参加トークンを1つ出す
 ```
 
 新しい機械で入口のインストーラを動かし、聞かれたらトークンを貼る。
@@ -20,13 +20,14 @@ cc node add <name>       # トンネル cc-<name> と DNS を作り、参加ト�
 curl -fsSL https://cc.fybe.jp/install | sh
 ```
 
-インストーラは bun と cloudflared を入れ、アプリを `~/.local/share/cc/app` に置き、macOS では LaunchAgent、Linux では systemd --user でノードとトンネルを常駐させる。Claude Code のログインは機械ごとに人が行う。
+インストーラは bun と cloudflared を入れ、アプリを `~/.local/share/cc/app` に置いて `~/.local/bin/ccn` からリンクし、macOS では LaunchAgent、Linux では systemd --user でノードとトンネルを常駐させる。Claude Code のログインは機械ごとに人が行う。
 
 ```bash
-cc doctor                # claude の版、常駐、手元と外からの API、claude のログインを確かめる
-cc update                # 入口から最新の束を取り直して入れ替え、ノードを再起動する
-cc uninstall             # 常駐を止め、アプリと cc.json を消す
-cc node remove <name>    # トンネルと DNS を消す
+ccn doctor                # claude の版、常駐、手元と外からの API、claude のログインを確かめる
+ccn update                # 入口から最新の束を取り直して入れ替え、ノードを再起動する
+ccn update --from <checkout>   # 入口ではなく手元の checkout から入れる（入口のノード自身を更新するとき）
+ccn uninstall             # 常駐を止め、アプリと cc.json を消す
+ccn node remove <name>    # トンネルと DNS を消す
 ```
 
 ## 開発

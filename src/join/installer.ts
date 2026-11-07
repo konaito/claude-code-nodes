@@ -1,7 +1,7 @@
 // 新しい機械で `curl -fsSL <入口>/install | sh` として動くインストーラ。参加トークンは /dev/tty（無ければ標準入力）から1回読み、引数と環境変数には出さない
 export function installerScript(o: { entry: string; cliName: string }): string {
   return `#!/bin/sh
-# cc のインストーラ。bun と cloudflared を入れ、実行物を ~/.local/share/cc/app に置き、参加トークンで設定と常駐を作る
+# ccn のインストーラ。bun と cloudflared を入れ、実行物を ~/.local/share/cc/app に置き、参加トークンで設定と常駐を作る
 set -eu
 ENTRY="${o.entry}"
 TARBALL="${o.entry}/install/cc.tar.gz"
