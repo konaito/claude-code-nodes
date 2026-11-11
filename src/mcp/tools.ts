@@ -8,6 +8,7 @@ import { formatAgent } from "../identity/agent-name";
 import { render } from "../cli/read";
 import type { ApiCall } from "./server";
 import type { PendingPermission, SessionSummary } from "../sessions/types";
+import { clipInput, describePending } from "../sessions/pending";
 
 export type ToolClock = { now: () => number; sleep: (ms: number) => Promise<void>; pollMs: number };
 type Ctx = { nodeName: string; caller: Caller; api: ApiCall; clock: ToolClock };
@@ -100,7 +101,9 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async (a) => run(async () => {
     const t = await resolve(base, a.peer, a.session);
-    return { peer: t.peer, ...(await call<Detail>(base, "GET", t.peer, `/api/sessions/${t.id}`)) };
+    const d = await call<Detail>(base, "GET", t.peer, `/api/sessions/${t.id}`);
+    // shown は CLI の show と read_messages の [pending] と同じ1行。input は長い値を切って返す
+    return { peer: t.peer, ...d, pending: (d.pending ?? []).map((p) => ({ ...p, shown: describePending(p), input: clipInput(p.input) })) };
   })());
 
   server.registerTool("list_places", {
@@ -201,7 +204,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
   }, async (a) => run(async () => {
     const t = await resolve(base, a.peer, a.session);
     const r = await readMessages(base, t.peer, t.id, a.after ?? 0, Math.min(a.wait_seconds ?? DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS), a.max_chars ?? DEFAULT_MAX_CHARS);
-    const pending = r.pending.map((p) => `[pending] requestId=${p.requestId} ${p.toolName} ${p.description ?? ""}`.trim());
+    const pending = r.pending.map((p) => `[pending] requestId=${p.requestId} ${describePending(p)}`);
     return [...r.lines, ...pending, `stop=${r.stop} state=${r.state} pending=${r.pending.length} cursor=${r.cursor} session=${t.peer}/${t.id}`].join("\n");
   })());
 

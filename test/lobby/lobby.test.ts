@@ -66,11 +66,49 @@ test("ensureLobby writes .claude/settings.json with the ccn subcommands and abso
   expect(s.permissions.allow).toContain(`Read(/${home}/**)`); // // で始まる絶対パス
   expect(s.permissions.allow).toContain("Read(//srv/work/**)");
   expect(Object.keys(s)).toEqual(["permissions"]);              // hooks、env、additionalDirectories などは置かない
-  expect(Object.keys(s.permissions)).toEqual(["allow"]);
+  expect(Object.keys(s.permissions)).toEqual(["allow", "deny"]);
+  expect(s.permissions.deny).toContain(`Read(/${home}/.ssh/**)`);
+  expect(s.permissions.deny).toContain("Read(//srv/work/.config/ccn/**)");
+});
+
+// 受け口の roots はホームのことが多い。承認なしで読めるのは roots の下だが、秘密の置き場は deny で塞ぐ（deny は allow より先に評価される）
+const SECRET_DIRS = [".ssh", ".config/ccn", ".config/cc", ".cloudflared", ".aws", ".gnupg", ".config/gh", "Library/Keychains"];
+const SECRET_FILES = [".netrc", ".claude/.credentials.json"];
+const ANYWHERE = [".env", ".env.*", "*.pem", "*.key"];
+
+test("the lobby denies reading secret places under every root and the home, and secret file names anywhere", () => {
+  const deny = lobbySettings(["/home/u", "/srv/work"], { home: "/Users/node" }).permissions.deny;
+  for (const base of ["/home/u", "/srv/work", "/Users/node"]) {
+    for (const d of SECRET_DIRS) expect(deny).toContain(`Read(/${base}/${d}/**)`);
+    for (const f of SECRET_FILES) expect(deny).toContain(`Read(/${base}/${f})`);
+  }
+  for (const n of ANYWHERE) expect(deny).toContain(`Read(//**/${n})`);
+  // すべて // で始まる絶対パス（/ が1本だと設定ファイルの場所からの相対になる）で、Read の規則だけ
+  for (const r of deny) expect(r).toMatch(/^Read\(\/\/.+\)$/);
+  expect(new Set(deny).size).toBe(deny.length);
+});
+
+test("the lobby denies a config file read from outside the default place, with its tunnel token", () => {
+  const deny = lobbySettings(["/home/u"], { home: "/home/u", configFile: "/opt/ccn-test/ccn.json" }).permissions.deny;
+  expect(deny).toContain("Read(//opt/ccn-test/ccn.json)");
+  expect(deny).toContain("Read(//opt/ccn-test/tunnel.token)");
+  // 既定の置き場なら .config/ccn/** で足りるので重ねない
+  const same = lobbySettings(["/home/u"], { home: "/home/u", configFile: "/home/u/.config/ccn/ccn.json" }).permissions.deny;
+  expect(same).not.toContain("Read(//home/u/.config/ccn/ccn.json)");
+});
+
+test("the lobby's allow list has nothing that names a secret place or carves an exception out of deny", () => {
+  const { allow, deny } = lobbySettings(["/home/u"], { home: "/home/u", configFile: "/opt/x/ccn.json" }).permissions;
+  for (const rule of allow) {
+    expect(rule.startsWith("Read(!") || rule.includes("(!")).toBe(false); // ! の否定で deny に穴を開ける書き方
+    for (const s of [...SECRET_DIRS, ...SECRET_FILES, ".env", ".pem", ".key", "/opt/x"]) expect(rule).not.toContain(s);
+  }
+  // allow と deny に同じ規則が無い
+  for (const rule of allow) expect(deny).not.toContain(rule);
 });
 
 test("the lobby's allow list has no write, delete, network, git or broad rules", () => {
-  const allow = lobbySettings(["/home/u"]).permissions.allow;
+  const allow = lobbySettings(["/home/u"], { home: "/home/u" }).permissions.allow;
   for (const rule of allow) {
     // 許すのは ccn の決まった下位命令と、roots の下の Read だけ
     expect(rule).toMatch(new RegExp(`^(Bash\\(${CLI_NAME} (peers|ls|show|new|run|read|allow|deny|stop) \\*\\)|Read\\(//.+/\\*\\*\\))$`));

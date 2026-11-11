@@ -13,6 +13,7 @@ import { AccessIdentity } from "../../src/identity/access";
 import { StaticRegistry } from "../../src/registry/registry";
 import { Relay } from "../../src/relay/relay";
 import { makeKeys } from "../helpers/jwt";
+import { describePending } from "../../src/sessions/pending";
 
 const caps = (p: boolean) => ({ send: true, permissions: p, interrupt: p, stop: p, events: p });
 const settle = () => new Promise((r) => setTimeout(r, 10));
@@ -172,19 +173,33 @@ test("read_messages renders the turn and stops at result with the next cursor", 
 
 test("read_messages stops at a permission request and answer_permission answers the only pending one", async () => {
   const { app, live } = harness();
-  live.pendingList = [{ requestId: "r1", toolName: "Bash", input: {}, description: "rm", createdAt: 0 }];
-  live.push({ type: "permission_request", data: { requestId: "r1", toolName: "Bash", description: "rm" } });
+  const input = { command: "rm -rf /tmp/x", description: "Remove x" };
+  live.pendingList = [{ requestId: "r1", toolName: "Bash", input, description: "Remove x", createdAt: 0 }];
+  live.push({ type: "permission_request", data: { requestId: "r1", toolName: "Bash", input, description: "Remove x" } });
   await settle();
   const c = await connect(app);
   const out = text(await c.callTool({ name: "read_messages", arguments: { session: LIVE } }));
-  expect(out).toContain("[permission] Bash rm requestId=r1");
-  expect(out).toContain("[pending] requestId=r1 Bash rm");
+  // 説明文だけでなく command の本文が出る
+  expect(out).toContain('[permission] Bash command="rm -rf /tmp/x" ("Remove x") requestId=r1');
+  expect(out).toContain('[pending] requestId=r1 Bash command="rm -rf /tmp/x" ("Remove x")');
   expect(out).toContain("stop=permission");
   const denied = await c.callTool({ name: "answer_permission", arguments: { session: LIVE, behavior: "deny" } });
   expect(denied.isError).toBe(true);
   expect(text(denied)).toContain("deny needs a message");
   expect(json(await c.callTool({ name: "answer_permission", arguments: { session: LIVE, behavior: "allow" } }))).toMatchObject({ ok: true, requestId: "r1" });
   expect(live.answers).toEqual([{ requestId: "r1", a: { behavior: "allow" } }]);
+});
+
+test("get_session shows each pending request with the same line as the CLI and clips long input values", async () => {
+  const { app, live } = harness();
+  const content = "x".repeat(5000);
+  live.pendingList = [{ requestId: "w1", toolName: "Write", input: { file_path: "/srv/a.txt", content }, description: "/srv/a.txt", createdAt: 0 }];
+  const c = await connect(app);
+  const g = json(await c.callTool({ name: "get_session", arguments: { session: LIVE } })) as { pending: Array<{ shown: string; input: { content: string } }> };
+  expect(g.pending[0]!.shown).toBe(describePending(live.pendingList[0]!));
+  expect(g.pending[0]!.shown).toBe('Write file_path="/srv/a.txt"');
+  expect(g.pending[0]!.input.content.length).toBeLessThan(2100);
+  expect(g.pending[0]!.input.content).toEndWith("…(+3000字)");
 });
 
 test("read_messages cuts at max_chars and the cursor resumes after the last shown message", async () => {

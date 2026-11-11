@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { Config } from "../config";
 import type { SessionSummary } from "../sessions/types";
+import { describePending } from "../sessions/pending";
 import { parseArgs, type Parsed } from "./args";
 import { api, clientFor, CliError, readJson, request, type Client } from "./client";
 import { matchSession, parseTarget } from "./resolve";
@@ -24,7 +25,7 @@ export type Ctx = {
   // 参加側の命令（join-commands.ts）が使う
   join?: (words: string[], flags: Parsed["flags"], ctx: Ctx) => Promise<number | undefined>;
 };
-type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; description?: string }>; cursor?: number };
+type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; input?: Record<string, unknown>; description?: string }>; cursor?: number };
 type Peer = { name: string; url: string; status: string; self: boolean };
 
 export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
@@ -152,7 +153,7 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       for (const [k, v] of [["id", d.id], ["peer", c.peer], ["kind", d.kind], ["state", d.state], ["cwd", d.cwd], ["model", d.model], ["permissionMode", d.permissionMode], ["parent", d.parent], ["title", d.title], ["pid", d.pid], ["exitReason", d.exitReason], ["capabilities", caps], ["usage", d.usage ? JSON.stringify(d.usage) : undefined]] as const) {
         if (v !== undefined && v !== "") ctx.out(`${k}: ${String(v)}`);
       }
-      for (const p of d.pending ?? []) ctx.out(`pending: ${p.requestId} ${p.toolName} ${p.description ?? ""}`.trim());
+      for (const p of d.pending ?? []) ctx.out(`pending: ${p.requestId} ${describePending(p)}`);
       return 0;
     }
     case "new": {
@@ -210,7 +211,7 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       if (cmd === "deny" && rid && !reason && !pending.some((p) => p.requestId === rid)) { reason = rid; rid = undefined; }
       if (!rid) {
         if (pending.length === 1) rid = pending[0]!.requestId;
-        else throw new CliError(1, pending.length === 0 ? "保留中の承認が無い" : `保留が複数ある。requestId を指定する:\n${pending.map((p) => `  ${p.requestId} ${p.toolName}`).join("\n")}`);
+        else throw new CliError(1, pending.length === 0 ? "保留中の承認が無い" : `保留が複数ある。requestId を指定する:\n${pending.map((p) => `  ${p.requestId} ${describePending(p)}`).join("\n")}`);
       }
       if (cmd === "deny" && !reason) throw new CliError(1, "deny には理由が要る");
       await api(c, "POST", `/api/sessions/${s.id}/permissions/${rid}`, cmd === "allow" ? { behavior: "allow" } : { behavior: "deny", message: reason }, ctx.fetchFn);

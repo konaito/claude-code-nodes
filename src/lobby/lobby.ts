@@ -2,10 +2,13 @@
 // 起動のときにも呼ぶのは、入れ替え前の旧コードが走る初回の ccn update では、install と update の中の処理が動かないため
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { realpath } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
-import { CLI_NAME, LOBBY_TEMPLATE, PRODUCT_NAME } from "../names";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { CLI_NAME, configDirOf, LOBBY_TEMPLATE, legacyConfigDirOf, PRODUCT_NAME, TUNNEL_TOKEN_FILE } from "../names";
 
-export type LobbyOptions = { dir: string; appRoot: string; nodeName: string; roots: string[] };
+// home はノードを動かす利用者のホーム（秘密の置き場の基点）。configFile は読んでいる設定ファイル（CCN_CONFIG で既定の置き場の外にあることがあるので、そのファイルと隣の tunnel.token も deny に足す）
+export type LobbyOptions = { dir: string; appRoot: string; nodeName: string; roots: string[]; home?: string; configFile?: string };
+export type LobbySecrets = { home?: string; configFile?: string };
 export const LOBBY_CLAUDE_MD = "CLAUDE.md";
 export const LOBBY_SETTINGS = [".claude", "settings.json"]; // 本人が足す分は同じ場所の settings.local.json に書く
 
@@ -14,18 +17,49 @@ export const LOBBY_SETTINGS = [".claude", "settings.json"]; // 本人が足す�
 // git は入れない。git -C <dir> remote -v を許す規則は * を下位命令の前に置くことになり、-c で別の program を走らせる形まで通るため。
 // remote はひな形で <dir>/.git/config を読ませる
 export const LOBBY_CLI_SUBCOMMANDS = ["peers", "ls", "show", "new", "run", "read", "allow", "deny", "stop"] as const;
-export function lobbySettings(roots: string[]): { permissions: { allow: string[] } } {
+
+// 承認の有無にかかわらず読ませない秘密の置き場。roots とホームのそれぞれを基点にする（roots がホームでない機械や、allow が効かない bypassPermissions でも塞ぐため）。
+// deny は allow より先に評価され、allow で穴を開けられない（公式の permissions の文書）。Read の deny は Edit と Write、Bash の cat、head などにも当たる。
+// 当たらないのは、ファイル名を書かずに読む命令（grep -r）と、ファイルを自分で開くスクリプト
+export const LOBBY_SECRET_DIRS = [".ssh", ".gnupg", ".aws", ".cloudflared", relativeToHome(configDirOf), relativeToHome(legacyConfigDirOf), ".config/gh", "Library/Keychains"] as const;
+export const LOBBY_SECRET_FILES = [".netrc", ".claude/.credentials.json"] as const;
+// どこにあっても読ませないファイル名（//** はファイルシステムの根から）
+export const LOBBY_SECRET_NAMES = [".env", ".env.*", "*.pem", "*.key"] as const;
+function relativeToHome(of: (home: string) => string): string { return relative("/h", of("/h")); }
+
+// Read の // は絶対パス（先頭の / が1本だと設定ファイルの場所からの相対になる）
+const readRule = (abs: string) => `Read(/${abs})`;
+
+export function lobbyDeny(roots: string[], s: LobbySecrets = {}): string[] {
+  const bases = [...new Set([...roots, s.home ?? homedir()].map((r) => resolve(r)))];
+  const rules: string[] = [];
+  for (const b of bases) {
+    for (const d of LOBBY_SECRET_DIRS) rules.push(readRule(`${join(b, d)}/**`));
+    for (const f of LOBBY_SECRET_FILES) rules.push(readRule(join(b, f)));
+  }
+  for (const n of LOBBY_SECRET_NAMES) rules.push(readRule(`/**/${n}`));
+  // CCN_CONFIG で別の場所の設定を読んでいるときは、そのファイルと隣のトンネルトークンも塞ぐ
+  if (s.configFile) {
+    const f = resolve(s.configFile);
+    const covered = bases.some((b) => LOBBY_SECRET_DIRS.some((d) => f.startsWith(join(b, d) + sep)));
+    if (!covered) rules.push(readRule(f), readRule(join(dirname(f), TUNNEL_TOKEN_FILE)));
+  }
+  return [...new Set(rules)];
+}
+
+export function lobbySettings(roots: string[], s: LobbySecrets = {}): { permissions: { allow: string[]; deny: string[] } } {
   return {
     permissions: {
       allow: [
         ...LOBBY_CLI_SUBCOMMANDS.map((c) => `Bash(${CLI_NAME} ${c} *)`),
-        // Read の // は絶対パス（先頭の / が1本だと設定ファイルの場所からの相対になる）。ls、head、cat の対象もこれで決まる
-        ...roots.map((r) => `Read(/${resolve(r)}/**)`),
+        // ls、head、cat の対象もこれで決まる。秘密の置き場は deny が先に当たる
+        ...roots.map((r) => readRule(`${resolve(r)}/**`)),
       ],
+      deny: lobbyDeny(roots, s),
     },
   };
 }
-export const lobbySettingsText = (roots: string[]) => JSON.stringify(lobbySettings(roots), null, 2) + "\n";
+export const lobbySettingsText = (roots: string[], s: LobbySecrets = {}) => JSON.stringify(lobbySettings(roots, s), null, 2) + "\n";
 
 export function renderLobbyClaudeMd(template: string, o: Omit<LobbyOptions, "dir" | "appRoot"> & { dir: string }): string {
   return template
@@ -51,7 +85,7 @@ export function ensureLobby(o: LobbyOptions): { dir: string; written: boolean } 
   const template = readFileSync(join(o.appRoot, ...LOBBY_TEMPLATE), "utf8");
   mkdirSync(o.dir, { recursive: true });
   const md = writeIfChanged(join(o.dir, LOBBY_CLAUDE_MD), renderLobbyClaudeMd(template, o));
-  const settings = writeIfChanged(join(o.dir, ...LOBBY_SETTINGS), lobbySettingsText(o.roots));
+  const settings = writeIfChanged(join(o.dir, ...LOBBY_SETTINGS), lobbySettingsText(o.roots, { home: o.home, configFile: o.configFile }));
   return { dir: o.dir, written: md || settings };
 }
 

@@ -126,7 +126,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | stop | 意味 | 次にすること |
 | --- | --- | --- |
 | result | ターンが終わり、返事が出そろった | 読んで次を決める |
-| permission | 子がツールの承認を待っている | `[pending]` 行の requestId で `ccn:answer_permission` |
+| permission | 子がツールの承認を待っている | `[pending]` 行の中身（`command="…"`、`file_path="…"`）を見て、requestId で `ccn:answer_permission` |
 | exited | 子のプロセスが終わった | 続けるなら `ccn:create_session` に `resume=<id>`。終わった後の会話は位置で数え直すので、読み直すときは `after=0` |
 | timeout | まだ動いている | 同じ `session` で `after=<cursor>` を渡して呼び直す |
 | truncated | 文字数の上限に達した | `after=<cursor>` で続きを読む |

@@ -106,10 +106,10 @@ test("send with - reads the text from stdin", async () => {
 });
 
 test("read over sse returns 3 on permission_request and 4 on exited", async () => {
-  const perm = fakeNode({ sse: ev(2, "permission_request", { requestId: "r1", toolName: "Write", description: "/x.txt" }), pending: [{ requestId: "r1", toolName: "Write" }], detailState: "waiting_permission" });
+  const perm = fakeNode({ sse: ev(2, "permission_request", { requestId: "r1", toolName: "Write", input: { file_path: "/x.txt", content: "a" }, description: "/x.txt" }), pending: [{ requestId: "r1", toolName: "Write" }], detailState: "waiting_permission" });
   const c = ctx(perm.fetchFn);
   expect(await main(["read", "abcd1234", "--after", "0"], c)).toBe(3);
-  expect(c.lines.some((l) => l.includes("Write") && l.includes("r1"))).toBe(true);
+  expect(c.lines).toContain('[permission] Write file_path="/x.txt" requestId=r1');
   expect(c.lines.at(-1)).toBe("state=waiting_permission pending=1 seq=2");
   const dead = fakeNode({ sse: ev(2, "exited", { reason: "ended" }), detailState: "exited" });
   expect(await main(["read", "abcd1234", "--after", "0"], ctx(dead.fetchFn))).toBe(4);
@@ -144,11 +144,19 @@ test("allow picks the single pending request and deny needs a reason", async () 
 });
 
 test("show, interrupt and stop hit the right endpoints", async () => {
-  const n = fakeNode({ pending: [{ requestId: "r1", toolName: "Write", description: "/x" }] });
+  const n = fakeNode({ pending: [
+    { requestId: "r1", toolName: "Write", input: { file_path: "/x", content: "hi" }, description: "/x" },
+    { requestId: "r2", toolName: "Bash", input: { command: "git push origin main\nrm -rf /", description: "Push" }, description: "Push" },
+    { requestId: "r3", toolName: "Bash" },
+  ] });
   const c = ctx(n.fetchFn);
   expect(await main(["show", "abcd1234"], c)).toBe(0);
   expect(c.lines.some((l) => l.startsWith("state: idle"))).toBe(true);
-  expect(c.lines.some((l) => l.includes("r1") && l.includes("Write"))).toBe(true);
+  // 承認する側が中身で判断できるように、file_path と command を出す。改行は逃がして1行に収め、偽の pending: 行を作らせない
+  expect(c.lines).toContain('pending: r1 Write file_path="/x"');
+  expect(c.lines).toContain('pending: r2 Bash command="git push origin main\\nrm -rf /" ("Push")');
+  expect(c.lines).toContain("pending: r3 Bash (中身なし)");
+  expect(c.lines.filter((l) => l.startsWith("pending:"))).toHaveLength(3);
   expect(await main(["interrupt", "abcd1234"], c)).toBe(0);
   expect(await main(["stop", "abcd1234"], c)).toBe(0);
   expect(n.calls.map((x) => `${x.method} ${new URL(x.url).pathname}`)).toContain("POST /api/sessions/abcd1234-0000-0000-0000-000000000000/interrupt");

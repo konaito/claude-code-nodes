@@ -79,7 +79,7 @@ ccn stop <対象>                                       # 子を止める（json
 ## 状況の読み方
 
 - `ccn ls` の `parent` で、自分が立てていない子も探せる。
-- `state` が `waiting_permission` なら承認待ち。`ccn show` の `pending:` に requestId、ツール名、説明が出る。
+- `state` が `waiting_permission` なら承認待ち。`ccn show` の `pending:` に requestId、ツール名、中身（Bash は `command="…"`、Write、Edit、Read は `file_path="…"`、ほかは主な入力）、子が書いた説明 `("…")` の順で出る。長い値は `…(+N字)` で切れる。答えるときは説明ではなく中身を見る。
 - `state` が `exited` なら終了。`exitReason` に理由。`ccn new <dir> "<文>" --resume <id>` で同じ会話を続けられる。
 - 端末のセッションは `claude agents --json` の状態で、`running`、`waiting_permission`（権限か質問で止まっている）、`idle` のどれか。
 

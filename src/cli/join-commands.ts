@@ -53,7 +53,7 @@ export function joinCommands(d: JoinDeps) {
   // 受け口のディレクトリと CLAUDE.md、.claude/settings.json を、入れた版のひな形で書く。ノードの起動でも同じことをする
   function writeLobby(ctx: Ctx) {
     const cfg = loadConfig(readPath());
-    const r = prepareLobby({ dir: lobbyOf(cfg, d.home), appRoot: d.appDir, nodeName: cfg.name, roots: cfg.roots });
+    const r = prepareLobby({ dir: lobbyOf(cfg, d.home), appRoot: d.appDir, nodeName: cfg.name, roots: cfg.roots, home: d.home, configFile: readPath() });
     ctx.out("error" in r ? `-- 受け口 ${r.dir} を用意できない: ${r.error}` : `受け口 ${r.dir}${r.written ? "（CLAUDE.md と .claude/settings.json を書いた）" : ""}`);
   }
   const needSetup = (cfg: Config): Required<Pick<Config, "domain" | "zone" | "teamDomain" | "aud" | "accountId" | "serviceToken" | "cfApiToken">> & Config => {
@@ -338,7 +338,7 @@ export function joinCommands(d: JoinDeps) {
       case "doctor": return doctor(ctx);
       case "serve": {
         const { start } = await import("../main");
-        start(loadConfig(readPath()));
+        start(loadConfig(readPath()), readPath());
         return new Promise(() => {}); // 止まるまで戻らない
       }
       default: return undefined;

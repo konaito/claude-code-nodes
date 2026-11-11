@@ -14,7 +14,7 @@ import { listAgents, bunRunner } from "./engine/agents";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
 import { Relay } from "./relay/relay";
-import { entryOf, lobbyOf } from "./config";
+import { defaultPath, entryOf, lobbyOf } from "./config";
 import { prepareLobby } from "./lobby/lobby";
 
 export function buildDeps(cfg: Config): Deps {
@@ -57,9 +57,9 @@ async function account(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-export function start(cfg: Config) {
+export function start(cfg: Config, configPath = defaultPath()) {
   // 受け口を用意する。入れ替え前の旧コードが走る初回の ccn update では update の中の処理が動かないので、起動のたびにここでも行う
-  const lb = prepareLobby({ dir: lobbyOf(cfg), appRoot: join(import.meta.dir, ".."), nodeName: cfg.name, roots: cfg.roots });
+  const lb = prepareLobby({ dir: lobbyOf(cfg), appRoot: join(import.meta.dir, ".."), nodeName: cfg.name, roots: cfg.roots, home: homedir(), configFile: configPath });
   if ("error" in lb) console.error(`lobby ${lb.dir}: ${lb.error}`);
   const lobby = "error" in lb ? undefined : lb.dir;
   const app = createApp(buildDeps(cfg));
