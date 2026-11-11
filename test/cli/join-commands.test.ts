@@ -457,3 +457,45 @@ test("update moves tunnel.token even when ccn setup already wrote ccn.json, and 
   expect(loadConfig(join(w.configDir, "legacy-cc.json")).serviceToken?.clientId).toBe("cid");
   expect(existsSync(join(w.home, ".config", "cc"))).toBe(false);
 });
+
+test("update --from writes the lobby and its CLAUDE.md from the installed template", async () => {
+  const w = world({ run: macRun([]) });
+  saveConfig({ name: "vm", port: 4322, roots: [w.home] }, join(w.configDir, "ccn.json"));
+  const src = bundleSrc();
+  mkdirSync(join(src, "src", "lobby"), { recursive: true });
+  writeFileSync(join(src, "src", "lobby", "lobby-claude.md"), readFileSync(join(import.meta.dir, "..", "..", "src", "lobby", "lobby-claude.md"), "utf8"));
+  const ctx = { ...w.ctx, fetchFn: (async () => { throw new Error("must not fetch"); }) as unknown as typeof fetch };
+  expect(await main(["update", "--from", src], ctx)).toBe(0);
+  const md = readFileSync(join(w.home, ".local", "share", "ccn", "lobby", "CLAUDE.md"), "utf8");
+  expect(md).toContain("受け口（Claude Code Nodes、vm）");
+  const settings = JSON.parse(readFileSync(join(w.home, ".local", "share", "ccn", "lobby", ".claude", "settings.json"), "utf8"));
+  expect(settings.permissions.allow).toContain("Bash(ccn places *)");
+  expect((settings.permissions.allow as string[]).some((r) => r.startsWith("Read"))).toBe(false);
+  expect(w.lines.join("\n")).toContain("CLAUDE.md と .claude/settings.json を書いた");
+});
+
+test("install --from writes the lobby's CLAUDE.md and .claude/settings.json and keeps settings.local.json", async () => {
+  const w = world();
+  const src = mkdtempSync(join(tmpdir(), "cc-src-"));
+  mkdirSync(join(src, "skills", "ccn"), { recursive: true });
+  writeFileSync(join(src, "skills", "ccn", "child.md"), "child");
+  writeFileSync(join(src, "package.json"), '{"version":"0.0.1"}');
+  mkdirSync(join(src, "bin")); writeFileSync(join(src, "bin", "ccn"), "#!/bin/sh\n");
+  mkdirSync(join(src, "src", "lobby"), { recursive: true });
+  writeFileSync(join(src, "src", "lobby", "lobby-claude.md"), readFileSync(join(import.meta.dir, "..", "..", "src", "lobby", "lobby-claude.md"), "utf8"));
+  const lobby = join(w.home, ".local", "share", "ccn", "lobby");
+  mkdirSync(join(lobby, ".claude"), { recursive: true });
+  writeFileSync(join(lobby, ".claude", "settings.local.json"), "{}\n");
+  expect(await main(["install", "--from", src], w.ctx)).toBe(0);
+  expect(w.lines.join("\n")).toContain("CLAUDE.md と .claude/settings.json を書いた");
+  expect(readFileSync(join(lobby, "CLAUDE.md"), "utf8")).toContain("受け口（Claude Code Nodes、");
+  expect(JSON.parse(readFileSync(join(lobby, ".claude", "settings.json"), "utf8")).permissions.allow).toContain("Bash(ccn new *)");
+  expect(readFileSync(join(lobby, ".claude", "settings.local.json"), "utf8")).toBe("{}\n");
+});
+
+test("setup keeps a configured lobby", async () => {
+  const w = world();
+  saveConfig({ name: "konaito-pro", port: 4323, roots: [w.home], lobby: join(w.home, "lobby") }, join(w.configDir, "ccn.json"));
+  expect(await main(["setup", "--hosts", "*.cc.fybe.jp"], w.ctx)).toBe(0);
+  expect(loadConfig(join(w.configDir, "ccn.json")).lobby).toBe(join(w.home, "lobby"));
+});

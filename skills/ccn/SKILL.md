@@ -23,6 +23,8 @@ description: Claude Code Nodes（ccn）で、別の機械（またはこの機�
 ## 仕組み
 
 - 子はノードが `claude -p`（stream-json）で起動するセッション。親の文は子の会話に届き、1行目に `from agent:<ノード名>/<親の sessionId 先頭8文字>/<役割> via <送ったノード名>` が付く。この行から、画面と `ccn ls` の「parent」が親子をたどる。子はそれを作業依頼として扱うが、本人の発言ではないので、設定・権限・公開の操作は本人の確認を求める。
+- 各ノードには受け口（`~/.local/share/ccn/lobby`）がある。`ccn new` で dir を省くと受け口に立つ。受け口のセッションは依頼から行き先のディレクトリを探してそこに子を立て、返事に `子: <ノード名>/<sessionId>` の行を書く。行き先が分からないときに使う。
+- 文を省いて立てたセッションは、id がすぐ決まり、1通目（`ccn send`）が届くまで claude を起動しない（`state` は `idle`）。1通も届かないまま30分たつと消える。
 - 子の権限プロンプトには親が答えられる。`ccn new` の既定は `--mode bypassPermissions`（承認なし）。`--mode default` で立てると、子がツールを使うたびに `waiting_permission` で止まり、`ccn show` の `pending:` に出る。`ccn allow <対象>` か `ccn deny <対象> <理由>` で答える。
 - 子への文は1ターンに1件。子の返事は `ccn read` で読む（SSE で result まで待つ。トンネルが瞬断しても、最後に読んだ seq からつなぎ直す）。子から親へ送り返す道は無い。
 - 端末のセッション（人が `claude` で起動したもの。`ccn ls` で `terminal`）にも `ccn send` で届くが、「別セッションからのメッセージ」として扱われ、権限応答と中断はできない。`ccn read` は transcript をポーリングする。
@@ -31,7 +33,7 @@ description: Claude Code Nodes（ccn）で、別の機械（またはこの機�
 ## 流れ
 
 1. `ccn peers` でノードと状態を見る。`ccn ls` で全ノードのセッションを見る。
-2. 子が無ければ `ccn new <dir> "<最初の文>" --peer <ノード名> --as <役割>` で立てる。`<ノード名>/<sessionId>` が返る。
+2. 子が無ければ `ccn new <dir> "<最初の文>" --peer <ノード名> --as <役割>` で立てる。`<ノード名>/<sessionId>` が返る。行き先のディレクトリが分からないときは、`ccn new --peer <ノード名>` で受け口に立て、`ccn run <対象> "<依頼>"` の返事にある `子:` の行の子を使う。
 3. `ccn show <対象>` で状況を読む。`state`、`permissionMode`、`parent`、`pending`。
 4. 子が1体なら `ccn run <対象> "<文>" --as <役割> --wait 600` で送って返事を待つ。名乗る名前は CLI が `<ノード名>/<自分の sessionId の先頭8文字>/<役割>` に組み立てるので、`--as` は役割名だけ（例: lead、reviewer）。複数なら `ccn send` を全部出してから `ccn wait <対象>... --wait 600`。
 5. 終了コードで分ける。0 は返事が出そろった。2 は時間切れで、`ccn read <対象> --wait 600` で続きを待つ。3 は権限待ちで、`ccn show` の pending を見て `ccn allow` か `ccn deny`。4 は子が終了していて、`ccn new --resume <id>` で再開できる。
@@ -41,9 +43,11 @@ description: Claude Code Nodes（ccn）で、別の機械（またはこの機�
 
 ```bash
 ccn peers                                           # 登録簿（ノード、healthy/down、URL）
+ccn places [<語>...] [--peer <名>] [--json]          # 行き先の候補（roots と Documents の直下、README の先頭、remote、最近使ったか）
 ccn ls [--peer <名>] [--mine]                        # セッション一覧。--mine は自分が立てた子だけ
-ccn show <対象>                                      # 1つの詳細と pending（保留中の承認）
-ccn new <dir> "<文>" [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+ccn show [<対象>]                                    # 1つの詳細と pending（保留中の承認）。Claude Code の中で対象を省くと自分のセッション
+ccn new [<dir> ["<文>"]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+                                                    # dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
 ccn send <対象> "<文>|-" [--as <役割>]                # 文を送る。- は標準入力。送る前の seq を控える
 ccn read <対象> [--after <seq>] [--wait <秒>]         # 返事を読む（既定 120 秒）。終了コード 0/2/3/4
 ccn run <対象> "<文>" [--wait <秒>]                   # send のあと read（子が1体のとき）
@@ -76,7 +80,7 @@ ccn stop <対象>                                       # 子を止める（json
 ## 状況の読み方
 
 - `ccn ls` の `parent` で、自分が立てていない子も探せる。
-- `state` が `waiting_permission` なら承認待ち。`ccn show` の `pending:` に requestId、ツール名、説明が出る。
+- `state` が `waiting_permission` なら承認待ち。`ccn show` の `pending:` に requestId、ツール名、中身（Bash は `command="…"`、Write、Edit、Read は `file_path="…"`、ほかは主な入力）、子が書いた説明 `("…")` の順で出る。長い値は `…(+N字)` で切れる。答えるときは説明ではなく中身を見る。
 - `state` が `exited` なら終了。`exitReason` に理由。`ccn new <dir> "<文>" --resume <id>` で同じ会話を続けられる。
 - 端末のセッションは `claude agents --json` の状態で、`running`、`waiting_permission`（権限か質問で止まっている）、`idle` のどれか。
 

@@ -13,12 +13,15 @@ import type { Relay } from "../relay/relay";
 import { withFromLine } from "../identity/from-line";
 import type { McpOptions } from "../mcp/server";
 import { HttpError } from "./errors";
+import { lobbySettingsFor, secretBases } from "../lobby/lobby";
+import { scanPlaces, selectPlaces, usageOf, type ScannedPlace } from "../lobby/places";
 import { sse } from "./sse";
 
 export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: unknown; load: number[] };
 export type Deps = {
   nodeName: string;
   roots: string[];
+  lobby: string; // 受け口。cwd を省いて立てたセッションの置き場（names.ts の lobbyDirOf か設定の lobby）
   store: SessionStore;
   identity: Identity;
   history: History;
@@ -29,12 +32,15 @@ export type Deps = {
   registry: Registry;
   relay: Relay;
   appRoot: string; // 実行物の置き場。/install と /skill.md が配る
+  home?: string;       // 秘密の置き場の基点（places が辿らない場所）。無ければ os.homedir()
+  configFile?: string; // 読んでいる設定ファイル。places はこのファイルと隣の tunnel.token も読まない
   mcp?: McpOptions; // MCP の待ちの時計と間隔（試験で差し替える）。無ければ実時間
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
 
 const CACHE_MS = 2000; // 一覧のたびに claude を起動しないための短いメモリキャッシュ
+const PLACES_CACHE_MS = 10_000; // places の走査（README と .git/config を読む）のキャッシュ
 
 export class Sessions {
   private cache = new Map<string, { at: number; value: Promise<unknown> }>();
@@ -59,9 +65,27 @@ export class Sessions {
 
   async host() {
     const h = await this.d.host();
-    return { name: this.d.nodeName, roots: this.d.roots, ...h, rateLimit: h.rateLimit ?? this.d.store.rateLimit() };
+    // 受け口は symlink を解いた実体で返す（セッションの cwd と同じ形にして、画面が受け口のセッションを見分けられるように）
+    const lobby = await realpath(resolve(this.d.lobby)).catch(() => this.d.lobby);
+    return { name: this.d.nodeName, roots: this.d.roots, lobby, ...h, rateLimit: h.rateLimit ?? this.d.store.rateLimit() };
   }
   peers() { return this.d.registry.peers(); }
+  private scan?: { at: number; value: Promise<ScannedPlace[]> };
+  // 行き先の候補。roots の直下と Documents の直下のディレクトリごとに、README の先頭、remote、最近使われたかを返す（src/lobby/places.ts）
+  async places(q: string | null, limit: number | null) {
+    if (!this.scan || Date.now() - this.scan.at >= PLACES_CACHE_MS) {
+      const value = scanPlaces({ roots: this.d.roots, bases: secretBases(this.d.roots, { home: this.d.home }), configFile: this.d.configFile, lobby: this.d.lobby });
+      this.scan = { at: Date.now(), value };
+      value.catch(() => { this.scan = undefined; });
+    }
+    const [all, sessions, host] = await Promise.all([this.scan.value, this.list(null), realpath(resolve(this.d.lobby)).catch(() => this.d.lobby)]);
+    // 履歴の cwd は symlink を解いていないことがあるので、解いてから比べる
+    const cwds = new Map<string, string>();
+    await Promise.all([...new Set(sessions.map((s) => s.cwd).filter(Boolean))].map(async (c) => cwds.set(c, await realpath(c).catch(() => c))));
+    const used = usageOf(all, sessions.filter((s) => s.cwd).map((s) => ({ cwd: cwds.get(s.cwd) ?? s.cwd, lastActivityAt: s.lastActivityAt })));
+    const r = selectPlaces(all, used, { q: q ?? undefined, limit: limit ?? undefined });
+    return { name: this.d.nodeName, lobby: host, roots: this.d.roots, ...r };
+  }
   async list(parent: string | null): Promise<SessionSummary[]> {
     const live = this.d.store.list();
     const seen = new Set(live.map((s) => s.id));
@@ -71,25 +95,30 @@ export class Sessions {
     const all = [...live, ...terms, ...past];
     return parent ? all.filter((s) => s.parent === parent) : all;
   }
+  // cwd を省くと受け口に立てる。prompt も resume も無ければ id だけ先に決め、1通目（send）が来るまで claude を起動しない（state は idle）
   async create(req: Request, caller: Caller) {
     const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown };
-    if (typeof body.cwd !== "string" || !body.cwd) throw new HttpError(400, { error: "cwd is required" });
+    if (body.cwd !== undefined && (typeof body.cwd !== "string" || !body.cwd)) throw new HttpError(400, { error: "cwd must be a non-empty string or omitted (omit for the lobby)" });
+    const asked = typeof body.cwd === "string" ? body.cwd : this.d.lobby;
     // symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
-    const cwd = await realpath(resolve(body.cwd)).catch(() => null);
-    if (!cwd) throw new HttpError(400, { error: "cwd does not exist" });
+    const cwd = await realpath(resolve(asked)).catch(() => null);
+    if (!cwd) throw new HttpError(400, body.cwd === undefined ? { error: "lobby does not exist", lobby: this.d.lobby, hint: "restart the node or run ccn update" } : { error: "cwd does not exist" });
     if (!underRoot(cwd, await this.roots())) throw new HttpError(400, { error: "cwd is outside roots", roots: this.d.roots });
     const st = await stat(cwd).catch(() => null);
     if (!st?.isDirectory()) throw new HttpError(400, { error: "cwd is not a directory" });
-    if (!body.prompt && !body.resume) throw new HttpError(400, { error: "prompt or resume is required" });
     // 生きている id を fork 無しで resume すると古いプロセスが孤児になるので断る
     if (body.resume && !body.fork) {
       const liveOne = this.d.store.get(body.resume);
       if (liveOne && liveOne.summary().state !== "exited") throw new HttpError(409, { error: "session is still running", hint: "delete first" });
     }
-    const opts: StartOptions = { ...body, cwd, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
+    // sessionId は呼び手から受けない（既にある jsonl と重ねないため）。新規でプロンプトが無いときだけノードが決める
+    const sessionId = !body.prompt && !body.resume ? crypto.randomUUID() : undefined;
+    // settings は呼び手から受けない。受け口（resume を含む）のときだけ、ノードが書いた受け口の許可を渡す
+    const settings = await lobbySettingsFor(cwd, this.d.lobby);
+    const opts: StartOptions = { ...body, cwd, sessionId, settings, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
     const driver = await this.d.startNode(opts, caller);
     this.d.store.add(driver);
-    return { id: driver.id };
+    return { id: driver.id, cwd, state: driver.summary().state };
   }
   // cursor は送る前の末尾。CLI の send が控え、read の after にする
   async detail(id: string) {

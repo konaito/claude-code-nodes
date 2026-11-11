@@ -8,6 +8,7 @@ import { formatAgent } from "../identity/agent-name";
 import { render } from "../cli/read";
 import type { ApiCall } from "./server";
 import type { PendingPermission, SessionSummary } from "../sessions/types";
+import { clipInput, describePending } from "../sessions/pending";
 
 export type ToolClock = { now: () => number; sleep: (ms: number) => Promise<void>; pollMs: number };
 type Ctx = { nodeName: string; caller: Caller; api: ApiCall; clock: ToolClock };
@@ -100,16 +101,75 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async (a) => run(async () => {
     const t = await resolve(base, a.peer, a.session);
-    return { peer: t.peer, ...(await call<Detail>(base, "GET", t.peer, `/api/sessions/${t.id}`)) };
+    const d = await call<Detail>(base, "GET", t.peer, `/api/sessions/${t.id}`);
+    // shown は CLI の show と read_messages の [pending] と同じ1行。input は長い値を切って返す
+    return { peer: t.peer, ...d, pending: (d.pending ?? []).map((p) => ({ ...p, shown: describePending(p), input: clipInput(p.input) })) };
+  })());
+
+  server.registerTool("list_places", {
+    title: "List places",
+    description: [
+      "Show where a new session can start on one node: the lobby (the default when create_session gets no cwd), the allowed roots, the directories of recent sessions (recent), and candidate directories (places).",
+      "places lists the directories directly under each root and under <root>/Documents, each with its absolute path, the first README line(s), the git remote url and lastUsedAt, recently used first. Give query (space-separated words matched against name, path, remote and README) to narrow it down and get up to 5 README lines.",
+      "The node reads only README files and git config to build it and skips dot directories and secret locations. Check total and truncated; when truncated, narrow with query. Use it before create_session when you need a cwd.",
+    ].join(" "),
+    inputSchema: {
+      peer: peerArg,
+      limit: z.number().int().min(1).max(50).optional().describe("Number of recent directories. Default 10"),
+      query: z.string().optional().describe("Words to narrow places, e.g. a project or repo name from the request"),
+      places_limit: z.number().int().min(1).max(300).optional().describe("Number of places. Default 60"),
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, async (a) => run(async () => {
+    const peer = a.peer || base.nodeName;
+    const qs = new URLSearchParams();
+    if (a.query) qs.set("q", a.query);
+    if (a.places_limit) qs.set("limit", String(a.places_limit));
+    const [host, list, placesRes] = await Promise.all([
+      call<{ roots?: string[]; lobby?: string }>(base, "GET", a.peer, "/api/host"),
+      call<SessionSummary[]>(base, "GET", a.peer, "/api/sessions"),
+      // 古い版のノードには /api/places が無い（404）。そのときは places を省き、note で伝える
+      base.api(base.caller, "GET", a.peer, `/api/places${qs.size ? `?${qs}` : ""}`),
+    ]);
+    const seen = new Set<string>();
+    const recent: Array<{ cwd: string; lastActivityAt: number }> = [];
+    for (const s of [...list].sort((x, y) => y.lastActivityAt - x.lastActivityAt)) {
+      // 立てられるのは roots の内側だけなので、それ以外（同じ機械の端末セッションの cwd など）は出さない
+      const roots = host.roots ?? [];
+      if (!s.cwd || seen.has(s.cwd) || s.cwd === host.lobby || !roots.some((r) => s.cwd === r || s.cwd.startsWith(r.endsWith("/") ? r : r + "/"))) continue;
+      seen.add(s.cwd);
+      recent.push({ cwd: s.cwd, lastActivityAt: s.lastActivityAt });
+    }
+    const notes: string[] = [];
+    if (!host.lobby) notes.push(`${peer} runs an older ccn without a lobby; give create_session both cwd and prompt`);
+    let places: Record<string, unknown> = {};
+    if (placesRes.status >= 200 && placesRes.status < 300) {
+      const p = placesRes.body as { places: unknown[]; total: number; truncated: boolean };
+      places = { places: p.places, total: p.total, truncated: p.truncated };
+    } else if (placesRes.status === 404) {
+      notes.push(`${peer} runs an older ccn without places; pick from roots and recent`);
+    } else {
+      const b = (placesRes.body ?? {}) as { error?: string };
+      notes.push(`places failed on ${peer}: ${placesRes.status} ${b.error ?? ""}`.trim());
+    }
+    return {
+      peer, lobby: host.lobby ?? null, roots: host.roots ?? [], recent: recent.slice(0, a.limit ?? 10), ...places,
+      ...(notes.length ? { note: notes.join("; ") } : {}),
+    };
   })());
 
   server.registerTool("create_session", {
     title: "Create session",
-    description: "Start a new Claude Code session (a child) on a node, in a directory under that node's allowed roots, with a first message. The message arrives with a from line naming you. Returns the session id, the parent name it records, and cursor 0 for read_messages. Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does.",
+    description: [
+      "Start a new Claude Code session (a child) on a node.",
+      "Omit cwd to start in that node's lobby: a session whose job is to pick the right directory for a request, start a child there, and reply with a line `子: <peer>/<sessionId>` naming it. Usual flow: create_session with no cwd and no prompt, send_message with the request, read_messages until stop=result, then talk to the named child directly with send_message and read_messages.",
+      "Omit prompt to create an idle session that waits for its first message: the id is fixed at once, and claude starts when send_message delivers the first message. With a prompt it starts working right away. A session that never gets a message is cleaned up after 30 minutes.",
+      "Every message arrives with a from line naming you. Returns the session id, its cwd, the parent name it records, and cursor 0 for read_messages. Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does. The lobby gives its child the lobby's own mode.",
+    ].join(" "),
     inputSchema: {
       peer: peerArg,
-      cwd: z.string().describe("Absolute directory on that node"),
-      prompt: z.string().min(1).describe("First message. Make it self-contained: goal, directory, done criteria, what not to touch, and ask it to write the result as text"),
+      cwd: z.string().optional().describe("Absolute directory under that node's roots (see list_places). Omit for the lobby"),
+      prompt: z.string().min(1).optional().describe("First message. Omit to send it later with send_message. When given, make it self-contained: goal, directory, done criteria, what not to touch, and ask it to write the result as text"),
       permission_mode: z.enum(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"]).optional(),
       model: z.string().optional(),
       resume: z.string().optional().describe("Session id to continue instead of starting fresh"),
@@ -121,13 +181,23 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
   }, async (a) => {
     const { ctx, note } = callerWith(base, a.as, a.as_session);
     return run(async () => {
-      const body: Record<string, unknown> = { cwd: a.cwd, prompt: a.prompt };
+      const body: Record<string, unknown> = {};
+      if (a.cwd) body.cwd = a.cwd;
+      if (a.prompt) body.prompt = a.prompt;
       if (a.permission_mode) body.permissionMode = a.permission_mode;
       if (a.model) body.model = a.model;
       if (a.resume) body.resume = a.resume;
       if (a.fork) body.fork = true;
-      const r = await call<{ id: string }>(ctx, "POST", a.peer, "/api/sessions", body);
-      return { peer: a.peer || base.nodeName, id: r.id, parent: ctx.caller.id, cursor: 0, ...(note ? { note } : {}) };
+      let r: { id: string; cwd?: string; state?: string };
+      try { r = await call<{ id: string; cwd?: string; state?: string }>(ctx, "POST", a.peer, "/api/sessions", body); }
+      catch (e) {
+        // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
+        if (e instanceof ToolError && (!a.cwd || !a.prompt) && !a.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
+          throw new ToolError(`${e.message}. ${a.peer || base.nodeName} runs an older ccn without the lobby or prompt-less sessions; give both cwd and prompt`);
+        }
+        throw e;
+      }
+      return { peer: a.peer || base.nodeName, id: r.id, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, cursor: 0, ...(note ? { note } : {}) };
     })();
   });
 
@@ -160,7 +230,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
   }, async (a) => run(async () => {
     const t = await resolve(base, a.peer, a.session);
     const r = await readMessages(base, t.peer, t.id, a.after ?? 0, Math.min(a.wait_seconds ?? DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS), a.max_chars ?? DEFAULT_MAX_CHARS);
-    const pending = r.pending.map((p) => `[pending] requestId=${p.requestId} ${p.toolName} ${p.description ?? ""}`.trim());
+    const pending = r.pending.map((p) => `[pending] requestId=${p.requestId} ${describePending(p)}`);
     return [...r.lines, ...pending, `stop=${r.stop} state=${r.state} pending=${r.pending.length} cursor=${r.cursor} session=${t.peer}/${t.id}`].join("\n");
   })());
 

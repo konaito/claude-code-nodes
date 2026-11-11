@@ -1,8 +1,9 @@
-// CLI の親向けの命令。peers、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
+// CLI の親向けの命令。peers、places、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { Config } from "../config";
 import type { SessionSummary } from "../sessions/types";
+import { describePending } from "../sessions/pending";
 import { parseArgs, type Parsed } from "./args";
 import { api, clientFor, CliError, readJson, request, type Client } from "./client";
 import { matchSession, parseTarget } from "./resolve";
@@ -24,14 +25,19 @@ export type Ctx = {
   // 参加側の命令（join-commands.ts）が使う
   join?: (words: string[], flags: Parsed["flags"], ctx: Ctx) => Promise<number | undefined>;
 };
-type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; description?: string }>; cursor?: number };
+type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; input?: Record<string, unknown>; description?: string }>; cursor?: number };
 type Peer = { name: string; url: string; status: string; self: boolean };
+type PlacesBody = { name?: string; lobby?: string; roots?: string[]; places: Array<{ name: string; path: string; remote: string | null; readme: string[]; lastUsedAt: number | null }>; total: number; truncated: boolean };
+const day = (ms: number) => new Date(ms).toLocaleDateString("sv-SE"); // YYYY-MM-DD（手元の時刻）
 
 export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} peers                                   登録簿（ノードと状態）
+  ${CLI_NAME} places [<語>...] [--peer <名>] [--limit <n>] [--json]
+                                                       行き先の候補（roots と Documents の直下、README の先頭、remote、最近使ったか）。語で絞る
   ${CLI_NAME} ls [--peer <名>] [--mine]               セッション一覧（--mine は自分が立てた子）
-  ${CLI_NAME} show <対象>                             1つの詳細と保留中の承認
-  ${CLI_NAME} new <dir> <文> [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+  ${CLI_NAME} show [<対象>]                           1つの詳細と保留中の承認（対象を省くと、Claude Code の中なら自分のセッション）
+  ${CLI_NAME} new [<dir> [<文>]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+                                                       dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
   ${CLI_NAME} send <対象> <文|-> [--as <役割>]         文を送る（- は標準入力）。seq を控える
   ${CLI_NAME} read <対象> [--after <seq>] [--wait <秒>] 返事を読む。終了コード 0 返事、2 時間切れ、3 権限待ち、4 終了
   ${CLI_NAME} run <対象> <文> [--wait <秒>]            send のあと read
@@ -125,6 +131,25 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       for (const p of await peersOf(ctx)) ctx.out(`${p.name} ${p.status} ${p.url}${p.self ? " (self)" : ""}`);
       return 0;
     }
+    case "places": {
+      const c = clientFor(ctx.cfg, str(flags.peer), undefined, ctx.env);
+      const qs = new URLSearchParams();
+      if (rest.length) qs.set("q", rest.join(" "));
+      if (str(flags.limit)) qs.set("limit", str(flags.limit)!);
+      const path = `/api/places${qs.size ? `?${qs}` : ""}`;
+      const r = await request(c, "GET", path, undefined, ctx.fetchFn);
+      if (r.status === 404) { await r.body?.cancel().catch(() => {}); throw new CliError(1, `${c.peer} のノードは places に対応していない古い版。${c.peer} で ${CLI_NAME} update する`); }
+      const b = await readJson<PlacesBody>(c, "GET", path, r);
+      if (flags.json) { ctx.out(JSON.stringify(b, null, 1)); return 0; }
+      if (b.lobby) ctx.out(`lobby: ${b.lobby}`);
+      if (b.roots) ctx.out(`roots: ${b.roots.join(", ")}`);
+      for (const p of b.places) {
+        ctx.out([p.path, p.remote ? `remote=${p.remote}` : "", p.lastUsedAt ? `used=${day(p.lastUsedAt)}` : ""].filter(Boolean).join("  "));
+        for (const l of p.readme) ctx.out(`  | ${l}`);
+      }
+      ctx.out(b.truncated ? `(${b.total} 件のうち ${b.places.length} 件。語で絞る: ${CLI_NAME} places <語>)` : `(${b.total} 件)`);
+      return 0;
+    }
     case "ls": {
       const all = str(flags.peer) ? [{ name: str(flags.peer)!, status: "healthy" } as Peer] : await peersOf(ctx).catch(() => [{ name: ctx.cfg.name, status: "healthy" }] as Peer[]);
       // --mine は自分（このノードと自分の sessionId）が名乗った親の子だけ。役割は問わない
@@ -141,30 +166,44 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       return 0;
     }
     case "show": {
-      need(1, "対象");
-      const r = await resolve(ctx, rest[0]!);
+      // 対象を省くと自分（Claude Code が渡す CLAUDE_CODE_SESSION_ID）。受け口が変数を書かずに自分の permissionMode を読むため
+      const self = ctx.env.CLAUDE_CODE_SESSION_ID;
+      if (rest[0] === undefined && !self) throw new CliError(1, "show には 対象 が要る（Claude Code の中では省くと自分のセッション）");
+      const r = await resolve(ctx, rest[0] ?? `${ctx.cfg.name}/${self}`);
       const { c } = r;
       const d = await detailOf(ctx, r);
       const caps = Object.entries(d.capabilities).filter(([, v]) => v).map(([k]) => k).join(",");
       for (const [k, v] of [["id", d.id], ["peer", c.peer], ["kind", d.kind], ["state", d.state], ["cwd", d.cwd], ["model", d.model], ["permissionMode", d.permissionMode], ["parent", d.parent], ["title", d.title], ["pid", d.pid], ["exitReason", d.exitReason], ["capabilities", caps], ["usage", d.usage ? JSON.stringify(d.usage) : undefined]] as const) {
         if (v !== undefined && v !== "") ctx.out(`${k}: ${String(v)}`);
       }
-      for (const p of d.pending ?? []) ctx.out(`pending: ${p.requestId} ${p.toolName} ${p.description ?? ""}`.trim());
+      for (const p of d.pending ?? []) ctx.out(`pending: ${p.requestId} ${describePending(p)}`);
       return 0;
     }
     case "new": {
-      need(2, "<dir> と <文>");
+      // ccn new → 受け口、ccn new <dir> → その場所、どちらも1通目は ccn send で送る。ccn new <dir> <文> は今までどおり
       const c = clientFor(ctx.cfg, str(flags.peer), str(flags.as), ctx.env);
-      // 相対パスはノードの作業ディレクトリ（ホーム）で解かれてしまうので、手元なら CLI の場所で解き、相手なら断る
-      let cwd = rest[0]!;
-      if (!isAbsolute(cwd)) {
-        if (c.peer !== ctx.cfg.name) throw new CliError(1, `相手のノード（${c.peer}）には絶対パスで指定する: ${cwd}`);
-        cwd = resolvePath(cwd);
+      const body: Record<string, unknown> = { permissionMode: str(flags.mode) ?? "bypassPermissions" };
+      if (rest[0] !== undefined) {
+        // 相対パスはノードの作業ディレクトリ（ホーム）で解かれてしまうので、手元なら CLI の場所で解き、相手なら断る
+        let cwd = rest[0];
+        if (!isAbsolute(cwd)) {
+          if (c.peer !== ctx.cfg.name) throw new CliError(1, `相手のノード（${c.peer}）には絶対パスで指定する: ${cwd}`);
+          cwd = resolvePath(cwd);
+        }
+        body.cwd = cwd;
       }
-      const body: Record<string, unknown> = { cwd, prompt: rest[1], permissionMode: str(flags.mode) ?? "bypassPermissions" };
+      if (rest[1] !== undefined) body.prompt = rest[1];
       if (str(flags.model)) body.model = str(flags.model);
       if (str(flags.resume)) body.resume = str(flags.resume);
-      const r = await api<{ id: string }>(c, "POST", "/api/sessions", body, ctx.fetchFn);
+      let r: { id: string };
+      try { r = await api<{ id: string }>(c, "POST", "/api/sessions", body, ctx.fetchFn); }
+      catch (e) {
+        // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
+        if (e instanceof CliError && body.prompt === undefined && !body.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
+          throw new CliError(1, `${e.message}\n${c.peer} のノードは受け口とプロンプト無しの作成に対応していない古い版。${c.peer} で ${CLI_NAME} update するか、${CLI_NAME} new <dir> <文> で立てる`);
+        }
+        throw e;
+      }
       rememberSeq(`${c.peer}/${r.id}`, 0, sendsPath(ctx));
       ctx.out(`${c.peer}/${r.id}`);
       return 0;
@@ -195,7 +234,7 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       if (cmd === "deny" && rid && !reason && !pending.some((p) => p.requestId === rid)) { reason = rid; rid = undefined; }
       if (!rid) {
         if (pending.length === 1) rid = pending[0]!.requestId;
-        else throw new CliError(1, pending.length === 0 ? "保留中の承認が無い" : `保留が複数ある。requestId を指定する:\n${pending.map((p) => `  ${p.requestId} ${p.toolName}`).join("\n")}`);
+        else throw new CliError(1, pending.length === 0 ? "保留中の承認が無い" : `保留が複数ある。requestId を指定する:\n${pending.map((p) => `  ${p.requestId} ${describePending(p)}`).join("\n")}`);
       }
       if (cmd === "deny" && !reason) throw new CliError(1, "deny には理由が要る");
       await api(c, "POST", `/api/sessions/${s.id}/permissions/${rid}`, cmd === "allow" ? { behavior: "allow" } : { behavior: "deny", message: reason }, ctx.fetchFn);

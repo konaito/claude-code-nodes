@@ -3,7 +3,7 @@ import { homedir, hostname } from "node:os";
 import { mkdtempSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, saveConfig, entryOf, nodeHost, resolveConfigPath, APP_VERSION } from "../src/config";
+import { loadConfig, saveConfig, entryOf, nodeHost, resolveConfigPath, lobbyOf, APP_VERSION } from "../src/config";
 
 test("loadConfig falls back to hostname, 4322 and $HOME", () => {
   const c = loadConfig("/nonexistent/cc/cc.json");
@@ -20,7 +20,7 @@ test("loadConfig reads name, port, roots from cc.json", () => {
 
 test("saveConfig writes 0600 and loadConfig reads it back", () => {
   const p = join(mkdtempSync(join(tmpdir(), "cc-conf-")), "sub", "cc.json");
-  const cfg = { name: "vm", port: 4322, roots: ["/x"], domain: "cc.fybe.jp", teamDomain: "t.cloudflareaccess.com", aud: "a1", accountId: "acc", zone: "fybe.jp", entry: "https://vm.cc.fybe.jp", serviceToken: { clientId: "id", clientSecret: "sec" }, cfApiToken: "tok" };
+  const cfg = { name: "vm", port: 4322, roots: ["/x"], domain: "cc.fybe.jp", teamDomain: "t.cloudflareaccess.com", aud: "a1", accountId: "acc", zone: "fybe.jp", entry: "https://vm.cc.fybe.jp", serviceToken: { clientId: "id", clientSecret: "sec" }, cfApiToken: "tok", lobby: "/x/lobby" };
   saveConfig(cfg, p);
   expect(statSync(p).mode & 0o777).toBe(0o600);
   expect(loadConfig(p)).toEqual(cfg);
@@ -48,4 +48,9 @@ test("resolveConfigPath reads the legacy ~/.config/cc/cc.json until the new one 
   expect(loadConfig(resolveConfigPath(home)).port).toBe(4399);
   saveConfig({ name: "new", port: 4400, roots: [home] }, join(home, ".config", "ccn", "ccn.json"));
   expect(resolveConfigPath(home)).toBe(join(home, ".config", "ccn", "ccn.json"));
+});
+
+test("lobbyOf is the configured lobby, else <home>/.local/share/ccn/lobby", () => {
+  expect(lobbyOf({ name: "vm", port: 1, roots: ["/x"], lobby: "/x/in" }, "/home/u")).toBe("/x/in");
+  expect(lobbyOf({ name: "vm", port: 1, roots: ["/x"] }, "/home/u")).toBe("/home/u/.local/share/ccn/lobby");
 });

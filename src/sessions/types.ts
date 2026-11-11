@@ -19,6 +19,8 @@ export type SessionSummary = {
   title?: string;
   // 最初の文の from 行の呼び手（"agent:<名前>" か email）。子認識。親側には何も持たない
   parent?: string;
+  // プロンプト無しで立てて、まだ1通も届いていない（claude は起動していない）。届けば消える
+  awaitingFirst?: boolean;
 };
 
 export type PendingPermission = {

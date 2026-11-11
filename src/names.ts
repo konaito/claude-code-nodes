@@ -21,7 +21,13 @@ export const SENDS_FILE = "sends.json";            // CLI の手元の控え（�
 // アプリの置き場。<appHome>/app が実行物、<appHome>/log が常駐のログ
 export const appHomeOf = (home: string) => join(home, ".local", "share", "ccn");
 export const legacyAppHomeOf = (home: string) => join(home, ".local", "share", "cc");
-export const ENTRY_SCRIPT = ["src", "cli", "ccn.ts"]; // 実行物の中の CLI の入口（常駐とインストーラが呼ぶ）。旧の常駐が呼ぶ src/cli/cc.ts も残す
+export const ENTRY_SCRIPT = ["src", "cli", "ccn.ts"];
+// 受け口（lobby）。cwd を省いて立てたセッションの置き場で、外から来た依頼を受けて行き先に子を立てる。
+// 既定はアプリの置き場の隣（3台とも roots がホームなので内側に入り、Linux に ~/Documents が無くても同じ形で作れる）。設定の lobby で差し替えられる
+export const lobbyDirOf = (home: string) => join(appHomeOf(home), "lobby");
+// 受け口の CLAUDE.md のひな形。実行物の中のこのパスにあり、ノードの起動と install と update が受け口に書き出す。
+// ファイル名を CLAUDE.md にしないのは、このリポジトリで作業するセッションに読み込まれないようにするため
+export const LOBBY_TEMPLATE = ["src", "lobby", "lobby-claude.md"]; // 実行物の中の CLI の入口（常駐とインストーラが呼ぶ）。旧の常駐が呼ぶ src/cli/cc.ts も残す
 
 // 常駐。macOS は LaunchAgent のラベル、Linux は systemd --user のユニット名
 export type ServiceNaming = { label: (kind: string) => string; unit: (kind: string) => string };

@@ -2,13 +2,13 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { CONFIG_ENV, CONFIG_FILE, configDirOf, LEGACY_CONFIG_ENV, LEGACY_CONFIG_FILE, legacyConfigDirOf, TUNNEL_PREFIX } from "./names";
+import { CONFIG_ENV, CONFIG_FILE, configDirOf, LEGACY_CONFIG_ENV, LEGACY_CONFIG_FILE, legacyConfigDirOf, lobbyDirOf, TUNNEL_PREFIX } from "./names";
 
 export type Config = {
   name: string;
   port: number;
   roots: string[];
-  domain?: string;       // 例 cc.fybe.jp。ノードのホスト名は <name>.<domain>
+  domain?: string;       // 例 ccn.fybe.jp。ノードのホスト名は <name>.<domain>
   teamDomain?: string;   // 例 fybejp.cloudflareaccess.com
   aud?: string;          // Access アプリの aud
   accountId?: string;    // Cloudflare のアカウント ID
@@ -16,6 +16,7 @@ export type Config = {
   entry?: string;        // 入口の URL。無ければ https://<domain>
   serviceToken?: { clientId: string; clientSecret: string }; // ノード用サービストークン
   cfApiToken?: string;   // 登録簿を読む CF API トークン（Cloudflare Tunnel Read）
+  lobby?: string;        // 受け口のディレクトリ。無ければ names.ts の lobbyDirOf（roots の内側に置く）
 };
 // CONFIG_ENV（CCN_CONFIG。旧の CC_CONFIG も読む）で設定ファイルを差し替えられる（手元で別ポートのノードを試すとき用）
 export const defaultPath = () => process.env[CONFIG_ENV] ?? process.env[LEGACY_CONFIG_ENV] ?? resolveConfigPath(homedir());
@@ -39,7 +40,7 @@ export function loadConfig(path = defaultPath()): Config {
     port: Number.isInteger(raw.port) ? (raw.port as number) : 4322,
     roots: Array.isArray(raw.roots) && raw.roots.length ? (raw.roots as string[]) : [homedir()],
   };
-  for (const k of ["domain", "teamDomain", "aud", "accountId", "zone", "entry", "cfApiToken"] as const) {
+  for (const k of ["domain", "teamDomain", "aud", "accountId", "zone", "entry", "cfApiToken", "lobby"] as const) {
     const v = str(raw[k]);
     if (v) cfg[k] = v;
   }
@@ -67,3 +68,6 @@ export const hostFor = (prefix: string, name: string, zone: string) => `${prefix
 export function entryOf(cfg: Config): string | undefined {
   return cfg.entry ?? (cfg.domain ? `https://${cfg.domain}` : undefined);
 }
+
+// 受け口のディレクトリ。設定の lobby、無ければ既定（<home>/.local/share/ccn/lobby）
+export const lobbyOf = (cfg: Config, home = homedir()): string => cfg.lobby ?? lobbyDirOf(home);

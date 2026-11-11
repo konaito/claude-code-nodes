@@ -2,7 +2,7 @@
 import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createApp, type Deps } from "../../src/api/app";
@@ -13,6 +13,7 @@ import { AccessIdentity } from "../../src/identity/access";
 import { StaticRegistry } from "../../src/registry/registry";
 import { Relay } from "../../src/relay/relay";
 import { makeKeys } from "../helpers/jwt";
+import { describePending } from "../../src/sessions/pending";
 
 const caps = (p: boolean) => ({ send: true, permissions: p, interrupt: p, stop: p, events: p });
 const settle = () => new Promise((r) => setTimeout(r, 10));
@@ -37,6 +38,7 @@ function harness(over: Partial<Deps> = {}) {
   const deps: Deps = {
     nodeName: "vm",
     roots: ["/home/u", tmpdir()],
+    lobby: over.lobby ?? join(tmpdir(), "ccn-test-lobby"),
     store,
     identity: new HeaderIdentity(),
     history: {
@@ -80,13 +82,13 @@ async function connect(app: { fetch: (r: Request) => Promise<Response> }, header
 const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content[0]!.text);
 const json = (r: unknown) => JSON.parse(text(r));
 
-test("initialize and tools/list expose the nine tools with annotations", async () => {
+test("initialize and tools/list expose the ten tools with annotations", async () => {
   const { app } = harness();
   const c = await connect(app);
   expect(c.getServerVersion()?.name).toBe("ccn");
   expect(c.getInstructions()).toContain("/skill.md");
   const { tools } = await c.listTools();
-  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "stop_session"]);
+  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "stop_session"]);
   const by = Object.fromEntries(tools.map((t) => [t.name, t]));
   expect(by.list_sessions!.annotations?.readOnlyHint).toBe(true);
   expect(by.read_messages!.annotations?.readOnlyHint).toBe(true);
@@ -171,19 +173,33 @@ test("read_messages renders the turn and stops at result with the next cursor", 
 
 test("read_messages stops at a permission request and answer_permission answers the only pending one", async () => {
   const { app, live } = harness();
-  live.pendingList = [{ requestId: "r1", toolName: "Bash", input: {}, description: "rm", createdAt: 0 }];
-  live.push({ type: "permission_request", data: { requestId: "r1", toolName: "Bash", description: "rm" } });
+  const input = { command: "rm -rf /tmp/x", description: "Remove x" };
+  live.pendingList = [{ requestId: "r1", toolName: "Bash", input, description: "Remove x", createdAt: 0 }];
+  live.push({ type: "permission_request", data: { requestId: "r1", toolName: "Bash", input, description: "Remove x" } });
   await settle();
   const c = await connect(app);
   const out = text(await c.callTool({ name: "read_messages", arguments: { session: LIVE } }));
-  expect(out).toContain("[permission] Bash rm requestId=r1");
-  expect(out).toContain("[pending] requestId=r1 Bash rm");
+  // 説明文だけでなく command の本文が出る
+  expect(out).toContain('[permission] Bash command="rm -rf /tmp/x" ("Remove x") requestId=r1');
+  expect(out).toContain('[pending] requestId=r1 Bash command="rm -rf /tmp/x" ("Remove x")');
   expect(out).toContain("stop=permission");
   const denied = await c.callTool({ name: "answer_permission", arguments: { session: LIVE, behavior: "deny" } });
   expect(denied.isError).toBe(true);
   expect(text(denied)).toContain("deny needs a message");
   expect(json(await c.callTool({ name: "answer_permission", arguments: { session: LIVE, behavior: "allow" } }))).toMatchObject({ ok: true, requestId: "r1" });
   expect(live.answers).toEqual([{ requestId: "r1", a: { behavior: "allow" } }]);
+});
+
+test("get_session shows each pending request with the same line as the CLI and clips long input values", async () => {
+  const { app, live } = harness();
+  const content = "x".repeat(5000);
+  live.pendingList = [{ requestId: "w1", toolName: "Write", input: { file_path: "/srv/a.txt", content }, description: "/srv/a.txt", createdAt: 0 }];
+  const c = await connect(app);
+  const g = json(await c.callTool({ name: "get_session", arguments: { session: LIVE } })) as { pending: Array<{ shown: string; input: { content: string } }> };
+  expect(g.pending[0]!.shown).toBe(describePending(live.pendingList[0]!));
+  expect(g.pending[0]!.shown).toBe('Write file_path="/srv/a.txt"');
+  expect(g.pending[0]!.input.content.length).toBeLessThan(2100);
+  expect(g.pending[0]!.input.content).toEndWith("…(+3000字)");
 });
 
 test("read_messages cuts at max_chars and the cursor resumes after the last shown message", async () => {
@@ -272,4 +288,90 @@ test("/mcp keeps the CSRF guard and answers only POST", async () => {
   expect(cross.status).toBe(403);
   expect((await app.fetch(new Request("http://127.0.0.1:4330/mcp"))).status).toBe(405);
   expect((await app.fetch(new Request("http://127.0.0.1:4330/mcp", { method: "DELETE" }))).status).toBe(405);
+});
+
+test("create_session without cwd and prompt starts an idle session in the lobby", async () => {
+  const lobby = mkdtempSync(join(tmpdir(), "ccn-mcp-lobby-"));
+  const { app, starts } = harness({ lobby });
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "create_session", arguments: {} }));
+  expect(r).toMatchObject({ peer: "vm", id: "new1", cwd: realpathSync(lobby), parent: "local", cursor: 0 });
+  expect(starts[0]!.opts.cwd).toBe(realpathSync(lobby));
+  expect(starts[0]!.opts.prompt).toBeUndefined();
+  const { tools } = await c.listTools();
+  const desc = tools.find((t) => t.name === "create_session")!.description!;
+  expect(desc).toContain("lobby");
+  expect(desc).toContain("子: <peer>/<sessionId>");
+});
+
+test("list_places returns the lobby, roots and recent directories without the lobby itself", async () => {
+  const { app, store } = harness({ lobby: "/home/u/.local/share/ccn/lobby" });
+  const inLobby = new FakeDriver({ id: "lob1", capabilities: caps(true) });
+  inLobby.cwd = "/home/u/.local/share/ccn/lobby";
+  store.add(inLobby);
+  const outside = new FakeDriver({ id: "out1", capabilities: caps(true) });
+  outside.cwd = "/srv/elsewhere";
+  store.add(outside);
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "list_places", arguments: {} }));
+  expect(r.lobby).toBe("/home/u/.local/share/ccn/lobby");
+  expect(r.roots).toEqual(["/home/u", tmpdir()]);
+  expect(r.recent.map((x: { cwd: string }) => x.cwd).sort()).toEqual(["/home/u/proj", "/home/u/x"]);
+  expect(r.note).toBeUndefined();
+});
+
+test("list_places adds candidate places with README, remote and last use, narrowed by query, without secrets", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-mcp-places-")));
+  mkdirSync(join(root, "Documents", "notes", ".git"), { recursive: true });
+  writeFileSync(join(root, "Documents", "notes", "README.md"), "# Notes\nメモ\n");
+  writeFileSync(join(root, "Documents", "notes", ".git", "config"), '[remote "origin"]\n\turl = https://bob:FAKE-TOKEN-1@github.com/o/notes.git\n');
+  mkdirSync(join(root, "other"));
+  mkdirSync(join(root, ".ssh"));
+  writeFileSync(join(root, ".ssh", "README.md"), "FAKE-SSH-2\n");
+  const { app, store } = harness({ roots: [root], home: root, lobby: join(root, "lobby") });
+  const used = new FakeDriver({ id: "use1", capabilities: caps(true) });
+  used.cwd = join(root, "Documents", "notes", "sub"); // 候補の下で動いたセッションも、その候補を使ったことにする
+  const summary = used.summary.bind(used);
+  used.summary = () => ({ ...summary(), lastActivityAt: 1234 });
+  store.add(used);
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "list_places", arguments: {} }));
+  expect(r.places.map((p: { path: string }) => p.path)).toEqual([join(root, "Documents", "notes"), join(root, "other")]);
+  expect(r.places[0]).toMatchObject({ name: "notes", remote: "https://github.com/o/notes.git", readme: ["# Notes / メモ"], lastUsedAt: 1234 });
+  expect(r).toMatchObject({ total: 2, truncated: false, roots: [root] });
+  expect(r.recent.map((x: { cwd: string }) => x.cwd)).toContain(join(root, "Documents", "notes", "sub"));
+  const q = json(await c.callTool({ name: "list_places", arguments: { query: "notes" } }));
+  expect(q.places).toHaveLength(1);
+  expect(q.places[0].readme).toEqual(["# Notes", "メモ"]);
+  const all = JSON.stringify(r) + JSON.stringify(q);
+  expect(all).not.toContain("FAKE-");
+  expect(all).not.toContain("bob");
+});
+
+test("list_places on an older peer without /api/places keeps lobby, roots and recent and says so in note", async () => {
+  const registry = new StaticRegistry([{ name: "vm", url: "https://ccn-vm.fybe.jp", status: "healthy", self: true }, { name: "old", url: "https://ccn-old.fybe.jp", status: "healthy", self: false }]);
+  const oldFetch = (async (input: RequestInfo | URL) => {
+    const path = new URL(new Request(input).url).pathname;
+    if (path === "/api/host") return Response.json({ name: "old", roots: ["/r"], lobby: "/r/lobby" });
+    if (path === "/api/sessions") return Response.json([{ id: "99999999-0000-0000-0000-000000000000", kind: "node", state: "idle", cwd: "/r/a", lastActivityAt: 5 }]);
+    return Response.json({ error: "not found" }, { status: 404 });
+  }) as unknown as typeof fetch;
+  const { app } = harness({ registry, relay: new Relay({ registry, nodeName: "vm", serviceToken: { clientId: "c", clientSecret: "s" }, fetchFn: oldFetch }) });
+  const c = await connect(app);
+  const r = await c.callTool({ name: "list_places", arguments: { peer: "old" } });
+  expect(r.isError).toBeFalsy();
+  const b = json(r);
+  expect(b).toMatchObject({ peer: "old", lobby: "/r/lobby", roots: ["/r"], recent: [{ cwd: "/r/a", lastActivityAt: 5 }] });
+  expect(b.places).toBeUndefined();
+  expect(b.note).toContain("older ccn without places");
+});
+
+test("create_session without a prompt on an older peer explains that it needs cwd and prompt", async () => {
+  const registry = new StaticRegistry([{ name: "vm", url: "https://ccn-vm.fybe.jp", status: "healthy", self: true }, { name: "old", url: "https://ccn-old.fybe.jp", status: "healthy", self: false }]);
+  const oldFetch = (async () => Response.json({ error: "prompt or resume is required" }, { status: 400 })) as unknown as typeof fetch;
+  const { app } = harness({ registry, relay: new Relay({ registry, nodeName: "vm", serviceToken: { clientId: "c", clientSecret: "s" }, fetchFn: oldFetch }) });
+  const c = await connect(app);
+  const r = await c.callTool({ name: "create_session", arguments: { peer: "old", cwd: "/r" } });
+  expect(r.isError).toBe(true);
+  expect(text(r)).toContain("older ccn");
 });

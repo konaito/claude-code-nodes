@@ -1,5 +1,6 @@
 // 返事を読む。events 能力があれば SSE を after から result まで（切れたら最後の seq からつなぎ直す）、無ければ messages をポーリングする。出すのは assistant の文とツールの名前
 import type { SessionSummary } from "../sessions/types";
+import { describePending } from "../sessions/pending";
 import { api, CliError, type Client } from "./client";
 
 export type ReadResult = { code: 0 | 2 | 3 | 4; seq: number };
@@ -34,7 +35,8 @@ export function render(m: ReturnType<typeof inner>, out: Out) {
       }
     }
   } else if (m.type === "permission_request") {
-    out(`[permission] ${String(m.toolName)} ${String(m.description ?? "")} requestId=${String(m.requestId)}`.replace(/\s+/g, " "));
+    // 中身（Bash の command、ファイルの道具の file_path）を出す。値の改行は逃がしてあるので1行に収まる
+    out(`[permission] ${describePending(m)} requestId=${String(m.requestId)}`);
   } else if (m.type === "exited") {
     out(`[exited] ${String((m as { reason?: string }).reason ?? "")}`.trim());
   }

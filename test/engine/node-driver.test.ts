@@ -105,3 +105,63 @@ test("capabilities are all false after exit", async () => {
   expect(d.capabilities).toEqual({ send: false, permissions: false, interrupt: false, stop: false, events: false });
   expect(d.summary().capabilities.stop).toBe(false);
 });
+
+test("with a sessionId and no prompt, claude is not started until the first send", async () => {
+  const fake = makeFakeQuery();
+  let calls = 0;
+  const queryFn = ((p: never) => { calls++; return fake.queryFn(p); }) as typeof fake.queryFn;
+  const sid = "22222222-2222-4222-8222-222222222222";
+  const d = await NodeDriver.start({ cwd: "/tmp", sessionId: sid, permissionMode: "default", model: "m1" }, { queryFn, nodeName: "vm", caller: "agent:x" });
+  expect(calls).toBe(0);
+  expect(d.id).toBe(sid);
+  const s = d.summary();
+  expect(s.state).toBe("idle");
+  expect(s.awaitingFirst).toBe(true);
+  expect(s.permissionMode).toBe("default");
+  expect(s.model).toBe("m1");
+  expect(s.capabilities.send).toBe(true);
+  // 起動前でも中断と権限モードの変更は落ちない。モードは起動のときに渡す
+  await d.interrupt();
+  await d.setPermissionMode("acceptEdits");
+  await d.send("first");
+  await d.send("second");
+  expect(calls).toBe(1);
+  expect(fake.lastOptions.sessionId).toBe(sid);
+  expect(fake.lastOptions.permissionMode).toBe("acceptEdits");
+  expect(fake.lastOptions.resume).toBeUndefined();
+  await until(() => fake.received.length === 2);
+  expect(fake.received).toEqual(["first", "second"]);
+  expect(d.id).toBe(sid); // init の session_id（偽物は fake-session）で上書きしない
+  expect(d.summary().awaitingFirst).toBeUndefined();
+  await d.stop();
+});
+
+test("stopping a session that never got a message ends it without starting claude", async () => {
+  const fake = makeFakeQuery();
+  let calls = 0;
+  const queryFn = ((p: never) => { calls++; return fake.queryFn(p); }) as typeof fake.queryFn;
+  const d = await NodeDriver.start({ cwd: "/tmp", sessionId: "33333333-3333-4333-8333-333333333333" }, { queryFn, nodeName: "vm" });
+  await d.stop();
+  expect(calls).toBe(0);
+  expect(d.summary().state).toBe("exited");
+  expect(d.capabilities.send).toBe(false);
+});
+
+test("a sessionId is not passed to the SDK together with resume", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", resume: "old", sessionId: "44444444-4444-4444-8444-444444444444", prompt: "go" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  expect(fake.lastOptions.sessionId).toBeUndefined();
+  expect(fake.lastOptions.resume).toBe("old");
+  await d.stop();
+});
+
+test("start passes settings to the SDK only when given (the lobby's --settings)", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", settings: "/tmp/lobby/.claude/settings.json" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  expect(fake.lastOptions?.settings).toBe("/tmp/lobby/.claude/settings.json");
+  await d.stop();
+  const fake2 = makeFakeQuery();
+  const d2 = await NodeDriver.start({ cwd: "/tmp" }, { queryFn: fake2.queryFn, nodeName: "vm" });
+  expect(fake2.lastOptions?.settings).toBeUndefined();
+  await d2.stop();
+});

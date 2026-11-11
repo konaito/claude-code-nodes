@@ -22,7 +22,7 @@ scripts/smoke-remote.sh                    # サービストークンで外か�
 
 ## 全体の形
 
-- どのノードも同じコードで、ノードごとの役割は無い。入口（cc.fybe.jp）は CNAME が指しているノードで、入口用のコードは無い。
+- どのノードも同じコードで、ノードごとの役割は無い。入口（ccn.fybe.jp）は CNAME が指しているノードで、入口用のコードは無い。
 - ノードはデータを保存しない。会話の正本は Claude Code の jsonl（SDK の `listSessions` と `getSessionMessages` だけで読み、直接は解析しない）、仲間の一覧は Cloudflare のトンネル一覧、画面の状態はブラウザの localStorage にある。
 - 外側への依存は境界の interface を通す。組み立ては `src/main.ts` の `buildDeps` の1か所だけで、試験は偽物の実装（`test/helpers/`）で通す。
 
@@ -35,7 +35,9 @@ scripts/smoke-remote.sh                    # サービストークンで外か�
 - API は能力（`capabilities`: send、permissions、interrupt、stop、events）を見て振る舞い、セッションの種類で分岐しない。能力に無い操作は `CapabilityError` で 409 になる。境界の例外から状態コードへの変換は `src/api/errors.ts` に集める。
 - `src/api/app.ts` は1リクエストに1回 `callerOf` で呼び手を決め、GET と HEAD 以外は全部 CSRF の検査（Origin のホストと sec-fetch-site）を通す。`/n/<peer>/api/...` は `src/relay/relay.ts` がサービストークンと `x-ccn-from`、`x-ccn-via`（移行の間は旧の `x-cc-*` も）を付けて相手のノードへ転送する。認証が要らないのは `/install`、`/install/ccn.tar.gz`（と旧の `/install/cc.tar.gz`）、`/skill.md` だけ。
 - 親子は保存しない。子に届く文の1行目の from 行（`src/identity/from-line.ts`、`from <呼び手> via <ノード>`）から、`History` と `GET /api/sessions?parent=` が導く。
-- `SessionStore` はメモリの台帳で、イベントに seq を振って SSE の購読に配る。
+- `SessionStore` はメモリの台帳で、イベントに seq を振って SSE の購読に配る。1通も届かない待機中のセッション（`awaitingFirst`）は、終わったものと同じく30分で消す。
+- `POST /api/sessions` は cwd を省くと受け口（設定の `lobby`、既定は names.ts の `lobbyDirOf`）に立てる。prompt も resume も無ければ、ノードが UUID を決めて SDK の `sessionId` に渡し、1通目の send まで claude を起動しない（`NodeDriver` の遅延起動。待つ claude は1体約300MB）。古い版のノードは `cwd is required` か `prompt or resume is required` で断るので、画面、CLI、MCP はその文言を見て古い版だと伝える。
+- 受け口の CLAUDE.md のひな形は `src/lobby/lobby-claude.md`（このリポジトリで読み込まれないように CLAUDE.md という名前にしない）。`src/lobby/lobby.ts` がノードの起動、`ccn install`、`ccn update` のたびに、CLAUDE.md と `.claude/settings.json`（受け口の許可）を書き出す。settings.json の deny には、roots とホームの下の秘密の置き場（`.ssh`、`.config/ccn` など）と、どこにあっても `.env`、`*.pem`、`*.key` を入れる。settings.json の allow は SDK のセッションでは未信頼として無視されるので、`src/api/sessions.ts` が cwd が受け口のセッションにだけ同じファイルを SDK の `settings` で渡す。起動でも書くのは、初回の `ccn update` を走らせるのが入れ替え前の旧コードだから。受け口は子を `ccn new <dir> <文> --mode <自分のモード> --as lobby` で立てる。MCP で立てると親が `local` になり、受け口の子として並ばない。
 - CLI は `src/cli/commands.ts`（セッション操作）と `src/cli/join-commands.ts`（setup、node add/token/remove、entry、install、update、uninstall、doctor、serve）に分かれる。`src/join/` はインストーラ、tar の束、launchd と systemd --user、cf CLI の呼び出しを持つ。
 - `/mcp` は MCP の口（`src/mcp/`）。公式 SDK（`@modelcontextprotocol/sdk` 1.32.2、agent-sdk の peer と同じ版）の `WebStandardStreamableHTTPServerTransport` を状態なし・JSON 応答で使い、要求ごとに McpServer を作る。ツールは `createApp` の `dispatch`（HTTP の API と中継と同じ道）を、Identity が決めた呼び手のまま呼ぶだけで、from 行も能力の検査も API 側にある。`as` で名乗れるのは、HTTP で `x-ccn-from` を信じてもらえる呼び手（サービストークンと同じ機械）だけ。待つツール（`read_messages`）は最大50秒で返し、cursor で続きを読む。
 - `/skill.md` は認証なしで配る説明書。正本は `skills/claude-code-nodes/SKILL.md` で、`{{ORIGIN}}` を要求の入口に置き換える。`skills/ccn/` と違い、利用者の機械にはリンクしない。Bypass アプリは `<host>/install` と `<host>/skill.md`（`PUBLIC_PATHS`）を外す。

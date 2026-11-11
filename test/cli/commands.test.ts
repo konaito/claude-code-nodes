@@ -106,10 +106,10 @@ test("send with - reads the text from stdin", async () => {
 });
 
 test("read over sse returns 3 on permission_request and 4 on exited", async () => {
-  const perm = fakeNode({ sse: ev(2, "permission_request", { requestId: "r1", toolName: "Write", description: "/x.txt" }), pending: [{ requestId: "r1", toolName: "Write" }], detailState: "waiting_permission" });
+  const perm = fakeNode({ sse: ev(2, "permission_request", { requestId: "r1", toolName: "Write", input: { file_path: "/x.txt", content: "a" }, description: "/x.txt" }), pending: [{ requestId: "r1", toolName: "Write" }], detailState: "waiting_permission" });
   const c = ctx(perm.fetchFn);
   expect(await main(["read", "abcd1234", "--after", "0"], c)).toBe(3);
-  expect(c.lines.some((l) => l.includes("Write") && l.includes("r1"))).toBe(true);
+  expect(c.lines).toContain('[permission] Write file_path="/x.txt" requestId=r1');
   expect(c.lines.at(-1)).toBe("state=waiting_permission pending=1 seq=2");
   const dead = fakeNode({ sse: ev(2, "exited", { reason: "ended" }), detailState: "exited" });
   expect(await main(["read", "abcd1234", "--after", "0"], ctx(dead.fetchFn))).toBe(4);
@@ -144,11 +144,19 @@ test("allow picks the single pending request and deny needs a reason", async () 
 });
 
 test("show, interrupt and stop hit the right endpoints", async () => {
-  const n = fakeNode({ pending: [{ requestId: "r1", toolName: "Write", description: "/x" }] });
+  const n = fakeNode({ pending: [
+    { requestId: "r1", toolName: "Write", input: { file_path: "/x", content: "hi" }, description: "/x" },
+    { requestId: "r2", toolName: "Bash", input: { command: "git push origin main\nrm -rf /", description: "Push" }, description: "Push" },
+    { requestId: "r3", toolName: "Bash" },
+  ] });
   const c = ctx(n.fetchFn);
   expect(await main(["show", "abcd1234"], c)).toBe(0);
   expect(c.lines.some((l) => l.startsWith("state: idle"))).toBe(true);
-  expect(c.lines.some((l) => l.includes("r1") && l.includes("Write"))).toBe(true);
+  // 承認する側が中身で判断できるように、file_path と command を出す。改行は逃がして1行に収め、偽の pending: 行を作らせない
+  expect(c.lines).toContain('pending: r1 Write file_path="/x"');
+  expect(c.lines).toContain('pending: r2 Bash command="git push origin main\\nrm -rf /" ("Push")');
+  expect(c.lines).toContain("pending: r3 Bash (中身なし)");
+  expect(c.lines.filter((l) => l.startsWith("pending:"))).toHaveLength(3);
   expect(await main(["interrupt", "abcd1234"], c)).toBe(0);
   expect(await main(["stop", "abcd1234"], c)).toBe(0);
   expect(n.calls.map((x) => `${x.method} ${new URL(x.url).pathname}`)).toContain("POST /api/sessions/abcd1234-0000-0000-0000-000000000000/interrupt");
@@ -198,4 +206,74 @@ test("send uses the cursor from the detail and calls /api/sessions/:id directly 
   expect(n.calls.slice(before).map((x) => `${x.method} ${new URL(x.url).pathname}`)).toEqual(["GET /api/sessions", `GET /api/sessions/${full}`, `POST /api/sessions/${full}/messages`]);
   // 無い完全な id は 1 を返す
   expect(await main(["send", "ffffffff-0000-0000-0000-000000000000", "hello"], ctx(n.fetchFn))).toBe(1);
+});
+
+test("new without a dir starts in the lobby and without a text waits for the first send", async () => {
+  const n = fakeNode();
+  const c = ctx(n.fetchFn);
+  expect(await main(["new"], c)).toBe(0);
+  expect(c.lines).toEqual(["pro/new00000-1111-2222-3333-444444444444"]);
+  expect(n.calls[0]!.url).toBe("http://127.0.0.1:4323/api/sessions");
+  expect(n.calls[0]!.body).toEqual({ permissionMode: "bypassPermissions" });
+  const d = ctx(n.fetchFn);
+  expect(await main(["new", "--peer", "vm", "--mode", "default"], d)).toBe(0);
+  expect(d.lines).toEqual(["vm/new00000-1111-2222-3333-444444444444"]);
+  expect(n.calls[1]!.body).toEqual({ permissionMode: "default" });
+  const e = ctx(n.fetchFn);
+  expect(await main(["new", "/home/u/proj"], e)).toBe(0);
+  expect(n.calls[2]!.body).toEqual({ cwd: "/home/u/proj", permissionMode: "bypassPermissions" });
+});
+
+test("new without a text on an old node says the node needs ccn update", async () => {
+  for (const error of ["prompt or resume is required", "cwd is required"]) {
+    const fetchFn = (async () => new Response(JSON.stringify({ error }), { status: 400, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const errs: string[] = [];
+    const c = ctx(fetchFn, { err: (s) => errs.push(s) });
+    expect(await main(["new", "--peer", "vm"], c)).toBe(1);
+    expect(errs.join("\n")).toContain("古い版");
+    expect(errs.join("\n")).toContain("update");
+  }
+});
+
+test("show without a target shows this Claude Code session (CLAUDE_CODE_SESSION_ID) on the local node", async () => {
+  const n = fakeNode({ sessions: [sess("abcdef12-0000-0000-0000-000000000000", { permissionMode: "default" })] });
+  const c = ctx(n.fetchFn);
+  expect(await main(["show"], c)).toBe(0);
+  expect(c.lines).toContain("id: abcdef12-0000-0000-0000-000000000000");
+  expect(c.lines).toContain("permissionMode: default");
+  const bare = ctx(n.fetchFn, { env: { HOME: tmpdir() } });
+  const errs: string[] = [];
+  expect(await main(["show"], { ...bare, err: (s) => errs.push(s) })).toBe(1);
+  expect(errs.join("\n")).toContain("対象");
+});
+
+test("places prints one line per place with remote and last use, passes words and --limit, and --json prints the body", async () => {
+  const body = { name: "pro", lobby: "/home/u/.local/share/ccn/lobby", roots: ["/home/u"], places: [
+    { name: "notes", path: "/home/u/Documents/notes", remote: "https://github.com/o/notes.git", readme: ["# Notes"], lastUsedAt: Date.UTC(2026, 10, 10, 3) },
+    { name: "x", path: "/home/u/x", remote: null, readme: [], lastUsedAt: null },
+  ], total: 5, truncated: true };
+  const urls: string[] = [];
+  const fetchFn = (async (i: RequestInfo | URL, init?: RequestInit) => { const r = new Request(i, init); urls.push(r.url); return Response.json(body); }) as typeof fetch;
+  const c = ctx(fetchFn);
+  expect(await main(["places", "notes", "greeter", "--limit", "5"], c)).toBe(0);
+  expect(urls[0]).toBe("http://127.0.0.1:4323/api/places?q=notes+greeter&limit=5");
+  expect(c.lines[0]).toBe("lobby: /home/u/.local/share/ccn/lobby");
+  expect(c.lines[1]).toBe("roots: /home/u");
+  expect(c.lines[2]).toMatch(/^\/home\/u\/Documents\/notes  remote=https:\/\/github.com\/o\/notes.git  used=2026-11-1\d$/);
+  expect(c.lines[3]).toBe("  | # Notes");
+  expect(c.lines[4]).toBe("/home/u/x");
+  expect(c.lines[5]).toContain("5 件のうち 2 件");
+  const j = ctx(fetchFn);
+  expect(await main(["places", "--json"], j)).toBe(0);
+  expect(urls[1]).toBe("http://127.0.0.1:4323/api/places");
+  expect(JSON.parse(j.lines.join("\n"))).toEqual(body);
+});
+
+test("places on an old node says the node needs ccn update", async () => {
+  const n = fakeNode();
+  const errs: string[] = [];
+  const c = ctx(n.fetchFn, { err: (s) => errs.push(s) });
+  expect(await main(["places", "--peer", "vm"], c)).toBe(1);
+  expect(errs.join("\n")).toContain("places に対応していない古い版");
+  expect(n.calls[0]!.url).toBe("https://ccn-vm.fybe.jp/api/places");
 });

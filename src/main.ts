@@ -14,13 +14,15 @@ import { listAgents, bunRunner } from "./engine/agents";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
 import { Relay } from "./relay/relay";
-import { entryOf } from "./config";
+import { defaultPath, entryOf, lobbyOf } from "./config";
+import { prepareLobby } from "./lobby/lobby";
 
-export function buildDeps(cfg: Config): Deps {
+export function buildDeps(cfg: Config, configFile?: string): Deps {
   const registry = registryFor(cfg);
   return {
     nodeName: cfg.name,
     roots: cfg.roots,
+    lobby: lobbyOf(cfg),
     store: new SessionStore(),
     identity: identityFor(cfg),
     history: new History({ listSessions, getSessionMessages, getSessionInfo }),
@@ -31,6 +33,8 @@ export function buildDeps(cfg: Config): Deps {
     registry,
     relay: new Relay({ registry, nodeName: cfg.name, serviceToken: cfg.serviceToken }),
     appRoot: join(import.meta.dir, ".."),
+    home: homedir(),
+    configFile,
   };
 }
 
@@ -55,10 +59,14 @@ async function account(): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-export function start(cfg: Config) {
-  const app = createApp(buildDeps(cfg));
+export function start(cfg: Config, configPath = defaultPath()) {
+  // 受け口を用意する。入れ替え前の旧コードが走る初回の ccn update では update の中の処理が動かないので、起動のたびにここでも行う
+  const lb = prepareLobby({ dir: lobbyOf(cfg), appRoot: join(import.meta.dir, ".."), nodeName: cfg.name, roots: cfg.roots, home: homedir(), configFile: configPath });
+  if ("error" in lb) console.error(`lobby ${lb.dir}: ${lb.error}`);
+  const lobby = "error" in lb ? undefined : lb.dir;
+  const app = createApp(buildDeps(cfg, configPath));
   const server = Bun.serve({ hostname: "127.0.0.1", port: cfg.port, fetch: app.fetch, idleTimeout: 0 });
-  console.log(`node on http://127.0.0.1:${cfg.port} (${cfg.name}, roots: ${cfg.roots.join(", ")}, ${cfg.teamDomain && cfg.aud ? "access" : "no access"})`);
+  console.log(`node on http://127.0.0.1:${cfg.port} (${cfg.name}, roots: ${cfg.roots.join(", ")}, lobby: ${lobby ?? "none"}, ${cfg.teamDomain && cfg.aud ? "access" : "no access"})`);
   return server;
 }
 

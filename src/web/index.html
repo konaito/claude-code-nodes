@@ -64,12 +64,16 @@
   .row.off { opacity: .55; }
 
   /* 新しく */
-  .newform { margin: 0 12px 10px; padding: 10px; border-radius: 10px; background: var(--wash); display: grid; gap: 8px; }
+  .newform { margin: 0 12px 10px; padding: 10px; border-radius: 10px; background: var(--wash); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .newform[hidden] { display: none; }
   .newform select, .newform input, .newform textarea { font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); width: 100%; }
   .newform textarea { min-height: 64px; resize: vertical; }
   .newform-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
-  .newform-row .msg { color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .newform-note { font-size: 12px; color: var(--sub); line-height: 1.5; overflow-wrap: anywhere; }
+  .newform-note code { font-family: var(--mono); font-size: 11.5px; }
+  .newform-row { flex-wrap: wrap; }
+  .newform-row .msg { color: var(--sub); line-height: 1.5; overflow-wrap: anywhere; flex: 1 0 100%; min-width: 0; }
+  .newform-row .msg:empty { display: none; }
 
   /* 会話 */
   .chat-head { border-bottom: 1px solid var(--line); background: rgba(255,255,255,.92); backdrop-filter: blur(8px); position: relative; z-index: 2; padding-left: 24px; padding-right: 24px; }
@@ -89,6 +93,7 @@
   .say pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--wash); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 0 0 .8em; }
   .say pre code { background: none; padding: 0; font-size: inherit; }
   .say a { color: var(--shu-ink); text-underline-offset: 2px; }
+  .say .child { font-family: var(--mono); font-size: .9em; color: var(--shu-ink); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; text-align: left; }
   .say blockquote { margin: 0 0 .7em; padding-left: 12px; border-left: 2px solid var(--line); color: var(--sub); }
   .say .tbl { overflow-x: auto; margin: 0 0 .8em; } .say table { border-collapse: collapse; font-size: 13px; } .say th, .say td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
   details.tool { margin: 0 0 6px; font-size: 13px; color: var(--sub); }
@@ -135,15 +140,16 @@
     </div>
     <form class="newform" id="newform" hidden>
       <select id="new-peer"></select>
-      <input id="new-cwd" placeholder="作業ディレクトリ（例 ~/work）" autocomplete="off">
-      <textarea id="new-prompt" placeholder="最初の文"></textarea>
+      <input id="new-cwd" list="new-places" placeholder="空なら受け口" autocomplete="off">
+      <datalist id="new-places"></datalist>
+      <div class="newform-note" id="new-note"></div>
       <select id="new-mode">
         <option value="default">default（承認を聞く）</option>
         <option value="acceptEdits">acceptEdits</option>
         <option value="bypassPermissions">bypassPermissions</option>
         <option value="plan">plan</option>
       </select>
-      <div class="newform-row"><button type="submit" class="pill ink">立てる</button><button type="button" class="pill" id="new-cancel">やめる</button><span class="msg" id="new-msg"></span></div>
+      <div class="newform-row"><button type="submit" class="pill ink">開く</button><button type="button" class="pill" id="new-cancel">やめる</button><span class="msg" id="new-msg"></span></div>
     </form>
     <div class="scroll" id="peers"><div class="empty">まだ無い</div></div>
   </section>
@@ -333,7 +339,7 @@ function renderSessions() {
   const row = (s) => `<button class="row ${cur.id === s.id ? "on" : ""} ${s.state === "exited" ? "off" : ""}" data-id="${esc(s.id)}">
     <div class="l1"><span class="ttl">${esc(s.title || base(s.cwd) || s.id.slice(0, 8))}</span><span class="when">${esc(ago(s.lastActivityAt))}</span></div>
     <div class="l2">${esc(home(s.cwd))}</div>
-    <div class="l3"><span class="dot ${dotOf(s)}"></span><span class="tag ${s.kind === "terminal" ? "term" : ""}">${esc(s.kind)}</span><span class="txt">${esc(stateJa[s.state] || s.state)}${s.parent ? ` · ${esc(s.parent)}` : ""}</span></div></button>`;
+    <div class="l3"><span class="dot ${dotOf(s)}"></span><span class="tag ${s.kind === "terminal" ? "term" : ""}">${esc(s.kind)}</span><span class="txt">${esc(s.awaitingFirst ? "1通目待ち" : stateJa[s.state] || s.state)}${s.parent ? ` · ${esc(s.parent)}` : ""}</span></div></button>`;
   $("sessions").innerHTML = [...live.map(row), past.length ? `<div class="empty" style="padding:14px 16px 4px">過去 ${past.length} 件</div>` : "", ...past.slice(0, 50).map(row)].join("");
 }
 $("sessions").addEventListener("click", (e) => { const b = e.target.closest("[data-id]"); if (b) openChat(b.dataset.id); });
@@ -379,7 +385,7 @@ async function openChat(id, keep) {
       items = items.concat(more.messages); next = more.next;
     }
   } catch (e) { $("feed").innerHTML = `<div class="empty">読めない: ${esc(e.message)}</div>`; return; }
-  $("feed").innerHTML = items.map(itemHtml).filter(Boolean).join("") || `<div class="empty">まだ何も無い</div>`;
+  $("feed").innerHTML = items.map(itemHtml).filter(Boolean).join("") || `<div class="empty">${detail.awaitingFirst ? (isLobby(cur.peer, detail.cwd) ? "受け口。やりたいことを書いて送ると、行き先のディレクトリに子を立てて、その子を返す" : "まだ動いていない。1通目を送ると動き出す") : "まだ何も無い"}</div>`;
   renderPending();
   scrollBottom();
   const draft = store.get(`${K}draft.${id}`); $("text").value = draft || ""; autosize();
@@ -397,7 +403,7 @@ function renderHead() {
   $("interrupt").hidden = !caps.interrupt; $("stop").hidden = !caps.stop;
   $("resume").hidden = !(s.state === "exited" && s.kind === "node");
   $("compose").hidden = !caps.send;
-  $("hint").textContent = caps.send ? (s.kind === "terminal" ? "端末のセッション。文は「別セッションからのメッセージ」として届く。承認と中断はできない" : "") : s.state === "exited" ? "終了している。「続きから」で同じ会話を再開できる" : "";
+  $("hint").textContent = caps.send && s.awaitingFirst ? "1通目を待っている。30分送らないと消える" : caps.send ? (s.kind === "terminal" ? "端末のセッション。文は「別セッションからのメッセージ」として届く。承認と中断はできない" : "") : s.state === "exited" ? "終了している。「続きから」で同じ会話を再開できる" : "";
 }
 function watchChat(id) {
   es = new EventSource(`${apiOf(cur.peer)}/sessions/${id}/events?after=${lastSeq}`);
@@ -435,7 +441,7 @@ function itemHtml(ev) {
     const content = m.message && m.message.content;
     const parts = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
     const html = parts.map((b) => {
-      if (b.type === "text" && b.text && b.text.trim()) return `<div class="say">${md(b.text)}</div>`;
+      if (b.type === "text" && b.text && b.text.trim()) return `<div class="say">${childLinks(md(b.text))}</div>`;
       if (b.type === "tool_use") return toolHtml(b.name, b.input);
       return "";
     }).join("");
@@ -460,6 +466,8 @@ function itemHtml(ev) {
   if (t === "rate_limit_event") return "";
   return "";
 }
+// 受け口の返事の「子: <peer>/<sessionId>」を、その子を開くボタンにする
+const childLinks = (html) => html.replace(/(子: )([A-Za-z0-9._-]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g, (_, k, peer, id) => `${k}<button class="child" data-open-peer="${peer}" data-open-id="${id}">${peer}/${id}</button>`);
 function userHtml(text, at) {
   const m = String(text).match(/^from (\S+) via (\S+)\s*\n\n?([\s\S]*)$/);
   const from = m ? `<span class="from">${esc(m[1])} · ${esc(m[2])}</span>` : "";
@@ -480,6 +488,8 @@ function renderPending() {
   if (html) { const atBottom = nearBottom(); $("feed").insertAdjacentHTML("beforeend", html); if (atBottom) scrollBottom(); }
 }
 $("feed").addEventListener("click", async (e) => {
+  const o = e.target.closest("[data-open-id]");
+  if (o) { await openPeer(o.dataset.openPeer, true); await openChat(o.dataset.openId); return; }
   const b = e.target.closest("[data-act]"); if (!b) return;
   const rid = b.closest(".perm").dataset.rid;
   const act = b.dataset.act;
@@ -528,26 +538,56 @@ $("resume").addEventListener("click", async () => {
   } catch (err) { alert(`再開できない: ${err.message}`); }
 });
 
-// 新しく
+// 新しく。ノードと場所だけを決めて開き、1通目は会話の入力欄で打つ。場所を空にすると受け口
+const isLobby = (peer, cwd) => !!(hosts[peer] && hosts[peer].lobby && cwd === hosts[peer].lobby);
+const recentKey = (peer) => `${K}recent.${peer}`;
+const recentOf = (peer) => { try { return JSON.parse(store.get(recentKey(peer)) || "[]"); } catch { return []; } };
+function remember(peer, cwd) { store.set(recentKey(peer), JSON.stringify([cwd, ...recentOf(peer).filter((x) => x !== cwd)].slice(0, 12))); }
 function fillNewPeers() {
   const sel = $("new-peer");
-  sel.innerHTML = peers.filter((p) => p.status === "healthy" || p.status === "degraded").map((p) => `<option value="${esc(p.name)}" ${p.name === cur.peer ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  const keep = sel.value || cur.peer;
+  sel.innerHTML = peers.filter((p) => p.status === "healthy" || p.status === "degraded").map((p) => `<option value="${esc(p.name)}" ${p.name === keep ? "selected" : ""}>${esc(p.name)}</option>`).join("");
+  fillPlaces();
 }
+// 候補は、この画面で開いた場所（localStorage）と、そのノードの最近のセッションの cwd
+async function fillPlaces() {
+  const peer = $("new-peer").value; if (!peer) return;
+  const h = hosts[peer];
+  const lobby = h && h.lobby;
+  $("new-cwd").placeholder = lobby ? "場所（空なら受け口）" : "作業ディレクトリ（例 ~/work）";
+  $("new-note").innerHTML = lobby ? `受け口 <code>${esc(home(lobby))}</code>。開いてから1通目を打つ` : h && !h.error ? `${esc(peer)} は古い版で、受け口も1通目を後から打つ形も無い。${esc(peer)} で <code>%%CLI_NAME%% update</code> が要る` : "";
+  let list = [];
+  try { list = peer === cur.peer && sessions.length ? sessions : await withTimeout(api(peer, "/sessions"), 6000); } catch {}
+  const recent = [...recentOf(peer), ...list.slice().sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0)).map((s) => home(s.cwd))];
+  // 立てられるのは roots の内側だけなので、同じ機械の端末セッションの cwd でも外のものは出さない
+  const roots = ((h && h.roots) || []).map(home);
+  const inRoots = (c) => !roots.length || roots.some((r) => c === r || c.startsWith(r.replace(/\/$/, "") + "/"));
+  const uniq = [...new Set(recent.filter((c) => c && (!lobby || c !== home(lobby)) && inRoots(c)))].slice(0, 15);
+  $("new-places").innerHTML = uniq.map((c) => `<option value="${esc(c)}"></option>`).join("");
+}
+$("new-peer").addEventListener("change", fillPlaces);
 $("new-btn").addEventListener("click", () => { $("newform").hidden = !$("newform").hidden; if (!$("newform").hidden) { fillNewPeers(); $("new-cwd").focus(); } });
 $("new-cancel").addEventListener("click", () => { $("newform").hidden = true; });
+const OLD_NODE = /cwd is required|prompt or resume is required/;
 $("newform").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const peer = $("new-peer").value; const cwd = $("new-cwd").value.trim(); const promptText = $("new-prompt").value.trim(); const mode = $("new-mode").value;
-  if (!peer || !cwd || !promptText) { $("new-msg").textContent = "全部入れる"; return; }
-  $("new-msg").textContent = "立てている";
+  const peer = $("new-peer").value; const cwd = $("new-cwd").value.trim(); const mode = $("new-mode").value;
+  if (!peer) { $("new-msg").textContent = "ノードを選ぶ"; return; }
+  const h = hosts[peer] || {};
+  if (h.roots && !h.lobby) { $("new-msg").textContent = `${peer} は古い版。${peer} で %%CLI_NAME%% update する`; return; }
+  $("new-msg").textContent = "開いている";
   try {
-    const root = (hosts[peer] && hosts[peer].roots && hosts[peer].roots[0]) || "";
+    const root = (h.roots && h.roots[0]) || "";
     const abs = cwd.startsWith("~") ? cwd.replace(/^~/, root.replace(/\/$/, "")) : cwd;
-    const r = await api(peer, "/sessions", { method: "POST", body: JSON.stringify({ cwd: abs, prompt: promptText, permissionMode: mode }) });
-    $("new-msg").textContent = ""; $("newform").hidden = true; $("new-prompt").value = "";
+    const body = { permissionMode: mode };
+    if (abs) body.cwd = abs;
+    const r = await api(peer, "/sessions", { method: "POST", body: JSON.stringify(body) });
+    if (cwd) remember(peer, cwd);
+    $("new-msg").textContent = ""; $("newform").hidden = true; $("new-cwd").value = "";
     await openPeer(peer, true); await openChat(r.id);
-    appendFeed(userHtml(promptText, Date.now()));
-  } catch (err) { $("new-msg").textContent = `失敗: ${err.message}`; }
+  } catch (err) {
+    $("new-msg").textContent = OLD_NODE.test(err.message) ? `${peer} は古い版で、1通目を後から打つ形に対応していない。${peer} で %%CLI_NAME%% update する` : `失敗: ${err.message}`;
+  }
 });
 
 // 戻る

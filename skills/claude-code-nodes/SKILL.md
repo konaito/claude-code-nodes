@@ -1,6 +1,6 @@
 ---
 name: claude-code-nodes
-description: Claude Code Nodes（ccn）の MCP サーバー（{{ORIGIN}}/mcp）で、複数の機械に置かれた Claude Code のセッションを一覧し、別の機械に子セッションを立て、文を送り、返事を待って読み、子の権限プロンプトに答え、中断し、止める。別の機械の Claude Code に作業を任せるとき、ccn のノードやセッションの状況を見るとき、子セッションの承認待ちに答えるときに使う。
+description: Claude Code Nodes（ccn）の MCP サーバー（{{ORIGIN}}/mcp）で、複数の機械に置かれた Claude Code のセッションを一覧し、各機械の受け口に依頼を渡して行き先に子セッションを立ててもらい、子に文を送り、返事を待って読み、子の権限プロンプトに答え、中断し、止める。別の機械の Claude Code に作業を任せるとき、ccn のノードやセッションの状況を見るとき、子セッションの承認待ちに答えるときに使う。
 ---
 
 # Claude Code Nodes（ccn）
@@ -15,6 +15,18 @@ Claude Code Nodes は、Claude Code がログイン済みの機械ごとに1つ�
 - ノードは会話を保存しない。会話の正本は各機械の Claude Code の記録で、ノードはそれを読むだけ。
 - ノードどうしは Cloudflare Tunnel と Cloudflare Access でつながる。別の機械のセッションへの操作は、入口のノードが相手のノードへ中継する。
 - 仲間のノードの一覧は `ccn:list_peers` で読む。ほかのツールの `peer` には、この一覧の名前を渡す。
+
+## 受け口
+
+各ノードには受け口（lobby）のディレクトリがある。受け口のセッションは、届いた依頼から行き先のディレクトリを探し、そこに子を立てて渡す。
+
+- `ccn:create_session` で `cwd` を省くと、受け口に立つ。`prompt` も省くと、1通目を待つ空のセッションになる。id はすぐ決まり、`state` は `idle` になる。
+- 1通目を `ccn:send_message` で送ると動き出す。1通も送られないまま30分たったセッションは消える。
+- 受け口は子を立てると、返事に `子: <peer>/<sessionId>` の行を書いて、すぐターンを終える。そのあとは、この子と直接やりとりする。
+- 受け口は子を自分と同じ権限モードで立て、子の最初のターンの承認には受け口が答える。受け口のモードと依頼の範囲を超える操作は断り、返事でそのことを伝える。受け口自身を `default` で立てると、受け口の Bash にも承認が要る。
+- 行き先を決められないとき、受け口は候補を並べた文で聞き返す。そのときは答えを `ccn:send_message` で受け口に送る。
+- どこにどんなディレクトリがあるか、セッションと機械の状態は、受け口が子を立てずに答える。ファイルの中身や git log を読む依頼は、受け口が行き先に子を立てて任せる。
+- 受け口の場所、許された根（roots）、最近使われた場所、行き先の候補（roots と Documents の直下のディレクトリごとの README の先頭、git の remote、最近使ったか）は `ccn:list_places` で読める。`query` で絞れる。
 
 ## セッションの種類
 
@@ -79,7 +91,8 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | `ccn:list_peers` | ノードの一覧と healthy、down | なし |
 | `ccn:list_sessions` | 1つのノードのセッション一覧。既定は終わっていないものだけ | `peer`、`parent`、`include_exited`、`limit` |
 | `ccn:get_session` | 1つの詳細、保留中の承認、`cursor` | `peer`、`session` |
-| `ccn:create_session` | 子を立てて最初の文を送る | `peer`、`cwd`、`prompt`、`permission_mode`、`model`、`resume`、`fork`、`as`、`as_session` |
+| `ccn:list_places` | 受け口、許された根、最近使われた場所、行き先の候補（`places`） | `peer`、`limit`、`query`、`places_limit` |
+| `ccn:create_session` | 子を立てる。`cwd` を省くと受け口、`prompt` を省くと1通目を待つ | `peer`、`cwd`、`prompt`、`permission_mode`、`model`、`resume`、`fork`、`as`、`as_session` |
 | `ccn:send_message` | 文を1つ送り、送る前の `cursor` を返す | `peer`、`session`、`text`、`as`、`as_session` |
 | `ccn:read_messages` | `after` より後を読み、ターンの終わりまで最大50秒待つ | `peer`、`session`、`after`、`wait_seconds`、`max_chars` |
 | `ccn:answer_permission` | 子の権限プロンプトに allow か deny で答える | `peer`、`session`、`behavior`、`request_id`、`message` |
@@ -90,11 +103,21 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 
 ## 流れ
 
+行き先のディレクトリを知らないときは、受け口に任せる。
+
 1. `ccn:list_peers` で healthy なノードを選ぶ。
-2. `ccn:create_session` で子を立てる。`cwd` はそのノードで許された根の下の絶対パス。`as` に役割（例 lead）、`as_session` に自分の sessionId を入れると、`parent` で自分の子だけを探せる。返る `id`、`parent`、`cursor` を覚える。
-3. `ccn:read_messages` に `after` として `cursor` を渡して待つ。結果の最後の行の `stop` で次を決める。
-4. 続けて頼むときは `ccn:send_message` で1つ送り、返る `cursor` を `after` にして `ccn:read_messages` で待つ。
-5. 済んだら `ccn:stop_session` で止める。
+2. `ccn:create_session` を `cwd` と `prompt` を省いて呼び、受け口に空のセッションを立てる。返る `id` を覚える。
+3. `ccn:send_message` で依頼を送る。依頼は1通で完結させる（「子への頼み方」の節）。返る `cursor` を覚える。
+4. `ccn:read_messages` に `after` として `cursor` を渡し、`stop=result` まで待つ。返事の `子: <peer>/<sessionId>` の行が、立った子になる。聞き返されたら、答えを受け口に送って 3 に戻る。
+5. 子の様子は `ccn:read_messages` に `session=<peer>/<sessionId>`、`after=0` を渡して読む。続けて頼むときは、子に `ccn:send_message` で1つ送り、返る `cursor` を `after` にして待つ。
+6. 済んだら `ccn:stop_session` で子と受け口を止める。
+
+行き先が分かっているときは、受け口を通さずに立ててよい。
+
+1. `ccn:list_places` で受け口、許された根、最近使われた場所、行き先の候補を見る。候補が多いときは `query` に語を入れて絞る。
+2. `ccn:create_session` に `cwd`（許された根の下の絶対パス）を渡す。最初の文があれば `prompt` に入れる。`as` に役割（例 lead）、`as_session` に自分の sessionId を入れると、`parent` で自分の子だけを探せる。返る `id`、`parent`、`cursor` を覚える。
+3. `prompt` を省いたときは、`ccn:send_message` で1通目を送る。
+4. `ccn:read_messages` に `after` として `cursor` を渡して待つ。結果の最後の行の `stop` で次を決める。
 
 ## 待ちと終わり
 
@@ -103,7 +126,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | stop | 意味 | 次にすること |
 | --- | --- | --- |
 | result | ターンが終わり、返事が出そろった | 読んで次を決める |
-| permission | 子がツールの承認を待っている | `[pending]` 行の requestId で `ccn:answer_permission` |
+| permission | 子がツールの承認を待っている | `[pending]` 行の中身（`command="…"`、`file_path="…"`）を見て、requestId で `ccn:answer_permission` |
 | exited | 子のプロセスが終わった | 続けるなら `ccn:create_session` に `resume=<id>`。終わった後の会話は位置で数え直すので、読み直すときは `after=0` |
 | timeout | まだ動いている | 同じ `session` で `after=<cursor>` を渡して呼び直す |
 | truncated | 文字数の上限に達した | `after=<cursor>` で続きを読む |
@@ -129,6 +152,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 - terminal のセッションの権限応答、中断、停止。
 - ノードの外の機械や、登録されていない機械の操作。
 - 許された根（ノードの設定の `roots`）の外の `cwd` での起動。
+- 古い版のノードでの、受け口とプロンプト無しの作成。古い版は `cwd is required` か `prompt or resume is required` で断るので、`cwd` と `prompt` を両方渡す。
 
 ## CLI（ccn）がある機械
 
@@ -137,6 +161,8 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 ```bash
 ccn peers
 ccn ls --mine
+ccn new --peer <ノード名>                    # 受け口に空のセッションを立てる。<peer>/<id> が返る
+ccn run <peer>/<id> "<依頼>" --wait 300      # 受け口に依頼を送り、返事の「子:」の行を読む
 ccn new <dir> "<文>" --peer <ノード名> --as <役割>
 ccn run <peer>/<id> "<文>" --wait 600
 ccn allow <peer>/<id>

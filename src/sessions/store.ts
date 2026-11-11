@@ -7,6 +7,7 @@ const DEFAULT_MAX_EVENTS = 2000;
 const KEEP_AFTER_EXIT = 50; // 終了後に残す末尾の件数。遅れて繋いだ購読者が終わりの理由を読めるように
 const DEFAULT_ENDED_TTL_MS = 30 * 60_000; // 終わったセッションを台帳に残す時間。過ぎたら消す（過去の会話は履歴から読める）
 const DEFAULT_MAX_ENDED = 100;            // 終わったセッションを残す件数の上限。超えたら古いものから消す
+const DEFAULT_UNSENT_TTL_MS = 30 * 60_000; // プロンプト無しで立てて1通も届かないセッションを残す時間。終わったものと同じ30分
 type Change = { id: string; summary: SessionSummary };
 type Entry = {
   driver: Driver;
@@ -26,11 +27,13 @@ export class SessionStore {
   private lastRateLimit: unknown;
   private endedTtlMs: number;
   private maxEnded: number;
+  private unsentTtlMs: number;
   private now: () => number;
 
-  constructor(opts: { maxEvents?: number; endedTtlMs?: number; maxEnded?: number; now?: () => number } = {}) {
+  constructor(opts: { maxEvents?: number; endedTtlMs?: number; maxEnded?: number; unsentTtlMs?: number; now?: () => number } = {}) {
     this.maxEvents = opts.maxEvents ?? DEFAULT_MAX_EVENTS;
     this.endedTtlMs = opts.endedTtlMs ?? DEFAULT_ENDED_TTL_MS;
+    this.unsentTtlMs = opts.unsentTtlMs ?? DEFAULT_UNSENT_TTL_MS;
     this.maxEnded = opts.maxEnded ?? DEFAULT_MAX_ENDED;
     this.now = opts.now ?? Date.now;
   }
@@ -83,8 +86,20 @@ export class SessionStore {
     if (!e) throw new Error(`unknown session: ${id}`);
     return e;
   }
-  // 終わってから endedTtlMs を過ぎたものと、maxEnded を超えた古いものを消す。タイマーは持たず、add と list のついでに掃く
+  // 終わってから endedTtlMs を過ぎたものと、maxEnded を超えた古いものを消す。タイマーは持たず、add と list のついでに掃く。
+  // プロンプト無しで立てて1通も届かないまま unsentTtlMs を過ぎたもの（画面で開いて打たずに離れたもの）も止めて消す。claude は起動していないので、消えるのは台帳の項目だけ
   private sweep() {
+    const t0 = this.now();
+    for (const [id, e] of [...this.entries]) {
+      const s = e.driver.summary();
+      if (!e.ended && s.awaitingFirst && t0 - s.startedAt >= this.unsentTtlMs) {
+        this.entries.delete(id);
+        for (const q of e.subs) q.close();
+        e.subs.clear();
+        void e.driver.stop().catch(() => {});
+        this.emitChange(e.driver);
+      }
+    }
     const ended = [...this.entries.entries()].filter(([, e]) => e.ended).sort((a, b) => (a[1].endedAt ?? 0) - (b[1].endedAt ?? 0));
     const t = this.now();
     ended.forEach(([id, e], i) => {
