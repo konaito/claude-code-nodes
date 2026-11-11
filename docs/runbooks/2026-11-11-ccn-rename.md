@@ -102,10 +102,10 @@ vm は立ち上がってから行う。incertotech は入口なので、更新�
 ccn node migrate konaito-pro --rename
 ccn node migrate incertotech --rename
 ccn node migrate vm --rename
-ccn entry incertotech --host ccn.fybe.jp
+ccn entry incertotech --host ccn.fybe.jp --port 4323
 ```
 
-`ccn entry` は incertotech のトンネルの ingress に `ccn.fybe.jp` を足し、CNAME を向ける。`cc.fybe.jp` の ingress と CNAME は残る。
+`ccn entry` は incertotech のトンネルの ingress に `ccn.fybe.jp` を足し、CNAME を向ける。`cc.fybe.jp` の ingress と CNAME は残る。`--port` を省くと行き先が `127.0.0.1:4322` になる。incertotech のノードは 4323 で待っているので、省くと ccn.fybe.jp が 502 を返す（2026-11-11 の本番で起きた）。
 
 各機械で、設定の入口を新しくする。
 
