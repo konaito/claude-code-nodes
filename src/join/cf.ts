@@ -1,5 +1,6 @@
 // cf CLI の包み。Access アプリ、サービストークン、トンネル、DNS を「あるべき形」に揃える。cf は OAuth で動くので、秘密を argv に渡すことはない
 import type { Runner } from "../engine/agents";
+import { LEGACY_TUNNEL_PREFIX, TUNNEL_PREFIX } from "../names";
 
 export type CfRunner = Runner; // 本物は cf を spawn し、-q を付ける
 export class CfError extends Error { constructor(msg: string) { super(msg); this.name = "CfError"; } }
@@ -30,17 +31,18 @@ function appBody(o: { name: string; hosts: string[]; sessionDuration?: string; p
     app_launcher_visible: false, policies: o.policies,
   };
 }
-async function ensureApp(cf: CfRunner, name: string, b: unknown): Promise<App> {
+// 名前が name のアプリ、無ければ legacyNames（改名前の名前）のアプリを、新しい名前と中身で上書きする。aud は変わらない
+async function ensureApp(cf: CfRunner, name: string, legacyNames: string[], b: unknown): Promise<App> {
   const apps = await call<App[]>(cf, ["zero-trust", "access", "applications", "list"]);
-  const found = (apps ?? []).find((a) => a.name === name);
+  const found = [name, ...legacyNames].map((n) => (apps ?? []).find((a) => a.name === n)).find(Boolean);
   return found
     ? call<App>(cf, ["zero-trust", "access", "applications", "update", found.id, ...body(b)])
     : call<App>(cf, ["zero-trust", "access", "applications", "create", ...body(b)]);
 }
 
-// Access アプリ cc。人の email の allow と、ノード用サービストークンの non_identity
-export async function ensureAccessApp(cf: CfRunner, o: { name: string; hosts: string[]; sessionDuration: string; email: string; serviceTokenId: string }): Promise<{ id: string; aud: string }> {
-  const app = await ensureApp(cf, o.name, appBody({
+// Access アプリ（ACCESS_APP）。人の email の allow と、ノード用サービストークンの non_identity
+export async function ensureAccessApp(cf: CfRunner, o: { name: string; legacyNames?: string[]; hosts: string[]; sessionDuration: string; email: string; serviceTokenId: string }): Promise<{ id: string; aud: string }> {
+  const app = await ensureApp(cf, o.name, o.legacyNames ?? [], appBody({
     name: o.name, hosts: o.hosts, sessionDuration: o.sessionDuration,
     policies: [
       { name: "owner", decision: "allow", include: [{ email: { email: o.email } }] },
@@ -50,30 +52,32 @@ export async function ensureAccessApp(cf: CfRunner, o: { name: string; hosts: st
   return { id: app.id, aud: app.aud };
 }
 
-// Bypass アプリ cc-install。<host>/install だけ Access を外す
-export async function ensureBypassApp(cf: CfRunner, o: { name: string; hosts: string[] }): Promise<{ id: string }> {
-  const app = await ensureApp(cf, o.name, appBody({
+// Bypass アプリ（BYPASS_APP）。<host>/install だけ Access を外す
+export async function ensureBypassApp(cf: CfRunner, o: { name: string; legacyNames?: string[]; hosts: string[] }): Promise<{ id: string }> {
+  const app = await ensureApp(cf, o.name, o.legacyNames ?? [], appBody({
     name: o.name, hosts: o.hosts.map((h) => `${h}/install`),
     policies: [{ name: "public", decision: "bypass", include: [{ everyone: {} }] }],
   }));
   return { id: app.id };
 }
 
-// サービストークン。secret は作ったときにしか返らない
-export async function ensureServiceToken(cf: CfRunner, o: { name: string; duration: string }): Promise<{ id: string; clientId: string; clientSecret?: string }> {
+// サービストークン。secret は作ったときにしか返らない。改名前の名前（legacyNames）のものがあればそれを使う（名前は変えない。全ノードが同じ secret を持っているため）
+export async function ensureServiceToken(cf: CfRunner, o: { name: string; legacyNames?: string[]; duration: string }): Promise<{ id: string; name: string; clientId: string; clientSecret?: string }> {
   type Tok = { id: string; name: string; client_id: string; client_secret?: string };
   const list = await call<Tok[]>(cf, ["zero-trust", "access", "service-tokens", "list"]);
-  const found = (list ?? []).find((t) => t.name === o.name);
-  if (found) return { id: found.id, clientId: found.client_id };
+  const found = [o.name, ...(o.legacyNames ?? [])].map((n) => (list ?? []).find((t) => t.name === n)).find(Boolean);
+  if (found) return { id: found.id, name: found.name, clientId: found.client_id };
   const t = await call<Tok>(cf, ["zero-trust", "access", "service-tokens", "create", ...body({ name: o.name, duration: o.duration })]);
-  return { id: t.id, clientId: t.client_id, clientSecret: t.client_secret };
+  return { id: t.id, name: o.name, clientId: t.client_id, clientSecret: t.client_secret };
 }
 
 type Tunnel = { id: string; name: string; deleted_at?: string | null };
-const tunnelName = (name: string) => `cc-${name}`;
-async function findTunnel(cf: CfRunner, name: string): Promise<Tunnel | undefined> {
-  const list = await call<Tunnel[]>(cf, ["tunnels", "list"]);
-  return (list ?? []).find((t) => t.name === tunnelName(name) && !t.deleted_at);
+const tunnelName = (name: string) => `${TUNNEL_PREFIX}${name}`;
+// ノードのトンネル。新の名前（ccn-<name>）を先に、無ければ改名前の名前（cc-<name>）を探す
+async function findTunnel(cf: CfRunner, name: string, exact?: string): Promise<Tunnel | undefined> {
+  const list = (await call<Tunnel[]>(cf, ["tunnels", "list"])) ?? [];
+  const names = exact ? [exact] : [tunnelName(name), `${LEGACY_TUNNEL_PREFIX}${name}`];
+  return names.map((n) => list.find((t) => t.name === n && !t.deleted_at)).find(Boolean);
 }
 type Ingress = { hostname?: string; service: string };
 const ingressFor = (hostname: string, port: number): Ingress => ({ hostname, service: `http://127.0.0.1:${port}` });
@@ -81,6 +85,10 @@ async function setIngress(cf: CfRunner, tunnelId: string, ingress: Ingress[]) {
   await call(cf, ["tunnels", "config", "update", tunnelId, ...body({ config: { ingress: [...ingress, { service: "http_status:404" }] } })]);
 }
 type Dns = { id: string; name: string; type: string };
+async function hasCname(cf: CfRunner, zone: string, name: string): Promise<boolean> {
+  const list = await call<Dns[]>(cf, ["dns", "records", "list", "-z", zone]);
+  return (list ?? []).some((d) => d.name === name && d.type === "CNAME");
+}
 async function createCname(cf: CfRunner, zone: string, name: string, tunnelId: string) {
   await call(cf, ["dns", "records", "create", "-z", zone, ...body({ type: "CNAME", name, content: `${tunnelId}.cfargotunnel.com`, proxied: true })]);
 }
@@ -111,13 +119,44 @@ export async function nodeTunnelToken(cf: CfRunner, o: { name: string }): Promis
   return { tunnelId: t.id, token };
 }
 
-export async function removeNodeTunnel(cf: CfRunner, o: { name: string; hostname: string; zone: string }): Promise<void> {
+// tunnelName はトンネルの実名（ccn-<name> か cc-<name>）。取り違えて新旧の別のものを消さないように、名前で1つに決める
+export async function removeNodeTunnel(cf: CfRunner, o: { tunnelName: string; hostname: string; zone: string; dnsOnly?: boolean }): Promise<void> {
   await deleteCname(cf, o.zone, o.hostname);
-  const t = await findTunnel(cf, o.name);
+  if (o.dnsOnly) return;
+  const t = await findTunnel(cf, "", o.tunnelName);
   if (t) await call(cf, ["tunnels", "delete", t.id, "--force"]);
 }
 
-// 入口。そのノードのトンネルの ingress に cc.fybe.jp を足し、CNAME を向ける（移行日用）
+// 既にあるノードのトンネルに、ホスト名を足す（ingress と DNS の CNAME）。今の ingress は残す。改名で新のホスト名を足すとき用
+export async function addNodeHost(cf: CfRunner, o: { name: string; hostname: string; zone: string }): Promise<{ ingress: boolean; dns: boolean }> {
+  const t = await findTunnel(cf, o.name);
+  if (!t) throw new CfError(`tunnel ${tunnelName(o.name)} not found`);
+  const cur = await call<{ config?: { ingress?: Ingress[] } }>(cf, ["tunnels", "config", "get", t.id]);
+  const kept = (cur?.config?.ingress ?? []).filter((i) => i.hostname);
+  let ingress = false;
+  if (!kept.some((i) => i.hostname === o.hostname)) {
+    // 行き先は今のノードの行き先（127.0.0.1:<port>）と同じにする
+    const service = kept[0]?.service;
+    if (!service) throw new CfError(`tunnel ${t.name} has no hostname ingress to copy the service from`);
+    await setIngress(cf, t.id, [...kept, { hostname: o.hostname, service }]);
+    ingress = true;
+  }
+  let dns = false;
+  if (!(await hasCname(cf, o.zone, o.hostname))) { await createCname(cf, o.zone, o.hostname, t.id); dns = true; }
+  return { ingress, dns };
+}
+
+// トンネルの名前を ccn-<name> に変える。id とトークンは変わらない（cf tunnels edit --name）
+export async function renameNodeTunnel(cf: CfRunner, o: { name: string }): Promise<{ renamed: boolean; from: string }> {
+  const t = await findTunnel(cf, o.name);
+  if (!t) throw new CfError(`tunnel ${tunnelName(o.name)} not found`);
+  if (t.name === tunnelName(o.name)) return { renamed: false, from: t.name };
+  const r = await cf(["tunnels", "edit", t.id, "--name", tunnelName(o.name)]);
+  if (r.code !== 0) throw new CfError(`cf tunnels edit failed: ${r.stdout.slice(0, 500)}`);
+  return { renamed: true, from: t.name };
+}
+
+// 入口。そのノードのトンネルの ingress に入口のホスト名を足し、CNAME を向ける（移行日用）
 export async function setEntry(cf: CfRunner, o: { name: string; entryHost: string; port: number; zone: string }): Promise<void> {
   const t = await findTunnel(cf, o.name);
   if (!t) throw new CfError(`tunnel ${tunnelName(o.name)} not found`);

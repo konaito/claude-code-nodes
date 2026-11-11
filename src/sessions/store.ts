@@ -5,6 +5,8 @@ import { AsyncQueue } from "./async-queue";
 
 const DEFAULT_MAX_EVENTS = 2000;
 const KEEP_AFTER_EXIT = 50; // 終了後に残す末尾の件数。遅れて繋いだ購読者が終わりの理由を読めるように
+const DEFAULT_ENDED_TTL_MS = 30 * 60_000; // 終わったセッションを台帳に残す時間。過ぎたら消す（過去の会話は履歴から読める）
+const DEFAULT_MAX_ENDED = 100;            // 終わったセッションを残す件数の上限。超えたら古いものから消す
 type Change = { id: string; summary: SessionSummary };
 type Entry = {
   driver: Driver;
@@ -12,6 +14,7 @@ type Entry = {
   seq: number;        // この id で最後に振った番号。同じ id を入れ直しても引き継ぐ
   trimmedTo: number;  // 上限超えで捨てた最後の seq。これ以前のカーソルは欠落がある
   ended: boolean;
+  endedAt?: number;
   subs: Set<AsyncQueue<DriverEvent>>;
   lastState: string;
 };
@@ -21,10 +24,19 @@ export class SessionStore {
   private allSubs = new Set<AsyncQueue<Change>>();
   private maxEvents: number;
   private lastRateLimit: unknown;
+  private endedTtlMs: number;
+  private maxEnded: number;
+  private now: () => number;
 
-  constructor(opts: { maxEvents?: number } = {}) { this.maxEvents = opts.maxEvents ?? DEFAULT_MAX_EVENTS; }
+  constructor(opts: { maxEvents?: number; endedTtlMs?: number; maxEnded?: number; now?: () => number } = {}) {
+    this.maxEvents = opts.maxEvents ?? DEFAULT_MAX_EVENTS;
+    this.endedTtlMs = opts.endedTtlMs ?? DEFAULT_ENDED_TTL_MS;
+    this.maxEnded = opts.maxEnded ?? DEFAULT_MAX_ENDED;
+    this.now = opts.now ?? Date.now;
+  }
 
   add(d: Driver) {
+    this.sweep();
     const old = this.entries.get(d.id);
     if (old) { for (const s of old.subs) s.close(); old.subs.clear(); }
     const e: Entry = { driver: d, events: [], seq: old?.seq ?? 0, trimmedTo: old?.trimmedTo ?? 0, ended: false, subs: new Set(), lastState: d.summary().state };
@@ -33,7 +45,9 @@ export class SessionStore {
     void this.pump(e);
   }
   get(id: string): Driver | undefined { return this.entries.get(id)?.driver; }
-  list(): SessionSummary[] { return [...this.entries.values()].map((e) => e.driver.summary()); }
+  list(): SessionSummary[] { this.sweep(); return [...this.entries.values()].map((e) => e.driver.summary()); }
+  // この id で最後に振った seq（stream_event を含む）。送る前の末尾として CLI に返す
+  lastSeq(id: string): number | undefined { return this.entries.get(id)?.seq; }
   remove(id: string) {
     const e = this.entries.get(id);
     if (!e) return;
@@ -69,6 +83,14 @@ export class SessionStore {
     if (!e) throw new Error(`unknown session: ${id}`);
     return e;
   }
+  // 終わってから endedTtlMs を過ぎたものと、maxEnded を超えた古いものを消す。タイマーは持たず、add と list のついでに掃く
+  private sweep() {
+    const ended = [...this.entries.entries()].filter(([, e]) => e.ended).sort((a, b) => (a[1].endedAt ?? 0) - (b[1].endedAt ?? 0));
+    const t = this.now();
+    ended.forEach(([id, e], i) => {
+      if (t - (e.endedAt ?? t) >= this.endedTtlMs || ended.length - i > this.maxEnded) this.entries.delete(id);
+    });
+  }
   private emitChange(d: Driver) {
     const c = { id: d.id, summary: d.summary() };
     for (const s of this.allSubs) s.push(c);
@@ -92,9 +114,10 @@ export class SessionStore {
     } catch (err) {
       console.error(`session ${e.driver.id}: driver events failed:`, err);
     }
-    // Driver が終わった。購読を閉じ、末尾だけ残し、状態の変化を知らせる。台帳の項目は残す（exited として見える）
+    // Driver が終わった。購読を閉じ、末尾だけ残し、状態の変化を知らせる。台帳の項目はしばらく残す（exited として見える）。消すのは sweep
     if (this.entries.get(e.driver.id) !== e) return;
     e.ended = true;
+    e.endedAt = this.now();
     for (const s of e.subs) s.close();
     e.subs.clear();
     if (e.events.length > KEEP_AFTER_EXIT) e.events.splice(0, e.events.length - KEEP_AFTER_EXIT);

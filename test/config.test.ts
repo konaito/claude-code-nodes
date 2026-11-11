@@ -3,7 +3,7 @@ import { homedir, hostname } from "node:os";
 import { mkdtempSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, saveConfig, entryOf, nodeHost, APP_VERSION } from "../src/config";
+import { loadConfig, saveConfig, entryOf, nodeHost, resolveConfigPath, APP_VERSION } from "../src/config";
 
 test("loadConfig falls back to hostname, 4322 and $HOME", () => {
   const c = loadConfig("/nonexistent/cc/cc.json");
@@ -33,9 +33,19 @@ test("entryOf falls back to https://<domain>", () => {
   expect(APP_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
 });
 
-// ノードのホスト名は1階層（cc-<name>.<zone>）。無料の証明書（*.fybe.jp）で覆える
-test("nodeHost is cc-<name>.<zone>, derived from domain when zone is missing", () => {
-  expect(nodeHost("vm", { zone: "fybe.jp" })).toBe("cc-vm.fybe.jp");
-  expect(nodeHost("konaito-pro", { domain: "cc.fybe.jp" })).toBe("cc-konaito-pro.fybe.jp");
+// ノードのホスト名は1階層（ccn-<name>.<zone>）。無料の証明書（*.fybe.jp）で覆える
+test("nodeHost is ccn-<name>.<zone>, derived from domain when zone is missing", () => {
+  expect(nodeHost("vm", { zone: "fybe.jp" })).toBe("ccn-vm.fybe.jp");
+  expect(nodeHost("konaito-pro", { domain: "cc.fybe.jp" })).toBe("ccn-konaito-pro.fybe.jp");
   expect(() => nodeHost("vm", {})).toThrow();
+});
+
+test("resolveConfigPath reads the legacy ~/.config/cc/cc.json until the new one exists", () => {
+  const home = mkdtempSync(join(tmpdir(), "ccn-home-"));
+  expect(resolveConfigPath(home)).toBe(join(home, ".config", "ccn", "ccn.json"));
+  saveConfig({ name: "old", port: 4399, roots: [home] }, join(home, ".config", "cc", "cc.json"));
+  expect(resolveConfigPath(home)).toBe(join(home, ".config", "cc", "cc.json"));
+  expect(loadConfig(resolveConfigPath(home)).port).toBe(4399);
+  saveConfig({ name: "new", port: 4400, roots: [home] }, join(home, ".config", "ccn", "ccn.json"));
+  expect(resolveConfigPath(home)).toBe(join(home, ".config", "ccn", "ccn.json"));
 });

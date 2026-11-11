@@ -273,3 +273,9 @@ VMの127.0.0.1に立て、curlで作る、送る、SSEで読む、承認する�
 - 試作のVMは`vm.cc.fybe.jp`（トンネル`cc-vm`）。順序はAccessアプリ、AccessIdentity（JWTの無い外部を403）、DNSとcloudflaredの順で、DNSを先に向けない。
 - 確認事項8の答え。`cf tunnels list`は0.66秒。登録簿のキャッシュは10秒程度のメモリで足りる。
 - ノードのホスト名を`<name>.cc.fybe.jp`から`cc-<name>.fybe.jp`（トンネル名と同じ1階層）に変えた（2026-11-06、本人が選んだ）。2階層を覆うAdvanced証明書は旧Workerのカスタムドメインに付いて自動で出ていたもので、Workerを消すと一緒に消え、このアカウントにはAdvanced Certificate Managerが無く作り直せない。1階層ならUniversalの`*.fybe.jp`で覆える。Accessアプリ`cc`は`cc-*.fybe.jp`と`cc.fybe.jp`を覆う。画面の入口`cc.fybe.jp`は変わらない。
+
+## 改名（2026-11-11、本人が承認）
+
+- 製品名を Claude Code Nodes、CLI を `ccn` にそろえた。この文書の `cc`、`cc.json`、`x-cc-from`、`<name>.cc.fybe.jp`、`cc-<name>` は、今の名前では `ccn`、`ccn.json`、`x-ccn-from`、`ccn-<name>.fybe.jp`、`ccn-<name>` にあたる。名前の正本は `src/names.ts`。
+- 移行の間、ノードは旧の名前（`x-cc-*` のヘッダ、`/install/cc.tar.gz`、`cc-` で始まるトンネル、`~/.config/cc/cc.json`）も受ける。手順は `docs/runbooks/2026-11-11-ccn-rename.md`。
+- スキル session-inbox は `ccn` に改名した。立てる判断は、本人が `/ccn` か「子を立てて」と言ったときだけにし、2.4 の「頼まれなくても子を使う」はやめた。

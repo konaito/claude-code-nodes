@@ -11,7 +11,7 @@ const caps = (events: boolean) => ({ send: true, permissions: events, interrupt:
 const sess = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({ id, kind: "node", capabilities: caps(true), cwd: "/home/u/proj", state: "idle", startedAt: 0, lastActivityAt: 0, ...over });
 
 // 偽のノード。URL ごとに応答を返し、受けた Request を記録する
-function fakeNode(opts: { sessions?: SessionSummary[]; pending?: unknown[]; sse?: string; messages?: unknown[]; detailState?: string } = {}) {
+function fakeNode(opts: { sessions?: SessionSummary[]; pending?: unknown[]; sse?: string; messages?: unknown[]; detailState?: string; cursor?: number } = {}) {
   const calls: Array<{ method: string; url: string; body?: unknown; headers: Headers }> = [];
   const sessions = opts.sessions ?? [sess("abcd1234-0000-0000-0000-000000000000")];
   const fetchFn = (async (i: RequestInfo | URL, init?: RequestInit) => {
@@ -27,7 +27,7 @@ function fakeNode(opts: { sessions?: SessionSummary[]; pending?: unknown[]; sse?
     if (!m) return json({ error: "nf" }, 404);
     const s = sessions.find((x) => x.id === m[1]);
     if (!s) return json({ error: "unknown session" }, 404);
-    if (!m[2] && r.method === "GET") return json({ ...s, state: opts.detailState ?? s.state, pending: opts.pending ?? [] });
+    if (!m[2] && r.method === "GET") return json({ ...s, state: opts.detailState ?? s.state, pending: opts.pending ?? [], ...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}) });
     if (!m[2] && r.method === "DELETE") return new Response(null, { status: 204 });
     if (m[2] === "messages" && r.method === "GET") { const after = Number(u.searchParams.get("after") ?? 0); const msgs = (opts.messages ?? []).slice(after); return json({ messages: msgs, next: msgs.length ? after + msgs.length : undefined }); }
     if (m[2] === "messages" && r.method === "POST") return json({ delivered: "stdin" });
@@ -60,7 +60,7 @@ test("ls prints one line per session across peers and --mine filters by parent",
   expect(await main(["ls", "--peer", "vm"], c)).toBe(0);
   expect(c.lines[0]).toBe("vm/abcd1234  node      idle                /home/u/proj  agent:pro/abcdef12/lead  ");
   expect(c.lines[1]).toContain("vm/ffff0000  terminal  idle");
-  expect(n.calls[0]!.url).toBe("https://cc-vm.fybe.jp/api/sessions");
+  expect(n.calls[0]!.url).toBe("https://ccn-vm.fybe.jp/api/sessions");
   expect(n.calls[0]!.headers.get("cf-access-client-id")).toBe("cid");
   const d = ctx(n.fetchFn);
   await main(["ls", "--peer", "vm", "--mine"], d);
@@ -74,7 +74,7 @@ test("new posts cwd, raw prompt and bypass mode by default", async () => {
   expect(await main(["new", "/home/u/proj", "do the thing", "--peer", "vm", "--as", "lead"], c)).toBe(0);
   expect(c.lines).toEqual(["vm/new00000-1111-2222-3333-444444444444"]);
   const call = n.calls[0]!;
-  expect(call.url).toBe("https://cc-vm.fybe.jp/api/sessions");
+  expect(call.url).toBe("https://ccn-vm.fybe.jp/api/sessions");
   expect(call.body).toEqual({ cwd: "/home/u/proj", prompt: "do the thing", permissionMode: "bypassPermissions" });
   expect(call.headers.get("x-cc-from")).toBe("agent:pro/abcdef12/lead");
   const d = ctx(n.fetchFn);
@@ -172,7 +172,7 @@ test("ls skips a down peer with one line instead of calling it", async () => {
   }) as typeof fetch);
   expect(await main(["ls"], c)).toBe(0);
   expect(c.lines.some((l) => l.startsWith("vm  (inactive)"))).toBe(true);
-  expect(n.calls.slice(calls0).some((x) => x.url.startsWith("https://cc-vm.fybe.jp"))).toBe(false);
+  expect(n.calls.slice(calls0).some((x) => x.url.startsWith("https://ccn-vm.fybe.jp"))).toBe(false);
 });
 
 test("new resolves a relative dir for the local node and refuses it for a remote one", async () => {
@@ -182,4 +182,20 @@ test("new resolves a relative dir for the local node and refuses it for a remote
   expect((n.calls[0]!.body as { cwd: string }).cwd).toBe(process.cwd());
   expect(await main(["new", "rel/dir", "x", "--peer", "vm"], c)).toBe(1);
   expect(n.calls.length).toBe(1);
+});
+
+test("send uses the cursor from the detail and calls /api/sessions/:id directly for a full id", async () => {
+  const full = "abcd1234-0000-0000-0000-000000000000";
+  const n = fakeNode({ cursor: 42, messages: [assistant("a")] });
+  const c = ctx(n.fetchFn);
+  expect(await main(["send", full, "hello"], c)).toBe(0);
+  expect(c.lines).toEqual(["seq=42"]);
+  expect(n.calls.map((x) => `${x.method} ${new URL(x.url).pathname}`)).toEqual([`GET /api/sessions/${full}`, `POST /api/sessions/${full}/messages`]);
+  // 先頭8文字なら一覧で絞ってから詳細。messages はたどらない
+  const d = ctx(n.fetchFn);
+  const before = n.calls.length;
+  expect(await main(["send", "abcd1234", "hello"], d)).toBe(0);
+  expect(n.calls.slice(before).map((x) => `${x.method} ${new URL(x.url).pathname}`)).toEqual(["GET /api/sessions", `GET /api/sessions/${full}`, `POST /api/sessions/${full}/messages`]);
+  // 無い完全な id は 1 を返す
+  expect(await main(["send", "ffffffff-0000-0000-0000-000000000000", "hello"], ctx(n.fetchFn))).toBe(1);
 });

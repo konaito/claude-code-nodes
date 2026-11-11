@@ -1,5 +1,5 @@
 #!/bin/sh
-# ccn の実行物。symlink（~/.local/bin/ccn）から呼ばれても、実体の隣の src/cli/cc.ts を bun で動かす
+# ccn の実行物。symlink（~/.local/bin/ccn）から呼ばれても、実体の隣の src/cli/ccn.ts を bun で動かす
 self="$0"
 while [ -L "$self" ]; do
   dir=$(cd "$(dirname "$self")" && pwd)
@@ -7,4 +7,4 @@ while [ -L "$self" ]; do
   case "$self" in /*) ;; *) self="$dir/$self" ;; esac
 done
 root=$(cd "$(dirname "$self")/.." && pwd)
-exec bun run "$root/src/cli/cc.ts" "$@"
+exec bun run "$root/src/cli/ccn.ts" "$@"

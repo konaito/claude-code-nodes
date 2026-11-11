@@ -52,3 +52,16 @@ test("non-2xx becomes RegistryError 502", async () => {
   expect(err).toBeInstanceOf(RegistryError);
   expect((err as RegistryError).status).toBe(502);
 });
+
+test("reads both ccn- and legacy cc- tunnels and keeps one per name (healthy first, then the new prefix)", async () => {
+  const { fetchFn } = fakeFetch(200, { result: [
+    { id: "a", name: "cc-vm", status: "healthy" }, { id: "b", name: "ccn-vm", status: "down" },
+    { id: "c", name: "cc-pro", status: "healthy" }, { id: "d", name: "ccn-pro", status: "healthy" },
+    { id: "e", name: "ccn-air", status: "healthy" }, { id: "f", name: "ccn-", status: "healthy" },
+  ] });
+  expect(await new CloudflareRegistry(deps(fetchFn)).peers()).toEqual([
+    { name: "air", url: "https://ccn-air.fybe.jp", status: "healthy", self: false },
+    { name: "pro", url: "https://ccn-pro.fybe.jp", status: "healthy", self: true },
+    { name: "vm", url: "https://cc-vm.fybe.jp", status: "healthy", self: false },
+  ]);
+});

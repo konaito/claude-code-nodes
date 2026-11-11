@@ -1,14 +1,15 @@
-// cc の親向けの命令。peers、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
+// CLI の親向けの命令。peers、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { Config } from "../config";
 import type { SessionSummary } from "../sessions/types";
 import { parseArgs, type Parsed } from "./args";
-import { api, clientFor, CliError, type Client } from "./client";
+import { api, clientFor, CliError, readJson, request, type Client } from "./client";
 import { matchSession, parseTarget } from "./resolve";
 import { lastSeq, rememberSeq } from "./sends";
 import { readUntilResult } from "./read";
-import { CLI_NAME } from "./name";
+import { CLI_NAME, configDirOf, SENDS_FILE } from "../names";
+import { sameParent } from "../identity/agent-name";
 
 export type Ctx = {
   cfg: Config;
@@ -23,7 +24,7 @@ export type Ctx = {
   // 参加側の命令（join-commands.ts）が使う
   join?: (words: string[], flags: Parsed["flags"], ctx: Ctx) => Promise<number | undefined>;
 };
-type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; description?: string }> };
+type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; description?: string }>; cursor?: number };
 type Peer = { name: string; url: string; status: string; self: boolean };
 
 export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
@@ -39,26 +40,37 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} deny <対象> [requestId] <理由>           拒否
   ${CLI_NAME} interrupt <対象> / ${CLI_NAME} stop <対象>
   ${CLI_NAME} setup --hosts <a,b> [--name] [--port] [--cf-token-stdin]   1回だけの準備（cf のある機械で）
-  ${CLI_NAME} node add <名> [--port] [--to <file>] / node token <名> [--port] [--to <file>] / node remove <名> / entry <名> / install [--from <dir>] / update [--from <dir>] / uninstall / doctor / serve
+  ${CLI_NAME} node add <名> [--port] [--to <file>] / node token <名> [--port] [--to <file>] / node remove <名> [--legacy] / node migrate <名> [--rename]
+  ${CLI_NAME} entry <名> [--host <h>] / install [--from <dir>] / update [--from <dir>] [--entry <url>] / uninstall / doctor / serve
 <対象> は <peer>/<sessionId の先頭8文字以上> か sessionId。peer を省くと手元のノード`;
 
 const str = (v: string | true | undefined) => (typeof v === "string" ? v : undefined);
 const num = (v: string | true | undefined, d: number) => { const n = Number(str(v)); return Number.isFinite(n) && str(v) !== undefined ? n : d; };
-const sendsPath = (ctx: Ctx) => ctx.sendsPath ?? join(ctx.env.HOME ?? homedir(), ".config", "cc", "sends.json");
+const sendsPath = (ctx: Ctx) => ctx.sendsPath ?? join(configDirOf(ctx.env.HOME ?? homedir()), SENDS_FILE);
 const id8 = (id: string) => id.slice(0, 8);
 
-async function resolve(ctx: Ctx, target: string, role?: string): Promise<{ c: Client; s: SessionSummary; key: string }> {
+const FULL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// 完全な sessionId なら詳細を1回だけ引く。先頭8文字以上なら一覧から絞る
+async function resolve(ctx: Ctx, target: string, role?: string): Promise<{ c: Client; s: SessionSummary; key: string; d?: Detail }> {
   const t = parseTarget(target);
   const c = clientFor(ctx.cfg, t.peer, role, ctx.env);
+  if (FULL_ID.test(t.id)) {
+    const path = `/api/sessions/${t.id}`;
+    const r = await request(c, "GET", path, undefined, ctx.fetchFn);
+    if (r.status === 404) { await r.body?.cancel().catch(() => {}); throw new CliError(1, `「${t.id}」に当たるセッションが無い。${CLI_NAME} ls で確かめる`); }
+    const d = await readJson<Detail>(c, "GET", path, r);
+    return { c, s: d, key: `${c.peer}/${d.id}`, d };
+  }
   const list = await api<SessionSummary[]>(c, "GET", "/api/sessions", undefined, ctx.fetchFn);
   const s = matchSession(list, t.id);
   return { c, s, key: `${c.peer}/${s.id}` };
 }
+const detailOf = async (ctx: Ctx, r: { c: Client; s: SessionSummary; d?: Detail }): Promise<Detail> => r.d ?? api<Detail>(r.c, "GET", `/api/sessions/${r.s.id}`, undefined, ctx.fetchFn);
 async function peersOf(ctx: Ctx): Promise<Peer[]> {
   const local = clientFor(ctx.cfg, undefined, undefined, ctx.env);
   return api<Peer[]>(local, "GET", "/api/peers", undefined, ctx.fetchFn);
 }
-// 送る前の末尾の seq（live は最後の seq、履歴は末尾の offset）
+// 送る前の末尾の seq（live は最後の seq、履歴は末尾の offset）。詳細に cursor が無い古いノード用に、messages をたどって数える
 async function endCursor(ctx: Ctx, c: Client, s: SessionSummary): Promise<number> {
   let cur = 0;
   for (let i = 0; i < 1000; i++) {
@@ -80,8 +92,10 @@ async function read(ctx: Ctx, target: string, flags: Parsed["flags"]): Promise<n
 async function send(ctx: Ctx, target: string, text: string, flags: Parsed["flags"]): Promise<number> {
   const body = text === "-" ? await ctx.stdin() : text;
   if (!body.trim()) throw new CliError(1, "文が空");
-  const { c, s, key } = await resolve(ctx, target, str(flags.as));
-  const seq = await endCursor(ctx, c, s);
+  const r = await resolve(ctx, target, str(flags.as));
+  const { c, s, key } = r;
+  const d = await detailOf(ctx, r);
+  const seq = typeof d.cursor === "number" ? d.cursor : await endCursor(ctx, c, s);
   await api(c, "POST", `/api/sessions/${s.id}/messages`, { text: body }, ctx.fetchFn);
   rememberSeq(key, seq, sendsPath(ctx));
   ctx.out(`seq=${seq}`);
@@ -113,13 +127,14 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     }
     case "ls": {
       const all = str(flags.peer) ? [{ name: str(flags.peer)!, status: "healthy" } as Peer] : await peersOf(ctx).catch(() => [{ name: ctx.cfg.name, status: "healthy" }] as Peer[]);
-      const mine = flags.mine ? `agent:${clientFor(ctx.cfg, undefined, undefined, ctx.env).headers["x-cc-from"]!.slice("agent:".length).split("/").slice(0, 2).join("/")}/` : undefined;
+      // --mine は自分（このノードと自分の sessionId）が名乗った親の子だけ。役割は問わない
+      const mine = flags.mine ? (parent: string | undefined) => sameParent(parent, ctx.cfg.name, ctx.env.CLAUDE_CODE_SESSION_ID) : undefined;
       const rows = await Promise.all(all.map(async ({ name: peer, status }) => {
         if (status !== "healthy" && status !== "degraded") return [`${peer}  (${status})`]; // 落ちている相手は呼ばない
         try {
           const c = clientFor(ctx.cfg, peer, undefined, ctx.env);
           const list = await api<SessionSummary[]>(c, "GET", "/api/sessions", undefined, ctx.fetchFn);
-          return list.filter((s) => !mine || (s.parent ?? "").startsWith(mine)).map((s) => line(peer, s));
+          return list.filter((s) => !mine || mine(s.parent)).map((s) => line(peer, s));
         } catch (e) { return [`${peer}  (読めない: ${e instanceof Error ? e.message : String(e)})`]; }
       }));
       for (const r of rows.flat()) ctx.out(r);
@@ -127,8 +142,9 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     }
     case "show": {
       need(1, "対象");
-      const { c, s } = await resolve(ctx, rest[0]!);
-      const d = await api<Detail>(c, "GET", `/api/sessions/${s.id}`, undefined, ctx.fetchFn);
+      const r = await resolve(ctx, rest[0]!);
+      const { c } = r;
+      const d = await detailOf(ctx, r);
       const caps = Object.entries(d.capabilities).filter(([, v]) => v).map(([k]) => k).join(",");
       for (const [k, v] of [["id", d.id], ["peer", c.peer], ["kind", d.kind], ["state", d.state], ["cwd", d.cwd], ["model", d.model], ["permissionMode", d.permissionMode], ["parent", d.parent], ["title", d.title], ["pid", d.pid], ["exitReason", d.exitReason], ["capabilities", caps], ["usage", d.usage ? JSON.stringify(d.usage) : undefined]] as const) {
         if (v !== undefined && v !== "") ctx.out(`${k}: ${String(v)}`);
@@ -170,8 +186,9 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     case "allow":
     case "deny": {
       need(1, "対象");
-      const { c, s } = await resolve(ctx, rest[0]!);
-      const d = await api<Detail>(c, "GET", `/api/sessions/${s.id}`, undefined, ctx.fetchFn);
+      const r = await resolve(ctx, rest[0]!);
+      const { c, s } = r;
+      const d = await detailOf(ctx, r);
       const pending = d.pending ?? [];
       let rid: string | undefined = rest[1];
       let reason = rest[2];

@@ -323,9 +323,9 @@ test("GET /install is public and names the entry from the host header", async ()
   const r = await app.fetch(new Request("http://127.0.0.1/install", { headers: { host: "vm.cc.fybe.jp", "x-forwarded-host": "vm.cc.fybe.jp" } }));
   expect(r.status).toBe(200);
   expect(r.headers.get("content-type")).toContain("text/plain");
-  expect(await r.text()).toContain("https://vm.cc.fybe.jp/install/cc.tar.gz");
+  expect(await r.text()).toContain("https://vm.cc.fybe.jp/install/ccn.tar.gz");
   const local = await (await app.fetch(new Request("http://127.0.0.1:4399/install", { headers: { host: "127.0.0.1:4399" } }))).text();
-  expect(local).toContain("http://127.0.0.1:4399/install/cc.tar.gz");
+  expect(local).toContain("http://127.0.0.1:4399/install/ccn.tar.gz");
 });
 
 test("GET /install/cc.tar.gz is gzip", async () => {
@@ -346,7 +346,7 @@ test("GET / serves the page to an authenticated caller", async () => {
   expect(r.status).toBe(200);
   expect(r.headers.get("content-type")).toContain("text/html");
   const html = await r.text();
-  expect(html).toContain("<title>cc</title>");
+  expect(html).toContain("<title>Claude Code Nodes</title>");
   expect(html).toContain("/api/peers");
   expect((await app.fetch(req("/index.html"))).status).toBe(200);
   const denied = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "no"); } } });
@@ -383,4 +383,15 @@ test("install endpoints are not cached", async () => {
   const { app } = harness();
   expect((await app.fetch(req("/install"))).headers.get("cache-control")).toBe("no-store");
   expect((await app.fetch(req("/install/cc.tar.gz"))).headers.get("cache-control")).toBe("no-store");
+});
+
+test("GET /api/sessions/:id carries the cursor: the last seq when live, the history count otherwise", async () => {
+  const { app, live } = harness();
+  live.push({ type: "assistant", data: 1 });
+  live.push({ type: "stream_event", data: 2 });
+  await settle();
+  expect(((await (await app.fetch(req("/api/sessions/live1"))).json()) as { cursor: number }).cursor).toBe(2);
+  const past = harness({ history: { ...harness().deps.history, count: async () => 7 } as unknown as Deps["history"] });
+  expect(((await (await past.app.fetch(req("/api/sessions/old1"))).json()) as { cursor: number }).cursor).toBe(7);
+  expect(((await (await past.app.fetch(req("/api/sessions/term1"))).json()) as { cursor: number }).cursor).toBe(7);
 });
