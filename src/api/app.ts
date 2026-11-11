@@ -4,8 +4,10 @@ import { HttpError, json, toResponse } from "./errors";
 import type { Caller } from "../identity/identity";
 import { installerScript } from "../join/installer";
 import { bundle } from "../join/bundle";
-import { BUNDLE_PATH, CLI_NAME, LEGACY_BUNDLE_PATH } from "../names";
+import { BUNDLE_PATH, CLI_NAME, LEGACY_BUNDLE_PATH, MCP_PATH, SKILL_MD_PATH } from "../names";
 import { pageHtml } from "../web/page";
+import { mcpHandler, type ApiCall } from "../mcp/server";
+import { skillMd } from "../mcp/skill-md";
 export type { Deps, HostInfo } from "./sessions";
 
 // ブラウザからの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る。
@@ -23,16 +25,23 @@ function guardCsrf(req: Request, url: URL, _caller: Caller) {
   if (site && site !== "same-origin" && site !== "none") throw new HttpError(403, { error: "cross-site request" });
 }
 
-// インストーラとその実行物。入口の URL は要求のホスト名から決める（Cloudflare 経由なら公開ホスト名、手元なら 127.0.0.1）
-function install(req: Request, url: URL, appRoot: string): Response {
+// 公開の道が本文に書く入口の URL。要求のホスト名から決める（Cloudflare 経由なら公開ホスト名、手元なら 127.0.0.1）。
+// 認証なしで Host を本文に映す経路なので、ホスト名の文字だけを通す
+function originOf(req: Request, url: URL): string {
+  const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host;
+  if (!/^[A-Za-z0-9.:[\]-]+$/.test(host)) throw new HttpError(400, { error: "bad host" });
+  const scheme = /^(127\.0\.0\.1|localhost)(:|$)/.test(host) ? "http" : "https";
+  return `${scheme}://${host}`;
+}
+
+// 認証の要らない道。インストーラ、その実行物、/skill.md
+async function publicRoute(req: Request, url: URL, appRoot: string): Promise<Response> {
   if (req.method !== "GET") throw new HttpError(405, { error: "method not allowed" });
   if (url.pathname === "/install") {
-    // スクリプトに埋め込むので、ホスト名の文字だけを通す
-    const raw = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? url.host;
-    if (!/^[A-Za-z0-9.:[\]-]+$/.test(raw)) throw new HttpError(400, { error: "bad host" });
-    const host = raw;
-    const scheme = /^(127\.0\.0\.1|localhost)(:|$)/.test(host) ? "http" : "https";
-    return new Response(installerScript({ entry: `${scheme}://${host}`, cliName: CLI_NAME }), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+    return new Response(installerScript({ entry: originOf(req, url), cliName: CLI_NAME }), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+  }
+  if (url.pathname === SKILL_MD_PATH) {
+    return new Response(await skillMd(appRoot, originOf(req, url)), { headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-cache" } });
   }
   // Cloudflare は .gz を既定で cache するので、古い実行物を配らないよう no-store を付ける。
   // 旧のパスは、まだ更新していないノードの ccn update が取りに来るので移行の間は同じものを配る
@@ -40,26 +49,43 @@ function install(req: Request, url: URL, appRoot: string): Response {
   throw new HttpError(404, { error: "not found" });
 }
 
-// 呼び手の解決をしない経路（インストーラの配布）
-const isPublic = (path: string) => path === "/install" || path.startsWith("/install/");
+// 呼び手の解決をしない経路（インストーラの配布と /skill.md）
+const isPublic = (path: string) => path === "/install" || path.startsWith("/install/") || path === SKILL_MD_PATH;
 
 export function createApp(deps: Deps) {
   const s = new Sessions(deps);
+  // 呼び手が決まった要求を処理する。/n/<peer>/api/... は中継で、相手が自分なら手元で処理する
+  async function dispatch(req: Request, caller: Caller): Promise<Response> {
+    const url = new URL(req.url);
+    const n = url.pathname.match(/^\/n\/([^/]+)\/(api\/.*)$/);
+    if (n) {
+      const [, peer, rest] = n;
+      if (peer !== deps.nodeName) return await deps.relay.forward(peer!, rest!, req, caller);
+      return await route(new Request(new URL(`/${rest}${url.search}`, url).toString(), req), s, caller);
+    }
+    return await route(req, s, caller);
+  }
+  // MCP のツールが使う API の呼び出し。HTTP の API と同じ道（dispatch）を、同じ呼び手で通す。相手のノードは中継を通す
+  const apiAt = (base: URL): ApiCall => async (caller, method, peer, path, body) => {
+    const p = peer && peer !== deps.nodeName ? `/n/${encodeURIComponent(peer)}${path}` : path;
+    const init: RequestInit = { method };
+    if (body !== undefined) { init.headers = { "content-type": "application/json" }; init.body = JSON.stringify(body); }
+    const r = await dispatch(new Request(new URL(p, base), init), caller).catch(toResponse);
+    const text = await r.text();
+    let value: unknown;
+    try { value = text ? JSON.parse(text) : undefined; } catch { value = { error: text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim().slice(0, 200) }; }
+    return { status: r.status, body: value };
+  };
+  const mcp = mcpHandler({ nodeName: deps.nodeName, ...deps.mcp });
   return {
     async fetch(req: Request): Promise<Response> {
       try {
         const url = new URL(req.url);
-        if (isPublic(url.pathname)) return install(req, url, deps.appRoot);
+        if (isPublic(url.pathname)) return await publicRoute(req, url, deps.appRoot);
         const caller = await deps.identity.callerOf(req);
         guardCsrf(req, url, caller);
-        // /n/<peer>/api/... は中継。相手が自分なら手元で処理する
-        const n = url.pathname.match(/^\/n\/([^/]+)\/(api\/.*)$/);
-        if (n) {
-          const [, peer, rest] = n;
-          if (peer !== deps.nodeName) return await deps.relay.forward(peer!, rest!, req, caller);
-          return await route(new Request(new URL(`/${rest}${url.search}`, url).toString(), req), s, caller);
-        }
-        return await route(req, s, caller);
+        if (url.pathname === MCP_PATH) return await mcp(req, caller, apiAt(url));
+        return await dispatch(req, caller);
       } catch (e) { return toResponse(e); }
     },
   };

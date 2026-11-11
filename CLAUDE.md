@@ -33,10 +33,12 @@ scripts/smoke-remote.sh                    # サービストークンで外か�
 | `Registry`（`src/registry/`） | `CloudflareRegistry`（`cc-` で始まるトンネル） | `StaticRegistry` |
 
 - API は能力（`capabilities`: send、permissions、interrupt、stop、events）を見て振る舞い、セッションの種類で分岐しない。能力に無い操作は `CapabilityError` で 409 になる。境界の例外から状態コードへの変換は `src/api/errors.ts` に集める。
-- `src/api/app.ts` は1リクエストに1回 `callerOf` で呼び手を決め、GET と HEAD 以外は全部 CSRF の検査（Origin のホストと sec-fetch-site）を通す。`/n/<peer>/api/...` は `src/relay/relay.ts` がサービストークンと `x-ccn-from`、`x-ccn-via`（移行の間は旧の `x-cc-*` も）を付けて相手のノードへ転送する。認証が要らないのは `/install` と `/install/ccn.tar.gz`（と旧の `/install/cc.tar.gz`）だけ。
+- `src/api/app.ts` は1リクエストに1回 `callerOf` で呼び手を決め、GET と HEAD 以外は全部 CSRF の検査（Origin のホストと sec-fetch-site）を通す。`/n/<peer>/api/...` は `src/relay/relay.ts` がサービストークンと `x-ccn-from`、`x-ccn-via`（移行の間は旧の `x-cc-*` も）を付けて相手のノードへ転送する。認証が要らないのは `/install`、`/install/ccn.tar.gz`（と旧の `/install/cc.tar.gz`）、`/skill.md` だけ。
 - 親子は保存しない。子に届く文の1行目の from 行（`src/identity/from-line.ts`、`from <呼び手> via <ノード>`）から、`History` と `GET /api/sessions?parent=` が導く。
 - `SessionStore` はメモリの台帳で、イベントに seq を振って SSE の購読に配る。
 - CLI は `src/cli/commands.ts`（セッション操作）と `src/cli/join-commands.ts`（setup、node add/token/remove、entry、install、update、uninstall、doctor、serve）に分かれる。`src/join/` はインストーラ、tar の束、launchd と systemd --user、cf CLI の呼び出しを持つ。
+- `/mcp` は MCP の口（`src/mcp/`）。公式 SDK（`@modelcontextprotocol/sdk` 1.32.2、agent-sdk の peer と同じ版）の `WebStandardStreamableHTTPServerTransport` を状態なし・JSON 応答で使い、要求ごとに McpServer を作る。ツールは `createApp` の `dispatch`（HTTP の API と中継と同じ道）を、Identity が決めた呼び手のまま呼ぶだけで、from 行も能力の検査も API 側にある。`as` で名乗れるのは、HTTP で `x-ccn-from` を信じてもらえる呼び手（サービストークンと同じ機械）だけ。待つツール（`read_messages`）は最大50秒で返し、cursor で続きを読む。
+- `/skill.md` は認証なしで配る説明書。正本は `skills/claude-code-nodes/SKILL.md` で、`{{ORIGIN}}` を要求の入口に置き換える。`skills/ccn/` と違い、利用者の機械にはリンクしない。Bypass アプリは `<host>/install` と `<host>/skill.md`（`PUBLIC_PATHS`）を外す。
 - `skills/ccn/` は利用者の機械に配るスキルと child.md の正本。`ccn install` と `ccn update` が `~/.agents/skills/ccn` へリンクし、child.md を `~/.config/ccn/child.md` に置く。
 
 ## 決まっていること
