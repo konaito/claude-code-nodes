@@ -259,7 +259,8 @@ test("doctor reports ng when the external API returns 530", async () => {
   const ctx = { ...w.ctx, fetchFn: (async (i: RequestInfo | URL) => {
     const u = new URL(new Request(i).url);
     if (u.hostname === "cc-pro.fybe.jp") return new Response("error code: 530", { status: 530 });
-    return new Response(u.pathname.endsWith("/events") ? "" : JSON.stringify({ name: "pro", id: "s1", pending: [], state: "idle", capabilities: { events: true } }), { headers: { "content-type": "application/json" } });
+    // read はストリームが閉じても result まで繋ぎ直すので、偽のノードは result を返す
+    return new Response(u.pathname.endsWith("/events") ? "id: 1\nevent: result\ndata: {}\n\n" : JSON.stringify({ name: "pro", id: "s1", pending: [], state: "idle", capabilities: { events: true } }), { headers: { "content-type": "application/json" } });
   }) as unknown as typeof fetch };
   expect(await main(["doctor"], ctx)).toBe(1);
   expect(w.lines.some((l) => l.startsWith("ng 外からの API") && l.includes("530"))).toBe(true);

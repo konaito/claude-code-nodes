@@ -89,12 +89,20 @@ export class Sessions {
     this.d.store.add(driver);
     return { id: driver.id };
   }
+  // cursor は送る前の末尾。CLI の send が控え、read の after にする
   async detail(id: string) {
     const driver = await this.find(id);
-    if (driver) return { ...driver.summary(), pending: driver.pending() };
+    if (driver) return { ...driver.summary(), pending: driver.pending(), cursor: await this.cursor(id) };
     const past = await this.d.history.get(id);
-    if (past) return { ...past, pending: [] };
+    if (past) return { ...past, pending: [], cursor: await this.cursor(id) };
     throw new HttpError(404, { error: "unknown session" });
+  }
+  // messages?after= と同じ数え方にする。生きているものは台帳の最後の seq、それ以外（端末、終わったもの、過去）は履歴の件数
+  private async cursor(id: string): Promise<number | undefined> {
+    const live = this.d.store.get(id);
+    if (live && live.summary().state !== "exited") return this.d.store.lastSeq(id) ?? 0;
+    // cursor は無くても詳細は返す（古い CLI は messages をたどって数える）
+    return Promise.resolve().then(() => this.d.history.count(id)).catch(() => undefined);
   }
   async messages(id: string, after: number) {
     const liveOne = this.d.store.get(id);

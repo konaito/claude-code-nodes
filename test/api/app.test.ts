@@ -384,3 +384,14 @@ test("install endpoints are not cached", async () => {
   expect((await app.fetch(req("/install"))).headers.get("cache-control")).toBe("no-store");
   expect((await app.fetch(req("/install/cc.tar.gz"))).headers.get("cache-control")).toBe("no-store");
 });
+
+test("GET /api/sessions/:id carries the cursor: the last seq when live, the history count otherwise", async () => {
+  const { app, live } = harness();
+  live.push({ type: "assistant", data: 1 });
+  live.push({ type: "stream_event", data: 2 });
+  await settle();
+  expect(((await (await app.fetch(req("/api/sessions/live1"))).json()) as { cursor: number }).cursor).toBe(2);
+  const past = harness({ history: { ...harness().deps.history, count: async () => 7 } as unknown as Deps["history"] });
+  expect(((await (await past.app.fetch(req("/api/sessions/old1"))).json()) as { cursor: number }).cursor).toBe(7);
+  expect(((await (await past.app.fetch(req("/api/sessions/term1"))).json()) as { cursor: number }).cursor).toBe(7);
+});

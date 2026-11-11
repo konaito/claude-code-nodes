@@ -3,7 +3,7 @@ import { nodeHost, type Config } from "../config";
 import { AGENT_PREFIX, formatAgent } from "../identity/agent-name";
 import { CONFIG_FILE, HEADER_FROM, HEADER_VIA } from "../names";
 
-export type Client = { peer: string; base: string; headers: Record<string, string> };
+export type Client = { peer: string; base: string; headers: Record<string, string>; retryMs?: number[] }; // retryMs は GET のやり直しの間隔（試験で差し替える）
 export class CliError extends Error { constructor(public code: number, msg: string) { super(msg); this.name = "CliError"; } }
 
 // agent: を除いた名前。組み立ての規則は identity/agent-name.ts
@@ -22,18 +22,38 @@ export function clientFor(cfg: Config, peer: string | undefined, role: string | 
   return { peer, base: `https://${nodeHost(peer, cfg)}`, headers };
 }
 
-export async function request(c: Client, method: string, path: string, body?: unknown, fetchFn: typeof fetch = fetch, extra: Record<string, string> = {}): Promise<Response> {
+// GET だけ、トンネルの瞬断（502、530、ネットワークの例外）で短く数回やり直す。合計 1.4 秒。
+// POST などはやり直さない（届いていたら二重に送ることになる）
+export const GET_RETRY_MS = [200, 400, 800];
+const RETRY_STATUS = new Set([502, 530]);
+
+export async function request(c: Client, method: string, path: string, body?: unknown, fetchFn: typeof fetch = fetch, extra: Record<string, string> = {}, retryMs: number[] = c.retryMs ?? GET_RETRY_MS): Promise<Response> {
   const headers: Record<string, string> = { ...c.headers, ...extra };
   if (body !== undefined) headers["content-type"] = "application/json";
-  try {
-    return await fetchFn(`${c.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
-  } catch (e) {
-    throw new CliError(1, `${c.peer} に繋がらない: ${e instanceof Error ? e.message : String(e)}`);
+  const waits = method === "GET" ? retryMs : [];
+  for (let i = 0; ; i++) {
+    let r: Response;
+    try {
+      r = await fetchFn(`${c.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    } catch (e) {
+      if (i < waits.length) { await new Promise((ok) => setTimeout(ok, waits[i])); continue; }
+      throw new CliError(1, `${c.peer} に繋がらない: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (RETRY_STATUS.has(r.status) && i < waits.length) {
+      await r.body?.cancel().catch(() => {});
+      await new Promise((ok) => setTimeout(ok, waits[i]));
+      continue;
+    }
+    return r;
   }
 }
 
 export async function api<T = unknown>(c: Client, method: string, path: string, body?: unknown, fetchFn: typeof fetch = fetch): Promise<T> {
-  const r = await request(c, method, path, body, fetchFn);
+  return readJson<T>(c, method, path, await request(c, method, path, body, fetchFn));
+}
+
+// 応答を JSON にする。2xx でなければ CliError
+export async function readJson<T = unknown>(c: Client, method: string, path: string, r: Response): Promise<T> {
   const text = await r.text();
   let v: unknown;
   // JSON でない応答（Cloudflare の 530 のページなど）はタグを落として1行に縮める

@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { Config } from "../config";
 import type { SessionSummary } from "../sessions/types";
 import { parseArgs, type Parsed } from "./args";
-import { api, clientFor, CliError, type Client } from "./client";
+import { api, clientFor, CliError, readJson, request, type Client } from "./client";
 import { matchSession, parseTarget } from "./resolve";
 import { lastSeq, rememberSeq } from "./sends";
 import { readUntilResult } from "./read";
@@ -24,7 +24,7 @@ export type Ctx = {
   // 参加側の命令（join-commands.ts）が使う
   join?: (words: string[], flags: Parsed["flags"], ctx: Ctx) => Promise<number | undefined>;
 };
-type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; description?: string }> };
+type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; description?: string }>; cursor?: number };
 type Peer = { name: string; url: string; status: string; self: boolean };
 
 export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
@@ -48,18 +48,28 @@ const num = (v: string | true | undefined, d: number) => { const n = Number(str(
 const sendsPath = (ctx: Ctx) => ctx.sendsPath ?? join(configDirOf(ctx.env.HOME ?? homedir()), SENDS_FILE);
 const id8 = (id: string) => id.slice(0, 8);
 
-async function resolve(ctx: Ctx, target: string, role?: string): Promise<{ c: Client; s: SessionSummary; key: string }> {
+const FULL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// 完全な sessionId なら詳細を1回だけ引く。先頭8文字以上なら一覧から絞る
+async function resolve(ctx: Ctx, target: string, role?: string): Promise<{ c: Client; s: SessionSummary; key: string; d?: Detail }> {
   const t = parseTarget(target);
   const c = clientFor(ctx.cfg, t.peer, role, ctx.env);
+  if (FULL_ID.test(t.id)) {
+    const path = `/api/sessions/${t.id}`;
+    const r = await request(c, "GET", path, undefined, ctx.fetchFn);
+    if (r.status === 404) { await r.body?.cancel().catch(() => {}); throw new CliError(1, `「${t.id}」に当たるセッションが無い。${CLI_NAME} ls で確かめる`); }
+    const d = await readJson<Detail>(c, "GET", path, r);
+    return { c, s: d, key: `${c.peer}/${d.id}`, d };
+  }
   const list = await api<SessionSummary[]>(c, "GET", "/api/sessions", undefined, ctx.fetchFn);
   const s = matchSession(list, t.id);
   return { c, s, key: `${c.peer}/${s.id}` };
 }
+const detailOf = async (ctx: Ctx, r: { c: Client; s: SessionSummary; d?: Detail }): Promise<Detail> => r.d ?? api<Detail>(r.c, "GET", `/api/sessions/${r.s.id}`, undefined, ctx.fetchFn);
 async function peersOf(ctx: Ctx): Promise<Peer[]> {
   const local = clientFor(ctx.cfg, undefined, undefined, ctx.env);
   return api<Peer[]>(local, "GET", "/api/peers", undefined, ctx.fetchFn);
 }
-// 送る前の末尾の seq（live は最後の seq、履歴は末尾の offset）
+// 送る前の末尾の seq（live は最後の seq、履歴は末尾の offset）。詳細に cursor が無い古いノード用に、messages をたどって数える
 async function endCursor(ctx: Ctx, c: Client, s: SessionSummary): Promise<number> {
   let cur = 0;
   for (let i = 0; i < 1000; i++) {
@@ -81,8 +91,10 @@ async function read(ctx: Ctx, target: string, flags: Parsed["flags"]): Promise<n
 async function send(ctx: Ctx, target: string, text: string, flags: Parsed["flags"]): Promise<number> {
   const body = text === "-" ? await ctx.stdin() : text;
   if (!body.trim()) throw new CliError(1, "文が空");
-  const { c, s, key } = await resolve(ctx, target, str(flags.as));
-  const seq = await endCursor(ctx, c, s);
+  const r = await resolve(ctx, target, str(flags.as));
+  const { c, s, key } = r;
+  const d = await detailOf(ctx, r);
+  const seq = typeof d.cursor === "number" ? d.cursor : await endCursor(ctx, c, s);
   await api(c, "POST", `/api/sessions/${s.id}/messages`, { text: body }, ctx.fetchFn);
   rememberSeq(key, seq, sendsPath(ctx));
   ctx.out(`seq=${seq}`);
@@ -129,8 +141,9 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     }
     case "show": {
       need(1, "対象");
-      const { c, s } = await resolve(ctx, rest[0]!);
-      const d = await api<Detail>(c, "GET", `/api/sessions/${s.id}`, undefined, ctx.fetchFn);
+      const r = await resolve(ctx, rest[0]!);
+      const { c } = r;
+      const d = await detailOf(ctx, r);
       const caps = Object.entries(d.capabilities).filter(([, v]) => v).map(([k]) => k).join(",");
       for (const [k, v] of [["id", d.id], ["peer", c.peer], ["kind", d.kind], ["state", d.state], ["cwd", d.cwd], ["model", d.model], ["permissionMode", d.permissionMode], ["parent", d.parent], ["title", d.title], ["pid", d.pid], ["exitReason", d.exitReason], ["capabilities", caps], ["usage", d.usage ? JSON.stringify(d.usage) : undefined]] as const) {
         if (v !== undefined && v !== "") ctx.out(`${k}: ${String(v)}`);
@@ -172,8 +185,9 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     case "allow":
     case "deny": {
       need(1, "対象");
-      const { c, s } = await resolve(ctx, rest[0]!);
-      const d = await api<Detail>(c, "GET", `/api/sessions/${s.id}`, undefined, ctx.fetchFn);
+      const r = await resolve(ctx, rest[0]!);
+      const { c, s } = r;
+      const d = await detailOf(ctx, r);
       const pending = d.pending ?? [];
       let rid: string | undefined = rest[1];
       let reason = rest[2];

@@ -22,6 +22,10 @@ export class History {
     const messages = await this.fns.getSessionMessages(id, { offset: after, limit: PAGE });
     return { messages, next: messages.length ? after + messages.length : undefined };
   }
+  // 会話の件数。messages の after（offset）で数えた末尾
+  async count(id: string): Promise<number> {
+    return (await this.fns.getSessionMessages(id)).length;
+  }
 }
 
 function toSummary(i: SDKSessionInfo): SessionSummary {

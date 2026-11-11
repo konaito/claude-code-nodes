@@ -119,3 +119,19 @@ test("after the driver exits only the last 50 events are kept and the summary st
   expect(kept[0]!.seq).toBe(11);
   expect(store.get("x1")?.summary().state).toBe("exited");
 });
+
+test("ended sessions are swept after the ttl and beyond the cap; live ones stay", async () => {
+  let t = 0;
+  const store = new SessionStore({ endedTtlMs: 1000, maxEnded: 2, now: () => t });
+  const live = new FakeDriver({ id: "live", capabilities: all });
+  store.add(live);
+  const ended = ["e1", "e2", "e3"].map((id) => new FakeDriver({ id, capabilities: all }));
+  for (const d of ended) { store.add(d); await d.stop(); await settle(); t += 10; }
+  // 件数の上限 2 を超えた最も古い e1 が消える
+  expect(store.list().map((s) => s.id).sort()).toEqual(["e2", "e3", "live"]);
+  expect(store.get("e1")).toBeUndefined();
+  expect(store.lastSeq("e3")).toBeDefined();
+  t += 1000;
+  expect(store.list().map((s) => s.id)).toEqual(["live"]);
+  expect(() => store.subscribe("e2", 0)).toThrow();
+});
