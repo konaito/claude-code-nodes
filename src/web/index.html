@@ -64,14 +64,16 @@
   .row.off { opacity: .55; }
 
   /* 新しく */
-  .newform { margin: 0 12px 10px; padding: 10px; border-radius: 10px; background: var(--wash); display: grid; gap: 8px; }
+  .newform { margin: 0 12px 10px; padding: 10px; border-radius: 10px; background: var(--wash); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .newform[hidden] { display: none; }
   .newform select, .newform input, .newform textarea { font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); width: 100%; }
   .newform textarea { min-height: 64px; resize: vertical; }
   .newform-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
   .newform-note { font-size: 12px; color: var(--sub); line-height: 1.5; overflow-wrap: anywhere; }
   .newform-note code { font-family: var(--mono); font-size: 11.5px; }
-  .newform-row .msg { color: var(--sub); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .newform-row { flex-wrap: wrap; }
+  .newform-row .msg { color: var(--sub); line-height: 1.5; overflow-wrap: anywhere; flex: 1 0 100%; min-width: 0; }
+  .newform-row .msg:empty { display: none; }
 
   /* 会話 */
   .chat-head { border-bottom: 1px solid var(--line); background: rgba(255,255,255,.92); backdrop-filter: blur(8px); position: relative; z-index: 2; padding-left: 24px; padding-right: 24px; }
@@ -91,6 +93,7 @@
   .say pre { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--wash); padding: 12px 14px; border-radius: 8px; overflow-x: auto; margin: 0 0 .8em; }
   .say pre code { background: none; padding: 0; font-size: inherit; }
   .say a { color: var(--shu-ink); text-underline-offset: 2px; }
+  .say .child { font-family: var(--mono); font-size: .9em; color: var(--shu-ink); text-decoration: underline; text-underline-offset: 2px; word-break: break-all; text-align: left; }
   .say blockquote { margin: 0 0 .7em; padding-left: 12px; border-left: 2px solid var(--line); color: var(--sub); }
   .say .tbl { overflow-x: auto; margin: 0 0 .8em; } .say table { border-collapse: collapse; font-size: 13px; } .say th, .say td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
   details.tool { margin: 0 0 6px; font-size: 13px; color: var(--sub); }
@@ -438,7 +441,7 @@ function itemHtml(ev) {
     const content = m.message && m.message.content;
     const parts = typeof content === "string" ? [{ type: "text", text: content }] : Array.isArray(content) ? content : [];
     const html = parts.map((b) => {
-      if (b.type === "text" && b.text && b.text.trim()) return `<div class="say">${md(b.text)}</div>`;
+      if (b.type === "text" && b.text && b.text.trim()) return `<div class="say">${childLinks(md(b.text))}</div>`;
       if (b.type === "tool_use") return toolHtml(b.name, b.input);
       return "";
     }).join("");
@@ -463,6 +466,8 @@ function itemHtml(ev) {
   if (t === "rate_limit_event") return "";
   return "";
 }
+// 受け口の返事の「子: <peer>/<sessionId>」を、その子を開くボタンにする
+const childLinks = (html) => html.replace(/(子: )([A-Za-z0-9._-]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/g, (_, k, peer, id) => `${k}<button class="child" data-open-peer="${peer}" data-open-id="${id}">${peer}/${id}</button>`);
 function userHtml(text, at) {
   const m = String(text).match(/^from (\S+) via (\S+)\s*\n\n?([\s\S]*)$/);
   const from = m ? `<span class="from">${esc(m[1])} · ${esc(m[2])}</span>` : "";
@@ -483,6 +488,8 @@ function renderPending() {
   if (html) { const atBottom = nearBottom(); $("feed").insertAdjacentHTML("beforeend", html); if (atBottom) scrollBottom(); }
 }
 $("feed").addEventListener("click", async (e) => {
+  const o = e.target.closest("[data-open-id]");
+  if (o) { await openPeer(o.dataset.openPeer, true); await openChat(o.dataset.openId); return; }
   const b = e.target.closest("[data-act]"); if (!b) return;
   const rid = b.closest(".perm").dataset.rid;
   const act = b.dataset.act;
@@ -547,12 +554,15 @@ async function fillPlaces() {
   const peer = $("new-peer").value; if (!peer) return;
   const h = hosts[peer];
   const lobby = h && h.lobby;
-  $("new-cwd").placeholder = lobby ? `空なら受け口（${home(lobby)}）` : "作業ディレクトリ（例 ~/work）";
-  $("new-note").innerHTML = h && !h.error && !lobby ? `${esc(peer)} は受け口が無い古い版。場所を入れて開く（1通目の後回しもできない。<code>ccn update</code> で直る）` : "";
+  $("new-cwd").placeholder = lobby ? "場所（空なら受け口）" : "作業ディレクトリ（例 ~/work）";
+  $("new-note").innerHTML = lobby ? `受け口 <code>${esc(home(lobby))}</code>。開いてから1通目を打つ` : h && !h.error ? `${esc(peer)} は古い版で、受け口も1通目を後から打つ形も無い。${esc(peer)} で <code>ccn update</code> が要る` : "";
   let list = [];
   try { list = peer === cur.peer && sessions.length ? sessions : await withTimeout(api(peer, "/sessions"), 6000); } catch {}
   const recent = [...recentOf(peer), ...list.slice().sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0)).map((s) => home(s.cwd))];
-  const uniq = [...new Set(recent.filter((c) => c && (!lobby || c !== home(lobby))))].slice(0, 15);
+  // 立てられるのは roots の内側だけなので、同じ機械の端末セッションの cwd でも外のものは出さない
+  const roots = ((h && h.roots) || []).map(home);
+  const inRoots = (c) => !roots.length || roots.some((r) => c === r || c.startsWith(r.replace(/\/$/, "") + "/"));
+  const uniq = [...new Set(recent.filter((c) => c && (!lobby || c !== home(lobby)) && inRoots(c)))].slice(0, 15);
   $("new-places").innerHTML = uniq.map((c) => `<option value="${esc(c)}"></option>`).join("");
 }
 $("new-peer").addEventListener("change", fillPlaces);
@@ -564,7 +574,7 @@ $("newform").addEventListener("submit", async (e) => {
   const peer = $("new-peer").value; const cwd = $("new-cwd").value.trim(); const mode = $("new-mode").value;
   if (!peer) { $("new-msg").textContent = "ノードを選ぶ"; return; }
   const h = hosts[peer] || {};
-  if (!cwd && h.roots && !h.lobby) { $("new-msg").textContent = `${peer} は古い版で受け口が無い。場所を入れる`; return; }
+  if (h.roots && !h.lobby) { $("new-msg").textContent = `${peer} は古い版。${peer} で ccn update する`; return; }
   $("new-msg").textContent = "開いている";
   try {
     const root = (h.roots && h.roots[0]) || "";

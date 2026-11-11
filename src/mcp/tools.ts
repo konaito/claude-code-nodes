@@ -117,7 +117,9 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     const seen = new Set<string>();
     const recent: Array<{ cwd: string; lastActivityAt: number }> = [];
     for (const s of [...list].sort((x, y) => y.lastActivityAt - x.lastActivityAt)) {
-      if (!s.cwd || seen.has(s.cwd) || s.cwd === host.lobby) continue;
+      // 立てられるのは roots の内側だけなので、それ以外（同じ機械の端末セッションの cwd など）は出さない
+      const roots = host.roots ?? [];
+      if (!s.cwd || seen.has(s.cwd) || s.cwd === host.lobby || !roots.some((r) => s.cwd === r || s.cwd.startsWith(r.endsWith("/") ? r : r + "/"))) continue;
       seen.add(s.cwd);
       recent.push({ cwd: s.cwd, lastActivityAt: s.lastActivityAt });
     }

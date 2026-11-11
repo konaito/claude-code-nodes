@@ -294,6 +294,9 @@ test("list_places returns the lobby, roots and recent directories without the lo
   const inLobby = new FakeDriver({ id: "lob1", capabilities: caps(true) });
   inLobby.cwd = "/home/u/.local/share/ccn/lobby";
   store.add(inLobby);
+  const outside = new FakeDriver({ id: "out1", capabilities: caps(true) });
+  outside.cwd = "/srv/elsewhere";
+  store.add(outside);
   const c = await connect(app);
   const r = json(await c.callTool({ name: "list_places", arguments: {} }));
   expect(r.lobby).toBe("/home/u/.local/share/ccn/lobby");
