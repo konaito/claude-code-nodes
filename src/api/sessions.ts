@@ -13,6 +13,7 @@ import type { Relay } from "../relay/relay";
 import { withFromLine } from "../identity/from-line";
 import type { McpOptions } from "../mcp/server";
 import { HttpError } from "./errors";
+import { lobbySettingsFor } from "../lobby/lobby";
 import { sse } from "./sse";
 
 export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: unknown; load: number[] };
@@ -92,7 +93,9 @@ export class Sessions {
     }
     // sessionId は呼び手から受けない（既にある jsonl と重ねないため）。新規でプロンプトが無いときだけノードが決める
     const sessionId = !body.prompt && !body.resume ? crypto.randomUUID() : undefined;
-    const opts: StartOptions = { ...body, cwd, sessionId, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
+    // settings は呼び手から受けない。受け口（resume を含む）のときだけ、ノードが書いた受け口の許可を渡す
+    const settings = await lobbySettingsFor(cwd, this.d.lobby);
+    const opts: StartOptions = { ...body, cwd, sessionId, settings, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
     const driver = await this.d.startNode(opts, caller);
     this.d.store.add(driver);
     return { id: driver.id, cwd, state: driver.summary().state };

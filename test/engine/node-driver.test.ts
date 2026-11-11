@@ -154,3 +154,14 @@ test("a sessionId is not passed to the SDK together with resume", async () => {
   expect(fake.lastOptions.resume).toBe("old");
   await d.stop();
 });
+
+test("start passes settings to the SDK only when given (the lobby's --settings)", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", settings: "/tmp/lobby/.claude/settings.json" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  expect(fake.lastOptions?.settings).toBe("/tmp/lobby/.claude/settings.json");
+  await d.stop();
+  const fake2 = makeFakeQuery();
+  const d2 = await NodeDriver.start({ cwd: "/tmp" }, { queryFn: fake2.queryFn, nodeName: "vm" });
+  expect(fake2.lastOptions?.settings).toBeUndefined();
+  await d2.stop();
+});

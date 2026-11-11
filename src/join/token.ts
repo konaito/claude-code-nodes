@@ -41,9 +41,9 @@ export function decodeJoinToken(s: string): JoinToken {
 }
 
 // トンネルトークンは cloudflared 用に別ファイルへ置くので、設定には入れない
-export function configFromToken(t: JoinToken): Config {
+export function configFromToken(t: JoinToken, home = homedir()): Config {
   return {
-    name: t.name, port: t.port, roots: [homedir()],
+    name: t.name, port: t.port, roots: [home],
     domain: t.domain, zone: t.zone, teamDomain: t.teamDomain, aud: t.aud, accountId: t.accountId, entry: t.entry,
     serviceToken: { ...t.serviceToken }, cfApiToken: t.cfApiToken,
   };

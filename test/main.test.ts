@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { buildDeps } from "../src/main";
+import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildDeps, start } from "../src/main";
 import { AccessIdentity } from "../src/identity/access";
 import { HeaderIdentity } from "../src/identity/identity";
 import { CloudflareRegistry } from "../src/registry/cloudflare";
@@ -16,4 +19,16 @@ test("buildDeps falls back to HeaderIdentity and StaticRegistry without them", (
   const d = buildDeps({ name: "dev", port: 4399, roots: ["/"] });
   expect(d.identity).toBeInstanceOf(HeaderIdentity);
   expect(d.registry).toBeInstanceOf(StaticRegistry);
+});
+
+test("start writes the lobby's CLAUDE.md and .claude/settings.json before serving", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-start-")));
+  const lobby = join(root, "lobby");
+  const log = console.log; console.log = () => {};
+  const server = start({ name: "dev", port: 0, roots: [root], lobby });
+  console.log = log;
+  try {
+    expect(readFileSync(join(lobby, "CLAUDE.md"), "utf8")).toContain("受け口（Claude Code Nodes、dev）");
+    expect(JSON.parse(readFileSync(join(lobby, ".claude", "settings.json"), "utf8")).permissions.allow).toContain(`Read(/${root}/**)`);
+  } finally { server.stop(true); }
 });

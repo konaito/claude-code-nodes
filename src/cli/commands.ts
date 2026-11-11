@@ -30,7 +30,7 @@ type Peer = { name: string; url: string; status: string; self: boolean };
 export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} peers                                   登録簿（ノードと状態）
   ${CLI_NAME} ls [--peer <名>] [--mine]               セッション一覧（--mine は自分が立てた子）
-  ${CLI_NAME} show <対象>                             1つの詳細と保留中の承認
+  ${CLI_NAME} show [<対象>]                           1つの詳細と保留中の承認（対象を省くと、Claude Code の中なら自分のセッション）
   ${CLI_NAME} new [<dir> [<文>]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
                                                        dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
   ${CLI_NAME} send <対象> <文|-> [--as <役割>]         文を送る（- は標準入力）。seq を控える
@@ -142,8 +142,10 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       return 0;
     }
     case "show": {
-      need(1, "対象");
-      const r = await resolve(ctx, rest[0]!);
+      // 対象を省くと自分（Claude Code が渡す CLAUDE_CODE_SESSION_ID）。受け口が変数を書かずに自分の permissionMode を読むため
+      const self = ctx.env.CLAUDE_CODE_SESSION_ID;
+      if (rest[0] === undefined && !self) throw new CliError(1, "show には 対象 が要る（Claude Code の中では省くと自分のセッション）");
+      const r = await resolve(ctx, rest[0] ?? `${ctx.cfg.name}/${self}`);
       const { c } = r;
       const d = await detailOf(ctx, r);
       const caps = Object.entries(d.capabilities).filter(([, v]) => v).map(([k]) => k).join(",");

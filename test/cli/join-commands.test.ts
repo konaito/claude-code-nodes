@@ -468,7 +468,28 @@ test("update --from writes the lobby and its CLAUDE.md from the installed templa
   expect(await main(["update", "--from", src], ctx)).toBe(0);
   const md = readFileSync(join(w.home, ".local", "share", "ccn", "lobby", "CLAUDE.md"), "utf8");
   expect(md).toContain("受け口（Claude Code Nodes、vm）");
-  expect(w.lines.join("\n")).toContain("CLAUDE.md を書いた");
+  const settings = JSON.parse(readFileSync(join(w.home, ".local", "share", "ccn", "lobby", ".claude", "settings.json"), "utf8"));
+  expect(settings.permissions.allow).toContain(`Read(/${w.home}/**)`);
+  expect(w.lines.join("\n")).toContain("CLAUDE.md と .claude/settings.json を書いた");
+});
+
+test("install --from writes the lobby's CLAUDE.md and .claude/settings.json and keeps settings.local.json", async () => {
+  const w = world();
+  const src = mkdtempSync(join(tmpdir(), "cc-src-"));
+  mkdirSync(join(src, "skills", "ccn"), { recursive: true });
+  writeFileSync(join(src, "skills", "ccn", "child.md"), "child");
+  writeFileSync(join(src, "package.json"), '{"version":"0.0.1"}');
+  mkdirSync(join(src, "bin")); writeFileSync(join(src, "bin", "ccn"), "#!/bin/sh\n");
+  mkdirSync(join(src, "src", "lobby"), { recursive: true });
+  writeFileSync(join(src, "src", "lobby", "lobby-claude.md"), readFileSync(join(import.meta.dir, "..", "..", "src", "lobby", "lobby-claude.md"), "utf8"));
+  const lobby = join(w.home, ".local", "share", "ccn", "lobby");
+  mkdirSync(join(lobby, ".claude"), { recursive: true });
+  writeFileSync(join(lobby, ".claude", "settings.local.json"), "{}\n");
+  expect(await main(["install", "--from", src], w.ctx)).toBe(0);
+  expect(w.lines.join("\n")).toContain("CLAUDE.md と .claude/settings.json を書いた");
+  expect(readFileSync(join(lobby, "CLAUDE.md"), "utf8")).toContain("受け口（Claude Code Nodes、");
+  expect(JSON.parse(readFileSync(join(lobby, ".claude", "settings.json"), "utf8")).permissions.allow).toContain("Bash(ccn new *)");
+  expect(readFileSync(join(lobby, ".claude", "settings.local.json"), "utf8")).toBe("{}\n");
 });
 
 test("setup keeps a configured lobby", async () => {

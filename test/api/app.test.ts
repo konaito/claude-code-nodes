@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
-import { mkdtempSync, symlinkSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createApp, type Deps } from "../../src/api/app";
 import { SessionStore } from "../../src/sessions/store";
@@ -429,4 +429,22 @@ test("GET /api/sessions/:id carries the cursor: the last seq when live, the hist
   const past = harness({ history: { ...harness().deps.history, count: async () => 7 } as unknown as Deps["history"] });
   expect(((await (await past.app.fetch(req("/api/sessions/old1"))).json()) as { cursor: number }).cursor).toBe(7);
   expect(((await (await past.app.fetch(req("/api/sessions/term1"))).json()) as { cursor: number }).cursor).toBe(7);
+});
+
+test("POST /api/sessions passes the lobby's settings file only to sessions in the lobby (new, explicit cwd, resume), never to other places or from the body", async () => {
+  const lobby = realpathSync(mkdtempSync(join(tmpdir(), "ccn-lobby-")));
+  mkdirSync(join(lobby, ".claude"));
+  const file = join(lobby, ".claude", "settings.json");
+  writeFileSync(file, '{"permissions":{"allow":[]}}\n');
+  const child = realpathSync(mkdtempSync(join(tmpdir(), "ccn-child-")));
+  const { app, startCalls } = harness({ lobby });
+  const settingsOf = (i: number) => (startCalls[i]!.opts as { settings?: string }).settings;
+  expect((await app.fetch(post("/api/sessions", {}))).status).toBe(201);                       // cwd を省いた受け口
+  expect((await app.fetch(post("/api/sessions", { cwd: lobby, prompt: "hi" }))).status).toBe(201); // 受け口をパスで指定
+  expect((await app.fetch(post("/api/sessions", { cwd: lobby, resume: "old1" }))).status).toBe(201); // 受け口の resume
+  expect((await app.fetch(post("/api/sessions", { cwd: child, prompt: "work" }))).status).toBe(201); // 受け口が立てる子
+  expect((await app.fetch(post("/api/sessions", { cwd: child, prompt: "x", settings: file }))).status).toBe(201); // 呼び手が渡しても使わない
+  expect((await app.fetch(post("/api/sessions", { cwd: child, resume: "old1" }))).status).toBe(201); // 受け口以外の resume
+  expect([0, 1, 2].map(settingsOf)).toEqual([file, file, file]);
+  expect([3, 4, 5].map(settingsOf)).toEqual([undefined, undefined, undefined]);
 });

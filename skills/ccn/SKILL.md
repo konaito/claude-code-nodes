@@ -44,7 +44,7 @@ description: Claude Code Nodes（ccn）で、別の機械（またはこの機�
 ```bash
 ccn peers                                           # 登録簿（ノード、healthy/down、URL）
 ccn ls [--peer <名>] [--mine]                        # セッション一覧。--mine は自分が立てた子だけ
-ccn show <対象>                                      # 1つの詳細と pending（保留中の承認）
+ccn show [<対象>]                                    # 1つの詳細と pending（保留中の承認）。Claude Code の中で対象を省くと自分のセッション
 ccn new [<dir> ["<文>"]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
                                                     # dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
 ccn send <対象> "<文>|-" [--as <役割>]                # 文を送る。- は標準入力。送る前の seq を控える

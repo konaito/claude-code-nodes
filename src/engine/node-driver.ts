@@ -17,6 +17,8 @@ export type StartOptions = {
   // 新規のときに先に決める id（SDK の sessionId）。これがあって prompt も resume も無ければ、1通目が来るまで claude を起動しない
   sessionId?: string;
   settingSources?: SettingSource[];
+  // 追加の設定ファイル（CLI の --settings）。受け口のセッションだけが持つ（src/lobby/lobby.ts の lobbySettingsFor）
+  settings?: string;
   mcpServers?: Record<string, unknown>;
 };
 export type NodeDeps = { queryFn: QueryFn; nodeName: string; caller?: string; initTimeoutMs?: number; claudePath?: string };
@@ -93,6 +95,7 @@ export class NodeDriver implements Driver {
           // sessionId は resume と一緒には渡せない（fork のときは別）。遅延起動の新規だけが持つ
           sessionId: opts.resume ? undefined : opts.sessionId,
           settingSources: opts.settingSources ?? ["user", "project", "local"],
+          settings: opts.settings,
           includePartialMessages: true,
           mcpServers: opts.mcpServers as never,
           abortController: this.abort,

@@ -226,3 +226,15 @@ test("new without a text on an old node says the node needs ccn update", async (
     expect(errs.join("\n")).toContain("update");
   }
 });
+
+test("show without a target shows this Claude Code session (CLAUDE_CODE_SESSION_ID) on the local node", async () => {
+  const n = fakeNode({ sessions: [sess("abcdef12-0000-0000-0000-000000000000", { permissionMode: "default" })] });
+  const c = ctx(n.fetchFn);
+  expect(await main(["show"], c)).toBe(0);
+  expect(c.lines).toContain("id: abcdef12-0000-0000-0000-000000000000");
+  expect(c.lines).toContain("permissionMode: default");
+  const bare = ctx(n.fetchFn, { env: { HOME: tmpdir() } });
+  const errs: string[] = [];
+  expect(await main(["show"], { ...bare, err: (s) => errs.push(s) })).toBe(1);
+  expect(errs.join("\n")).toContain("対象");
+});

@@ -8,7 +8,7 @@ export type Config = {
   name: string;
   port: number;
   roots: string[];
-  domain?: string;       // 例 cc.fybe.jp。ノードのホスト名は <name>.<domain>
+  domain?: string;       // 例 ccn.fybe.jp。ノードのホスト名は <name>.<domain>
   teamDomain?: string;   // 例 fybejp.cloudflareaccess.com
   aud?: string;          // Access アプリの aud
   accountId?: string;    // Cloudflare のアカウント ID

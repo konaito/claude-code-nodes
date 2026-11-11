@@ -50,11 +50,11 @@ export function joinCommands(d: JoinDeps) {
     if (dropped) await services().install();
     return dropped;
   }
-  // 受け口のディレクトリと CLAUDE.md を、入れた版のひな形で書く。ノードの起動でも同じことをする
+  // 受け口のディレクトリと CLAUDE.md、.claude/settings.json を、入れた版のひな形で書く。ノードの起動でも同じことをする
   function writeLobby(ctx: Ctx) {
     const cfg = loadConfig(readPath());
     const r = prepareLobby({ dir: lobbyOf(cfg, d.home), appRoot: d.appDir, nodeName: cfg.name, roots: cfg.roots });
-    ctx.out("error" in r ? `-- 受け口 ${r.dir} を用意できない: ${r.error}` : `受け口 ${r.dir}${r.written ? "（CLAUDE.md を書いた）" : ""}`);
+    ctx.out("error" in r ? `-- 受け口 ${r.dir} を用意できない: ${r.error}` : `受け口 ${r.dir}${r.written ? "（CLAUDE.md と .claude/settings.json を書いた）" : ""}`);
   }
   const needSetup = (cfg: Config): Required<Pick<Config, "domain" | "zone" | "teamDomain" | "aud" | "accountId" | "serviceToken" | "cfApiToken">> & Config => {
     for (const k of ["domain", "zone", "teamDomain", "aud", "accountId", "serviceToken", "cfApiToken"] as const) if (!cfg[k]) throw new CliError(1, `${CONFIG_FILE} に ${k} が無い。先に ${CLI_NAME} setup を実行する`);
@@ -120,7 +120,7 @@ export function joinCommands(d: JoinDeps) {
   async function install(flags: Parsed["flags"], ctx: Ctx): Promise<number> {
     let token: JoinToken;
     try { token = decodeJoinToken(await ctx.stdin()); } catch (e) { if (e instanceof JoinTokenError) throw new CliError(1, e.message); throw e; }
-    const cfg = configFromToken(token);
+    const cfg = configFromToken(token, d.home);
     // 先に settings.json の新しい中身を作る。壊れていればここで止まり、何も書かない
     const settingsPath = join(d.home, ".claude", "settings.json");
     let settingsNext: string;
