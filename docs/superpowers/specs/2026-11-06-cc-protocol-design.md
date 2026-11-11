@@ -289,3 +289,14 @@ VMの127.0.0.1に立て、curlで作る、送る、SSEで読む、承認する�
 - 待つツール `read_messages` は最大50秒で返す。Cloudflare は応答の無いまま125秒で524を返し、MCP の TypeScript クライアントの要求の既定の締め切りは60秒なので、その手前にした。続きは cursor で読む。出力は既定2万字で切る。
 - 認可は今の Access のまま。同じ機械からは無認証（127.0.0.1）、外からはノード用サービストークン（Claude Code の `headersHelper` でファイルから読む）か、Access の Managed OAuth。Managed OAuth を有効にすると、Access がクライアントに OAuth の認可サーバーとして振る舞い、ノードには今と同じ `Cf-Access-Jwt-Assertion` が届くので、`AccessIdentity` は変えなくてよい。本番で有効にするかは別に決める。
 - `/skill.md` は製品の説明と MCP でのつなぎ方を Agent Skills の形（name、description、500行未満）で書いた文書で、認証なしで配る。正本は `skills/claude-code-nodes/SKILL.md`（束に入り、利用者の機械にはリンクしない）。Bypass アプリ `ccn-install` は `<host>/install` と `<host>/skill.md` を外す。
+
+## 受け口とプロンプト無しの作成（2026-11-11、本人が「ccn 専用の受け口を各ノードに作る」「受け口が対象の場所に子を立てる」を選んだ）
+
+- 新しいセッションは、場所だけを決めて開き、1通目は後から打つ。`POST /api/sessions` は prompt を省ける。prompt も resume も無ければ、ノードが UUID を決めて SDK の `sessionId` に渡す。id はすぐ決まり、`state` は `idle`、要約に `awaitingFirst: true` が付く。1通目は今までの send で届き、from 行もそこで付く。
+- 1通目が来るまで claude を起動しない（遅延起動）。待っている claude は1体で約300MB あり、画面の「新しく」は打たずに離れることがあるため。1通も届かないまま30分たったセッションは、台帳の掃除で消す。
+- `sessionId` を指定すると、init の `session_id` と jsonl のファイル名が指定した id になる。Bash に渡る `CLAUDE_CODE_SESSION_ID` も同じ id になる。どれも 2026-11-11 に SDK 0.3.318 と claude 2.1.322 で実行して確かめた（記録は `docs/results/2026-11-11-lobby.md`）。
+- cwd を省くと受け口に立てる。受け口は設定の `lobby` で、既定は `<home>/.local/share/ccn/lobby`。3台とも roots がホームなので内側に入り、Linux に `~/Documents` が無くても同じ形で作れる。`GET /api/host` は `lobby` を返す。
+- 受け口の CLAUDE.md は ccn が持ち、ノードの起動、`ccn install`、`ccn update` のたびに書き直す。本人が足す分は `CLAUDE.local.md` に書く。中身は、行き先を roots の中から探すこと、`ccn new <dir> <文> --mode <自分のモード> --as lobby` で子を立てること、返事に `子: <peer>/<sessionId>` を書いてすぐ終えること、行き先を決められなければ AskUserQuestion を使わず文で聞き返すこと、読むだけの依頼には子を立てずに答えること。
+- 受け口は子を CLI で立てる。CLI は Bash の `CLAUDE_CODE_SESSION_ID` から名乗りを組むので、子の `parent` が受け口になり、一覧で親子として並ぶ。MCP で立てると `parent` が `local` になるので使わない。
+- MCP に `list_places`（受け口、roots、roots の内側の最近の場所）を足した。ツールは10になった。`create_session` は cwd と prompt を省ける。
+- 古い版のノードは cwd か prompt が無いと `cwd is required` か `prompt or resume is required` の 400 で断る。画面、CLI、MCP はこの文言を見て、そのノードが古い版だと伝える。
