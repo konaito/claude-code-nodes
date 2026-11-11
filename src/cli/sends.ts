@@ -1,4 +1,4 @@
-// CLI の手元の控え。送った文の直前の seq を覚え、read の既定の after にする。ノードではなく CLI のファイル（~/.config/cc/sends.json）
+// CLI の手元の控え。送った文の直前の seq を覚え、read の既定の after にする。ノードではなく CLI のファイル（<configDir>/<SENDS_FILE>）
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 

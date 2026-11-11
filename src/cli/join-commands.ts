@@ -13,7 +13,7 @@ import { CliError, clientFor, api } from "./client";
 import { readUntilResult } from "./read";
 import type { Ctx } from "./commands";
 import type { Parsed } from "./args";
-import { CLI_NAME, OLD_CLI_NAMES } from "./name";
+import { ACCESS_APP, appHomeOf, BUNDLE_PATH, BYPASS_APP, CLI_NAME, CONFIG_FILE, ENTRY_DOMAIN, launchdLabel, OLD_CLI_NAMES, SERVICE_TOKEN, systemdUnitName, TUNNEL_PREFIX, TUNNEL_TOKEN_FILE } from "../names";
 
 export type JoinDeps = {
   cf: CfRunner;
@@ -27,33 +27,33 @@ export type JoinDeps = {
   now: () => Date;
 };
 export const TESTED_CLAUDE = "2.1.318";
-const DEFAULTS = { email: "ceo@fybe.jp", domain: "cc.fybe.jp", zone: "fybe.jp", teamDomain: "fybejp.cloudflareaccess.com", accountId: "9b67e2ec0e2cf3359289e1fc860d3777" };
+const DEFAULTS = { email: "ceo@fybe.jp", domain: ENTRY_DOMAIN, zone: "fybe.jp", teamDomain: "fybejp.cloudflareaccess.com", accountId: "9b67e2ec0e2cf3359289e1fc860d3777" };
 const str = (v: string | true | undefined) => (typeof v === "string" ? v : undefined);
 const num = (v: string | true | undefined, d: number) => { const n = Number(str(v)); return str(v) !== undefined && Number.isFinite(n) ? n : d; };
 
 export function joinCommands(d: JoinDeps) {
-  const configPath = join(d.configDir, "cc.json");
-  const paths = (): Paths => ({ home: d.home, appDir: d.appDir, configDir: d.configDir, logDir: join(d.home, ".local", "share", "cc", "log"), bun: d.bunPath, cloudflared: d.cloudflaredPath, uid: d.uid });
+  const configPath = join(d.configDir, CONFIG_FILE);
+  const paths = (): Paths => ({ home: d.home, appDir: d.appDir, configDir: d.configDir, logDir: join(appHomeOf(d.home), "log"), bun: d.bunPath, cloudflared: d.cloudflaredPath, uid: d.uid });
   const services = () => d.services(d.platform, paths());
   const needSetup = (cfg: Config): Required<Pick<Config, "domain" | "zone" | "teamDomain" | "aud" | "accountId" | "serviceToken" | "cfApiToken">> & Config => {
-    for (const k of ["domain", "zone", "teamDomain", "aud", "accountId", "serviceToken", "cfApiToken"] as const) if (!cfg[k]) throw new CliError(1, `cc.json に ${k} が無い。先に ${CLI_NAME} setup を実行する`);
+    for (const k of ["domain", "zone", "teamDomain", "aud", "accountId", "serviceToken", "cfApiToken"] as const) if (!cfg[k]) throw new CliError(1, `${CONFIG_FILE} に ${k} が無い。先に ${CLI_NAME} setup を実行する`);
     return cfg as ReturnType<typeof needSetup>;
   };
 
   async function setup(flags: Parsed["flags"], ctx: Ctx): Promise<number> {
     const hosts = (str(flags.hosts) ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    if (!hosts.length) throw new CliError(1, "--hosts <a,b> が要る（例: 'cc-*.fybe.jp,cc.fybe.jp'）");
+    if (!hosts.length) throw new CliError(1, `--hosts <a,b> が要る（例: '${TUNNEL_PREFIX}*.fybe.jp,${ENTRY_DOMAIN}'）`);
     const had = existsSync(configPath);
     const cfg = loadConfig(configPath);
-    const tok = await ensureServiceToken(d.cf, { name: "cc-node", duration: "8760h" });
+    const tok = await ensureServiceToken(d.cf, { name: SERVICE_TOKEN, duration: "8760h" });
     let serviceToken: Config["serviceToken"];
     if (tok.clientSecret) serviceToken = { clientId: tok.clientId, clientSecret: tok.clientSecret };
     else if (cfg.serviceToken?.clientId === tok.clientId) serviceToken = cfg.serviceToken;
-    else throw new CliError(1, `サービストークン cc-node（${tok.id}）は既にあるが secret が手元に無い。cf zero-trust access service-tokens rotate ${tok.id} で取り直すか、消してからやり直す`);
+    else throw new CliError(1, `サービストークン ${SERVICE_TOKEN}（${tok.id}）は既にあるが secret が手元に無い。cf zero-trust access service-tokens rotate ${tok.id} で取り直すか、消してからやり直す`);
     const email = str(flags.email) ?? DEFAULTS.email;
-    const app = await ensureAccessApp(d.cf, { name: "cc", hosts, sessionDuration: "720h", email, serviceTokenId: tok.id });
-    const bypass = await ensureBypassApp(d.cf, { name: "cc-install", hosts });
-    // CF API トークンは手元の cc.json、無ければ標準入力（--cf-token-stdin。pbpaste | ... 用）、無ければ /dev/tty。argv と環境変数には出さない
+    const app = await ensureAccessApp(d.cf, { name: ACCESS_APP, hosts, sessionDuration: "720h", email, serviceTokenId: tok.id });
+    const bypass = await ensureBypassApp(d.cf, { name: BYPASS_APP, hosts });
+    // CF API トークンは手元の設定、無ければ標準入力（--cf-token-stdin。pbpaste | ... 用）、無ければ /dev/tty。argv と環境変数には出さない
     const cfApiToken = cfg.cfApiToken ?? (flags["cf-token-stdin"] ? await ctx.stdin() : await d.tty("CF API トークン（Account / Cloudflare Tunnel / Read）: ")).trim();
     if (!cfApiToken) throw new CliError(1, "CF API トークンが空");
     const next: Config = {
@@ -64,9 +64,9 @@ export function joinCommands(d: JoinDeps) {
     };
     if (cfg.entry) next.entry = cfg.entry;
     saveConfig(next, configPath);
-    ctx.out(`Access アプリ cc: ${app.id} (aud ${app.aud})`);
-    ctx.out(`Bypass アプリ cc-install: ${bypass.id}`);
-    ctx.out(`サービストークン cc-node: ${tok.id}`);
+    ctx.out(`Access アプリ ${ACCESS_APP}: ${app.id} (aud ${app.aud})`);
+    ctx.out(`Bypass アプリ ${BYPASS_APP}: ${bypass.id}`);
+    ctx.out(`サービストークン ${SERVICE_TOKEN}: ${tok.id}`);
     ctx.out(`保存した: ${configPath}`);
     return 0;
   }
@@ -89,7 +89,7 @@ export function joinCommands(d: JoinDeps) {
       ctx.out(`参加トークンを ${to} に書いた（0600。貼り終えたら消す）`);
     } else if (d.clipboard && (await d.clipboard(enc))) ctx.out("参加トークンをクリップボードに入れた（表示はしない）");
     else { d.ttyWrite(enc + "\n"); ctx.out("参加トークンを端末に出した"); }
-    ctx.out(`トンネル cc-${name} (${tunnelId})、ホスト名 ${hostname} → 127.0.0.1:${port}`);
+    ctx.out(`トンネル ${TUNNEL_PREFIX}${name} (${tunnelId})、ホスト名 ${hostname} → 127.0.0.1:${port}`);
     ctx.out(`新しい機械で: curl -fsSL ${entry}/install | sh`);
     return 0;
   }
@@ -104,7 +104,7 @@ export function joinCommands(d: JoinDeps) {
     try { settingsNext = existsSync(settingsPath) ? withCrossSessionInbound(realFs.readText(settingsPath) ?? "") : '{\n  "crossSessionInbound": "accept"\n}\n'; }
     catch (e) { if (e instanceof SettingsError) throw new CliError(1, e.message); throw e; }
     saveConfig(cfg, configPath);
-    const tokenPath = join(d.configDir, "tunnel.token");
+    const tokenPath = join(d.configDir, TUNNEL_TOKEN_FILE);
     writeFileSync(tokenPath, token.tunnelToken, { mode: 0o600 });
     chmodSync(tokenPath, 0o600);
     const from = str(flags.from);
@@ -120,7 +120,7 @@ export function joinCommands(d: JoinDeps) {
     linkSkill({ home: d.home, appDir: d.appDir, configDir: d.configDir, now: d.now() }, realFs);
     await linkBin(ctx);
     await services().install();
-    ctx.out(`設定 ${configPath}、常駐を入れた（${d.platform === "darwin" ? "LaunchAgent jp.fybe.cc.*" : "systemd --user cc-*"}）`);
+    ctx.out(`設定 ${configPath}、常駐を入れた（${d.platform === "darwin" ? `LaunchAgent ${launchdLabel("*")}` : `systemd --user ${systemdUnitName("*")}`}）`);
     await doctor(ctx);
     ctx.out(`done: 実行物は ${binOf()}（${CLI_NAME}）`);
     return 0;
@@ -128,7 +128,7 @@ export function joinCommands(d: JoinDeps) {
 
   const binOf = () => join(d.appDir, "bin", CLI_NAME);
   const localBin = (name: string) => join(d.home, ".local", "bin", name);
-  // 改名前の ~/.local/bin/cc のうち、実行物を指すリンクだけを消す。他人の cc（C コンパイラなど）には触らない
+  // 改名前の ~/.local/bin/<OLD_CLI_NAMES> のうち、実行物を指すリンクだけを消す。他人の cc（C コンパイラなど）には触らない
   function dropOldLinks() {
     for (const name of OLD_CLI_NAMES) {
       const p = localBin(name);
@@ -160,9 +160,9 @@ export function joinCommands(d: JoinDeps) {
     } else {
       const cfg = loadConfig(configPath);
       const entry = entryOf(cfg);
-      if (!entry) throw new CliError(1, "cc.json に entry も domain も無い");
-      const r = await ctx.fetchFn(`${entry}/install/cc.tar.gz`);
-      if (!r.ok) throw new CliError(1, `${entry}/install/cc.tar.gz → ${r.status}`);
+      if (!entry) throw new CliError(1, `${CONFIG_FILE} に entry も domain も無い`);
+      const r = await ctx.fetchFn(`${entry}${BUNDLE_PATH}`);
+      if (!r.ok) throw new CliError(1, `${entry}${BUNDLE_PATH} → ${r.status}`);
       const tgz = `${d.appDir}.new.tgz`;
       writeFileSync(tgz, new Uint8Array(await r.arrayBuffer()));
       const tar = Bun.spawn(["tar", "xzf", tgz, "-C", newDir], { stdout: "ignore", stderr: "pipe" });
@@ -185,11 +185,11 @@ export function joinCommands(d: JoinDeps) {
 
   async function uninstall(ctx: Ctx): Promise<number> {
     await services().uninstall();
-    rmSync(join(d.home, ".local", "share", "cc"), { recursive: true, force: true });
+    rmSync(appHomeOf(d.home), { recursive: true, force: true });
     rmSync(d.configDir, { recursive: true, force: true });
     rmSync(localBin(CLI_NAME), { force: true });
     dropOldLinks();
-    ctx.out("常駐と ~/.local/share/cc と ~/.config/cc を消した。~/.claude/settings.json の crossSessionInbound とスキルのリンクは残している");
+    ctx.out(`常駐と ${appHomeOf(d.home)} と ${d.configDir} を消した。~/.claude/settings.json の crossSessionInbound とスキルのリンクは残している`);
     return 0;
   }
 
@@ -214,7 +214,7 @@ export function joinCommands(d: JoinDeps) {
       const r = await ctx.fetchFn(url, { headers: { "cf-access-client-id": cfg.serviceToken.clientId, "cf-access-client-secret": cfg.serviceToken.clientSecret } }).catch(() => undefined);
       line(!!(r && r.ok), `外からの API ${url}${r ? ` → ${r.status}` : "（繋がらない）"}`);
     } else {
-      ctx.out("-- 外からの API: cc.json に domain か serviceToken が無いので飛ばす");
+      ctx.out(`-- 外からの API: ${CONFIG_FILE} に domain か serviceToken が無いので飛ばす`);
     }
     try {
       const made = await api<{ id: string }>(local, "POST", "/api/sessions", { cwd: d.home, prompt: "reply with the single word ok" }, ctx.fetchFn);
@@ -240,7 +240,7 @@ export function joinCommands(d: JoinDeps) {
           if (!name) throw new CliError(1, "node remove には <name> が要る");
           const cfg = needSetup(loadConfig(configPath));
           await removeNodeTunnel(d.cf, { name, hostname: nodeHost(name, cfg), zone: cfg.zone });
-          ctx.out(`トンネル cc-${name} と DNS を消した`);
+          ctx.out(`トンネル ${TUNNEL_PREFIX}${name} と DNS を消した`);
           return 0;
         }
         throw new CliError(1, "node add <name> か node token <name> か node remove <name>");
@@ -248,7 +248,7 @@ export function joinCommands(d: JoinDeps) {
         if (!sub) throw new CliError(1, "entry には <name> が要る");
         const cfg = needSetup(loadConfig(configPath));
         await setEntry(d.cf, { name: sub, entryHost: cfg.domain, port: num(flags.port, 4322), zone: cfg.zone });
-        ctx.out(`入口 ${cfg.domain} を cc-${sub} に向けた`);
+        ctx.out(`入口 ${cfg.domain} を ${TUNNEL_PREFIX}${sub} に向けた`);
         return 0;
       }
       case "install": return install(flags, ctx);

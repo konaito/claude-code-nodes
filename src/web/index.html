@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#ffffff">
-<title>cc</title>
+<title>%%PRODUCT_NAME%%</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+JP:wght@400;500;600&display=swap" rel="stylesheet">
@@ -129,7 +129,7 @@
 <div class="app view-peers" id="app">
   <section class="col peers">
     <div class="head">
-      <h1>cc</h1>
+      <h1>%%PRODUCT_NAME%%</h1>
       <span class="sub grow" id="peers-sub">登録簿を読んでいる</span>
       <button class="pill" id="new-btn">新しく</button>
     </div>
@@ -190,6 +190,7 @@ function ago(ts) {
   if (s < 86400) return `${Math.floor(s / 3600)}時間`;
   return `${Math.floor(s / 86400)}日`;
 }
+const K = "%%STORAGE_PREFIX%%"; // localStorage のキーの頭（names.ts）
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} } };
 const apiOf = (peer) => `/n/${encodeURIComponent(peer)}/api`;
 async function api(peer, path, init) {
@@ -250,7 +251,7 @@ let peers = [];            // 登録簿
 const hosts = {};          // peer → /api/host
 const counts = {};         // peer → 動いている数
 let sessions = [];         // 選んだ peer のセッション
-let cur = { peer: store.get("cc.peer") || null, id: store.get("cc.session") || null };
+let cur = { peer: store.get(K + "peer") || null, id: store.get(K + "session") || null };
 let es = null;             // 会話の SSE
 let listEs = null;         // 一覧の SSE
 let lastSeq = 0;
@@ -300,8 +301,8 @@ $("peers").addEventListener("click", (e) => { const b = e.target.closest("[data-
 
 // ---------- セッション ----------
 async function openPeer(name, keep) {
-  cur.peer = name; store.set("cc.peer", name);
-  if (!keep) { cur.id = null; store.set("cc.session", null); closeChat(); }
+  cur.peer = name; store.set(K + "peer", name);
+  if (!keep) { cur.id = null; store.set(K + "session", null); closeChat(); }
   renderPeers();
   $("sess-title").textContent = name;
   $("sess-sub").textContent = hosts[name] && !hosts[name].error ? home((hosts[name].roots || [])[0] || "") : "";
@@ -344,7 +345,7 @@ function closeChat() {
   for (const id of ["h-state", "interrupt", "stop", "resume", "compose"]) $(id).hidden = true;
 }
 async function openChat(id, keep) {
-  cur.id = id; store.set("cc.session", id);
+  cur.id = id; store.set(K + "session", id);
   renderSessions();
   view("chat");
   if (es) { es.close(); es = null; }
@@ -371,7 +372,7 @@ async function openChat(id, keep) {
   $("feed").innerHTML = items.map(itemHtml).filter(Boolean).join("") || `<div class="empty">まだ何も無い</div>`;
   renderPending();
   scrollBottom();
-  const draft = store.get(`cc.draft.${id}`); $("text").value = draft || ""; autosize();
+  const draft = store.get(`${K}draft.${id}`); $("text").value = draft || ""; autosize();
   if (detail.capabilities && detail.capabilities.events && detail.state !== "exited") watchChat(id);
   if (!keep) $("text").focus();
 }
@@ -481,7 +482,7 @@ $("feed").addEventListener("click", async (e) => {
 
 // 送る
 function autosize() { const t = $("text"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, window.innerHeight * .4) + "px"; }
-$("text").addEventListener("input", () => { autosize(); store.set(`cc.draft.${cur.id}`, $("text").value || null); });
+$("text").addEventListener("input", () => { autosize(); store.set(`${K}draft.${cur.id}`, $("text").value || null); });
 $("text").addEventListener("keydown", (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); send(); } });
 $("send").addEventListener("click", send);
 async function send() {
@@ -489,7 +490,7 @@ async function send() {
   $("send").disabled = true;
   try {
     const r = await api(cur.peer, `/sessions/${cur.id}/messages`, { method: "POST", body: JSON.stringify({ text }) });
-    $("text").value = ""; autosize(); store.set(`cc.draft.${cur.id}`, null);
+    $("text").value = ""; autosize(); store.set(`${K}draft.${cur.id}`, null);
     // ノードが立てたセッションは自分の文をイベントとして流さないので、送った文はここで出す
     appendFeed(userHtml(text, Date.now()));
     if (!es) appendFeed(`<div class="note">送った（${esc(r.delivered)}）。端末の返事は一覧の更新で読む</div>`);
@@ -511,7 +512,7 @@ $("resume").addEventListener("click", async () => {
   if (!text) return;
   try {
     const r = await api(cur.peer, "/sessions", { method: "POST", body: JSON.stringify({ cwd: s.cwd, resume: s.id, prompt: text }) });
-    $("text").value = ""; store.set(`cc.draft.${cur.id}`, null);
+    $("text").value = ""; store.set(`${K}draft.${cur.id}`, null);
     await loadSessions(); await openChat(r.id);
     appendFeed(userHtml(text, Date.now()));
   } catch (err) { alert(`再開できない: ${err.message}`); }

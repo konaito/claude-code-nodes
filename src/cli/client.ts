@@ -1,24 +1,22 @@
-// ノードを呼ぶ道具。手元のノードは 127.0.0.1 に無認証、相手のノードは https://<peer>.<domain> にサービストークンで。呼び手は x-cc-from で名乗る
+// ノードを呼ぶ道具。手元のノードは 127.0.0.1 に無認証、相手のノードは https://<nodeHost> にサービストークンで。呼び手は HEADER_FROM で名乗る
 import { nodeHost, type Config } from "../config";
+import { AGENT_PREFIX, formatAgent } from "../identity/agent-name";
+import { CONFIG_FILE, HEADER_FROM, HEADER_VIA } from "../names";
 
 export type Client = { peer: string; base: string; headers: Record<string, string> };
 export class CliError extends Error { constructor(public code: number, msg: string) { super(msg); this.name = "CliError"; } }
 
-const NAME_MAX = 64;
-// 旧 inbox と同じ規則。<ノード>/<自分の sessionId の先頭8文字>/<役割>。子の画面や from 行から親をたどれる
+// agent: を除いた名前。組み立ての規則は identity/agent-name.ts
 export function agentName(nodeName: string, sessionId: string | undefined, role: string | undefined): string {
-  const label = (role && role.trim() ? role : "parent").replace(/[^A-Za-z0-9._/-]/g, "-");
-  const sid = sessionId && /^[0-9a-f]{8}/.test(sessionId) ? sessionId.slice(0, 8) : null;
-  const head = sid ? `${nodeName}/${sid}/` : `${nodeName}/`;
-  return head + label.slice(0, Math.max(1, NAME_MAX - head.length));
+  return formatAgent(nodeName, sessionId, role).slice(AGENT_PREFIX.length);
 }
 
 export function clientFor(cfg: Config, peer: string | undefined, role: string | undefined, env: Record<string, string | undefined>): Client {
-  const from = `agent:${agentName(cfg.name, env.CLAUDE_CODE_SESSION_ID, role)}`;
-  const headers: Record<string, string> = { "x-cc-from": from, "x-cc-via": cfg.name };
+  const from = formatAgent(cfg.name, env.CLAUDE_CODE_SESSION_ID, role);
+  const headers: Record<string, string> = { [HEADER_FROM]: from, [HEADER_VIA]: cfg.name };
   if (!peer || peer === cfg.name) return { peer: cfg.name, base: `http://127.0.0.1:${cfg.port}`, headers };
-  if (!cfg.zone && !cfg.domain) throw new CliError(1, "cc.json に zone も domain も無いので相手のノードを呼べない");
-  if (!cfg.serviceToken) throw new CliError(1, "cc.json に serviceToken が無いので相手のノードを呼べない");
+  if (!cfg.zone && !cfg.domain) throw new CliError(1, `${CONFIG_FILE} に zone も domain も無いので相手のノードを呼べない`);
+  if (!cfg.serviceToken) throw new CliError(1, `${CONFIG_FILE} に serviceToken が無いので相手のノードを呼べない`);
   headers["cf-access-client-id"] = cfg.serviceToken.clientId;
   headers["cf-access-client-secret"] = cfg.serviceToken.clientSecret;
   return { peer, base: `https://${nodeHost(peer, cfg)}`, headers };

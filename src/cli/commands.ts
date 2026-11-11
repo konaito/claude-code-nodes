@@ -1,4 +1,4 @@
-// cc の親向けの命令。peers、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
+// CLI の親向けの命令。peers、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { Config } from "../config";
@@ -8,7 +8,8 @@ import { api, clientFor, CliError, type Client } from "./client";
 import { matchSession, parseTarget } from "./resolve";
 import { lastSeq, rememberSeq } from "./sends";
 import { readUntilResult } from "./read";
-import { CLI_NAME } from "./name";
+import { CLI_NAME, configDirOf, SENDS_FILE } from "../names";
+import { sameParent } from "../identity/agent-name";
 
 export type Ctx = {
   cfg: Config;
@@ -44,7 +45,7 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
 
 const str = (v: string | true | undefined) => (typeof v === "string" ? v : undefined);
 const num = (v: string | true | undefined, d: number) => { const n = Number(str(v)); return Number.isFinite(n) && str(v) !== undefined ? n : d; };
-const sendsPath = (ctx: Ctx) => ctx.sendsPath ?? join(ctx.env.HOME ?? homedir(), ".config", "cc", "sends.json");
+const sendsPath = (ctx: Ctx) => ctx.sendsPath ?? join(configDirOf(ctx.env.HOME ?? homedir()), SENDS_FILE);
 const id8 = (id: string) => id.slice(0, 8);
 
 async function resolve(ctx: Ctx, target: string, role?: string): Promise<{ c: Client; s: SessionSummary; key: string }> {
@@ -113,13 +114,14 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     }
     case "ls": {
       const all = str(flags.peer) ? [{ name: str(flags.peer)!, status: "healthy" } as Peer] : await peersOf(ctx).catch(() => [{ name: ctx.cfg.name, status: "healthy" }] as Peer[]);
-      const mine = flags.mine ? `agent:${clientFor(ctx.cfg, undefined, undefined, ctx.env).headers["x-cc-from"]!.slice("agent:".length).split("/").slice(0, 2).join("/")}/` : undefined;
+      // --mine は自分（このノードと自分の sessionId）が名乗った親の子だけ。役割は問わない
+      const mine = flags.mine ? (parent: string | undefined) => sameParent(parent, ctx.cfg.name, ctx.env.CLAUDE_CODE_SESSION_ID) : undefined;
       const rows = await Promise.all(all.map(async ({ name: peer, status }) => {
         if (status !== "healthy" && status !== "degraded") return [`${peer}  (${status})`]; // 落ちている相手は呼ばない
         try {
           const c = clientFor(ctx.cfg, peer, undefined, ctx.env);
           const list = await api<SessionSummary[]>(c, "GET", "/api/sessions", undefined, ctx.fetchFn);
-          return list.filter((s) => !mine || (s.parent ?? "").startsWith(mine)).map((s) => line(peer, s));
+          return list.filter((s) => !mine || mine(s.parent)).map((s) => line(peer, s));
         } catch (e) { return [`${peer}  (読めない: ${e instanceof Error ? e.message : String(e)})`]; }
       }));
       for (const r of rows.flat()) ctx.out(r);

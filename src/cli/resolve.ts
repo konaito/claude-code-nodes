@@ -1,6 +1,7 @@
 // 対象の解決。<peer>/<sessionId の先頭8文字以上> か sessionId を、一覧から1つに絞る
 import type { SessionSummary } from "../sessions/types";
 import { CliError } from "./client";
+import { CLI_NAME } from "../names";
 
 export function parseTarget(t: string): { peer?: string; id: string } {
   const i = t.indexOf("/");
@@ -13,6 +14,6 @@ export function matchSession(list: SessionSummary[], id: string): SessionSummary
   if (exact) return exact;
   const hits = list.filter((s) => s.id.startsWith(id));
   if (hits.length === 1) return hits[0]!;
-  if (hits.length === 0) throw new CliError(1, `「${id}」に当たるセッションが無い。cc ls で確かめる`);
+  if (hits.length === 0) throw new CliError(1, `「${id}」に当たるセッションが無い。${CLI_NAME} ls で確かめる`);
   throw new CliError(1, `「${id}」は複数ある:\n${hits.map((s) => `  ${s.id}  ${s.kind}  ${s.cwd}`).join("\n")}`);
 }

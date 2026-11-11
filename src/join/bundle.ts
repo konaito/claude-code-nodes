@@ -1,4 +1,4 @@
-// 実行物の配布。ノードは自分のソースを tar.gz にして /install/cc.tar.gz で配る（入口ノードが配布元になる）
+// 実行物の配布。ノードは自分のソースを tar.gz にして BUNDLE_PATH（names.ts）で配る（入口ノードが配布元になる）
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 

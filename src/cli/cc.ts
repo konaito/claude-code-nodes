@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
-// cc の入口。設定を読み、命令を実行して終了コードを返す。参加側の命令には本物の cf、常駐、端末をつなぐ
+// CLI の入口。設定を読み、命令を実行して終了コードを返す。参加側の命令には本物の cf、常駐、端末をつなぐ
 import { createReadStream, createWriteStream, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { loadConfig } from "../config";
+import { appHomeOf, configDirOf } from "../names";
 import { bunRunner } from "../engine/agents";
 import { realCf } from "../join/cf";
 import { serviceManager } from "../join/services";
@@ -37,7 +38,7 @@ if (import.meta.main) {
     cf: realCf,
     services: (platform, p) => serviceManager(platform, p, bunRunner),
     platform: process.platform === "darwin" ? "darwin" : "linux",
-    home, configDir: join(home, ".config", "cc"), appDir: join(home, ".local", "share", "cc", "app"),
+    home, configDir: configDirOf(home), appDir: join(appHomeOf(home), "app"),
     bunPath: process.execPath, cloudflaredPath: Bun.which("cloudflared") ?? join(home, ".local", "bin", "cloudflared"), uid: userInfo().uid,
     tty: ttyAsk, ttyWrite: (t) => writeFileSync("/dev/tty", t), clipboard, run: bunRunner, now: () => new Date(),
   });

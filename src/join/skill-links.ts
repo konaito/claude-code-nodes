@@ -1,6 +1,7 @@
-// スキル session-inbox と child.md を、実行物の中の正本に向ける。~/.agents/skills が正本、~/.claude/skills は相対リンク、child.md は複製（CLAUDE.md が @ で読む）
+// スキル（SKILL_NAME）と child.md を、実行物の中の正本に向ける。~/.agents/skills が正本、~/.claude/skills は相対リンク、child.md は複製（CLAUDE.md が @ で読む）
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { childMdDirOf, SKILL_NAME } from "../names";
 
 export type FsOps = {
   exists(p: string): boolean;
@@ -29,16 +30,16 @@ export const realFs: FsOps = {
 const stamp = (d: Date) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}-${String(d.getHours()).padStart(2, "0")}${String(d.getMinutes()).padStart(2, "0")}`;
 
 export function linkSkill(o: { home: string; appDir: string; configDir: string; now: Date }, fs: FsOps = realFs): void {
-  const target = join(o.appDir, "skills", "session-inbox");
-  const agents = join(o.home, ".agents", "skills", "session-inbox");
+  const target = join(o.appDir, "skills", SKILL_NAME);
+  const agents = join(o.home, ".agents", "skills", SKILL_NAME);
   const suffix = `.old-${stamp(o.now)}`;
   if (fs.exists(agents) && !fs.isSymlinkTo(agents, target)) fs.rename(agents, agents + suffix);
   if (!fs.exists(agents)) { if (!fs.exists(dirname(agents))) fs.mkdir(dirname(agents)); fs.symlink(target, agents); }
-  const claude = join(o.home, ".claude", "skills", "session-inbox");
-  if (!fs.exists(claude)) { if (!fs.exists(dirname(claude))) fs.mkdir(dirname(claude)); fs.symlink("../../.agents/skills/session-inbox", claude); }
+  const claude = join(o.home, ".claude", "skills", SKILL_NAME);
+  if (!fs.exists(claude)) { if (!fs.exists(dirname(claude))) fs.mkdir(dirname(claude)); fs.symlink(`../../.agents/skills/${SKILL_NAME}`, claude); }
   const src = fs.readText(join(target, "child.md"));
   if (src === undefined) return;
-  const child = join(o.home, ".config", "session-inbox", "child.md");
+  const child = join(childMdDirOf(o.home), "child.md");
   const cur = fs.readText(child);
   if (cur === src) return;
   if (cur !== undefined) fs.rename(child, child + suffix);

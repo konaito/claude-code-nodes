@@ -1,13 +1,14 @@
-// Cloudflare のトンネル一覧を登録簿として読む。名前が cc- で始まるトンネルを全部ノードとみなす。許可リストは持たない
+// Cloudflare のトンネル一覧を登録簿として読む。名前が TUNNEL_PREFIX（names.ts）で始まるトンネルを全部ノードとみなす。許可リストは持たない
 import { RegistryError, type Peer, type PeerStatus, type Registry } from "./registry";
 import { nodeHost } from "../config";
+import { TUNNEL_PREFIX } from "../names";
 
 export type CloudflareDeps = {
   accountId: string;
   apiToken: string;    // Cloudflare Tunnel Read
-  zone: string;        // https://cc-<name>.<zone> がノードの URL（トンネル名と同じ）
+  zone: string;        // https://<TUNNEL_PREFIX><name>.<zone> がノードの URL（トンネル名と同じ）
   selfName: string;
-  prefix?: string;     // 既定 "cc-"
+  prefix?: string;     // 既定 TUNNEL_PREFIX
   fetchFn?: typeof fetch;
   cacheMs?: number;    // 既定 10 秒
   now?: () => number;
@@ -22,7 +23,7 @@ export class CloudflareRegistry implements Registry {
   private now: () => number;
 
   constructor(private deps: CloudflareDeps) {
-    this.prefix = deps.prefix ?? "cc-";
+    this.prefix = deps.prefix ?? TUNNEL_PREFIX;
     this.fetchFn = deps.fetchFn ?? fetch;
     this.cacheMs = deps.cacheMs ?? 10_000;
     this.now = deps.now ?? Date.now;

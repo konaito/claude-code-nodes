@@ -1,14 +1,17 @@
+import { appHomeOf, BUNDLE_PATH, ENTRY_SCRIPT } from "../names";
+
 // 新しい機械で `curl -fsSL <入口>/install | sh` として動くインストーラ。参加トークンは /dev/tty（無ければ標準入力）から1回読み、引数と環境変数には出さない
 export function installerScript(o: { entry: string; cliName: string }): string {
+  const appHome = appHomeOf("$HOME"); // シェルの $HOME から組む
   return `#!/bin/sh
-# ccn のインストーラ。bun と cloudflared を入れ、実行物を ~/.local/share/cc/app に置き、参加トークンで設定と常駐を作る
+# ${o.cliName} のインストーラ。bun と cloudflared を入れ、実行物を ${appHome}/app に置き、参加トークンで設定と常駐を作る
 set -eu
 ENTRY="${o.entry}"
-TARBALL="${o.entry}/install/cc.tar.gz"
+TARBALL="${o.entry}${BUNDLE_PATH}"
 CLI="${o.cliName}"
-APP="$HOME/.local/share/cc/app"
+APP="${appHome}/app"
 BIN="$HOME/.local/bin"
-mkdir -p "$HOME/.local/share/cc" "$BIN"
+mkdir -p "${appHome}" "$BIN"
 
 # 参加トークン。端末から1回だけ読む。パイプで渡されたときは標準入力。末尾に改行が無いと read が非ゼロを返すので set -e で止めない
 # token-read-begin
@@ -56,6 +59,6 @@ mv "$APP.new" "$APP"
 rm -rf "$APP.old"
 
 cd "$APP"
-printf '%s' "$TOKEN" | bun run src/cli/cc.ts install
+printf '%s' "$TOKEN" | bun run ${ENTRY_SCRIPT.join("/")} install
 `;
 }

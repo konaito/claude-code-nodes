@@ -1,5 +1,6 @@
 // cf CLI の包み。Access アプリ、サービストークン、トンネル、DNS を「あるべき形」に揃える。cf は OAuth で動くので、秘密を argv に渡すことはない
 import type { Runner } from "../engine/agents";
+import { TUNNEL_PREFIX } from "../names";
 
 export type CfRunner = Runner; // 本物は cf を spawn し、-q を付ける
 export class CfError extends Error { constructor(msg: string) { super(msg); this.name = "CfError"; } }
@@ -38,7 +39,7 @@ async function ensureApp(cf: CfRunner, name: string, b: unknown): Promise<App> {
     : call<App>(cf, ["zero-trust", "access", "applications", "create", ...body(b)]);
 }
 
-// Access アプリ cc。人の email の allow と、ノード用サービストークンの non_identity
+// Access アプリ（ACCESS_APP）。人の email の allow と、ノード用サービストークンの non_identity
 export async function ensureAccessApp(cf: CfRunner, o: { name: string; hosts: string[]; sessionDuration: string; email: string; serviceTokenId: string }): Promise<{ id: string; aud: string }> {
   const app = await ensureApp(cf, o.name, appBody({
     name: o.name, hosts: o.hosts, sessionDuration: o.sessionDuration,
@@ -50,7 +51,7 @@ export async function ensureAccessApp(cf: CfRunner, o: { name: string; hosts: st
   return { id: app.id, aud: app.aud };
 }
 
-// Bypass アプリ cc-install。<host>/install だけ Access を外す
+// Bypass アプリ（BYPASS_APP）。<host>/install だけ Access を外す
 export async function ensureBypassApp(cf: CfRunner, o: { name: string; hosts: string[] }): Promise<{ id: string }> {
   const app = await ensureApp(cf, o.name, appBody({
     name: o.name, hosts: o.hosts.map((h) => `${h}/install`),
@@ -70,7 +71,7 @@ export async function ensureServiceToken(cf: CfRunner, o: { name: string; durati
 }
 
 type Tunnel = { id: string; name: string; deleted_at?: string | null };
-const tunnelName = (name: string) => `cc-${name}`;
+const tunnelName = (name: string) => `${TUNNEL_PREFIX}${name}`;
 async function findTunnel(cf: CfRunner, name: string): Promise<Tunnel | undefined> {
   const list = await call<Tunnel[]>(cf, ["tunnels", "list"]);
   return (list ?? []).find((t) => t.name === tunnelName(name) && !t.deleted_at);
@@ -117,7 +118,7 @@ export async function removeNodeTunnel(cf: CfRunner, o: { name: string; hostname
   if (t) await call(cf, ["tunnels", "delete", t.id, "--force"]);
 }
 
-// 入口。そのノードのトンネルの ingress に cc.fybe.jp を足し、CNAME を向ける（移行日用）
+// 入口。そのノードのトンネルの ingress に入口のホスト名を足し、CNAME を向ける（移行日用）
 export async function setEntry(cf: CfRunner, o: { name: string; entryHost: string; port: number; zone: string }): Promise<void> {
   const t = await findTunnel(cf, o.name);
   if (!t) throw new CfError(`tunnel ${tunnelName(o.name)} not found`);

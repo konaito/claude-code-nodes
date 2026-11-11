@@ -4,7 +4,7 @@ import { HttpError, json, toResponse } from "./errors";
 import type { Caller } from "../identity/identity";
 import { installerScript } from "../join/installer";
 import { bundle } from "../join/bundle";
-import { CLI_NAME } from "../cli/name";
+import { BUNDLE_PATH, CLI_NAME } from "../names";
 import { pageHtml } from "../web/page";
 export type { Deps, HostInfo } from "./sessions";
 
@@ -35,7 +35,7 @@ function install(req: Request, url: URL, appRoot: string): Response {
     return new Response(installerScript({ entry: `${scheme}://${host}`, cliName: CLI_NAME }), { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
   }
   // Cloudflare は .gz を既定で cache するので、古い実行物を配らないよう no-store を付ける
-  if (url.pathname === "/install/cc.tar.gz") return new Response(bundle(appRoot), { headers: { "content-type": "application/gzip", "cache-control": "no-store" } });
+  if (url.pathname === BUNDLE_PATH) return new Response(bundle(appRoot), { headers: { "content-type": "application/gzip", "cache-control": "no-store" } });
   throw new HttpError(404, { error: "not found" });
 }
 

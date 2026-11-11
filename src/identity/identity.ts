@@ -1,4 +1,6 @@
-// 呼び手を決める境界。プロトコルは x-cc-from と x-cc-via のヘッダだけを見る。誰がこのヘッダを置いてよいかはアプリケーション（AccessIdentity）が決める
+// 呼び手を決める境界。プロトコルは HEADER_FROM と HEADER_VIA（names.ts）のヘッダだけを見る。誰がこのヘッダを置いてよいかはアプリケーション（AccessIdentity）が決める
+import { HEADER_FROM, HEADER_VIA } from "../names";
+
 export type CallerKind = "user" | "node" | "local"; // user は Access の email、node はノード用サービストークン、local は同じ機械
 export type Caller = { id: string; via?: string; kind?: CallerKind }; // id は email か "agent:<名前>" か "local"
 export interface Identity { callerOf(req: Request): Promise<Caller> } // 断るときは AccessDenied を投げる
@@ -16,8 +18,8 @@ export function isLoopbackHost(req: Request): boolean {
 export class HeaderIdentity implements Identity {
   async callerOf(req: Request): Promise<Caller> {
     if (!isLoopbackHost(req)) throw new AccessDenied(401, "access token required");
-    const id = req.headers.get("x-cc-from")?.trim();
-    const via = req.headers.get("x-cc-via")?.trim();
+    const id = req.headers.get(HEADER_FROM)?.trim();
+    const via = req.headers.get(HEADER_VIA)?.trim();
     if (!id) return { id: "local", kind: "local" };
     return via ? { id, via, kind: "local" } : { id, kind: "local" };
   }
