@@ -38,3 +38,8 @@
 - 旧のホスト名（`cc-<name>.fybe.jp`、`cc.fybe.jp`）の ingress、CNAME、Access のホスト名は残した。片付けは手順書の6に従う。消す時期は決まっていない。
 - サービストークンは `cc-node` の名前のまま使っている。
 - 各機械の `~/.config/ccn/legacy-cc.json`（konaito-pro だけ）と `~/.config/ccn/legacy-session-inbox-20261111/` は退避の控え。
+
+## GitHub と手元の置き場
+
+- `gh repo rename claude-code-nodes -R konaito/cc-web` で repo を `konaito/claude-code-nodes` に改名し、origin を `https://github.com/konaito/claude-code-nodes.git` にした。
+- `~/Documents/cc-web` を `~/Documents/claude-code-nodes` に移し、`git worktree repair` で worktree `~/Documents/cc-web-ccn` の参照を直した。
