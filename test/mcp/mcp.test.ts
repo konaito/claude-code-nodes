@@ -337,7 +337,7 @@ test("list_places adds candidate places with README, remote and last use, narrow
   const c = await connect(app);
   const r = json(await c.callTool({ name: "list_places", arguments: {} }));
   expect(r.places.map((p: { path: string }) => p.path)).toEqual([join(root, "Documents", "notes"), join(root, "other")]);
-  expect(r.places[0]).toMatchObject({ name: "notes", remote: "https://github.com/o/notes.git", readme: ["# Notes"], lastUsedAt: 1234 });
+  expect(r.places[0]).toMatchObject({ name: "notes", remote: "https://github.com/o/notes.git", readme: ["# Notes / メモ"], lastUsedAt: 1234 });
   expect(r).toMatchObject({ total: 2, truncated: false, roots: [root] });
   expect(r.recent.map((x: { cwd: string }) => x.cwd)).toContain(join(root, "Documents", "notes", "sub"));
   const q = json(await c.callTool({ name: "list_places", arguments: { query: "notes" } }));

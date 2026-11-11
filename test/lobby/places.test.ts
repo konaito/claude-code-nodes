@@ -92,7 +92,10 @@ test("selectPlaces puts recently used places first, narrows by words and caps co
   expect(r.places[0]!.lastUsedAt).toBe(90);
   expect(r.places[2]!.path).toBe("/r/p399"); // 使っていないものは変更の新しい順
   expect(r.places.length).toBe(60);           // 既定の件数
-  expect(r.places[0]!.readme).toEqual([many[7]!.readme[0]!]); // 絞らないときは README の1行
+  expect(r.places[0]!.readme).toHaveLength(1); // 絞らないときは README の先頭2行を1行にして160字まで
+  expect(r.places[0]!.readme[0]!.startsWith("readme of p7 ")).toBe(true);
+  expect(r.places[0]!.readme[0]!.length).toBeLessThanOrEqual(161);
+  expect(selectPlaces([{ ...many[0]!, readme: ["# a", "説明"] }], new Map()).places[0]!.readme).toEqual(["# a / 説明"]);
   expect(r.total).toBe(400);
   expect(r.truncated).toBe(true);
   const big = selectPlaces(many, used, { limit: 300 });

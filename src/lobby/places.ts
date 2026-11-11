@@ -20,7 +20,7 @@ export const PLACES_DEFAULT_LIMIT = 60;
 export const PLACES_MAX_LIMIT = 300;
 export const PLACES_MAX_DIRS = 1000;        // 1回の走査で見るディレクトリの上限
 export const PLACES_MAX_CHARS = 16_000;     // 返す places の JSON の文字数の上限（MCP の1回の結果 20,000 字に収める）
-const README_LINES = 5;                     // 語で絞ったときに返す README の行数。絞らないときは1行
+const README_LINES = 5;                     // 語で絞ったときに返す README の行数。絞らないときは先頭の2行を / でつないだ1行
 const README_LINE_CHARS = 160;
 const README_BYTES = 4096;
 const GIT_BYTES = 64 * 1024;
@@ -159,6 +159,13 @@ export function usageOf(places: ScannedPlace[], sessions: Array<{ cwd: string; l
   return used;
 }
 
+// 絞らないときの README。見出しだけだと中身が分からないので、先頭の2行を1行にする
+const brief = (lines: string[]): string[] => {
+  if (!lines.length) return [];
+  const l = lines.slice(0, 2).join(" / ");
+  return [l.length > README_LINE_CHARS ? l.slice(0, README_LINE_CHARS) + "…" : l];
+};
+
 // 語で絞り（どれかの語が名前、パス、remote、README に入るもの）、最近使われた順、変更の新しい順に並べ、件数と文字数で切る
 export function selectPlaces(all: ScannedPlace[], used: Map<string, number>, q: PlacesQuery = {}): PlacesResult {
   const words = (q.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
@@ -171,7 +178,7 @@ export function selectPlaces(all: ScannedPlace[], used: Map<string, number>, q: 
   let chars = 0;
   for (const { p, used } of scored) {
     if (places.length >= limit) break;
-    const item: Place = { name: p.name, path: p.path, remote: p.remote, readme: words.length ? p.readme : p.readme.slice(0, 1), lastUsedAt: used };
+    const item: Place = { name: p.name, path: p.path, remote: p.remote, readme: words.length ? p.readme : brief(p.readme), lastUsedAt: used };
     const size = JSON.stringify(item).length + 1;
     if (chars + size > PLACES_MAX_CHARS) break;
     chars += size;
