@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cleanRemote, PLACES_MAX_CHARS, remoteOf, scanPlaces, selectPlaces, usageOf } from "../../src/lobby/places";
+import { cleanRemote, isProtected, MAC_PROTECTED, newPlacesMemory, nodeFs, PLACES_MAX_CHARS, PlacesScanner, protectedPaths, remoteOf, resolveCwds, scanPlaces, selectPlaces, usageOf, type PlacesFs } from "../../src/lobby/places";
 
 // 目印。places の出力（JSON 全体）にどれも出てはいけない
 const MARKS = ["FAKE-SSH-README-1101", "FAKE-ENV-2202", "FAKE-PEM-3303", "FAKE-TOKEN-4404", "FAKE-HDR-5505", "FAKE-CFG-6606", "FAKE-KEYCHAIN-7707", "FAKE-OUTSIDE-8808"];
@@ -42,7 +42,7 @@ function fixture() {
 
 test("scanPlaces lists the directories under the root and Documents with README, remote and no secrets", async () => {
   const { root } = fixture();
-  const all = await scanPlaces({ roots: [root], bases: [root], lobby: join(root, "lobby") });
+  const all = (await scanPlaces({ roots: [root], bases: [root], lobby: join(root, "lobby") })).places;
   const names = all.map((p) => p.name).sort();
   expect(names).toEqual(["certs-app", "greeter", "linked", "main-repo", "notes", "wt"]);
   const by = Object.fromEntries(all.map((p) => [p.name, p]));
@@ -64,7 +64,7 @@ test("scanPlaces skips secret places under the node's home even when the home is
   mkdirSync(join(home, ".ssh"));
   symlinkSync(join(home, ".ssh"), join(root, "homessh"));
   writeFileSync(join(home, ".ssh", "README.md"), "FAKE-SSH-README-1101\n");
-  const all = await scanPlaces({ roots: [root], bases: [root, home], lobby: join(root, "lobby") });
+  const all = (await scanPlaces({ roots: [root], bases: [root, home], lobby: join(root, "lobby") })).places;
   expect(all.map((p) => p.name)).not.toContain("homessh");
 });
 
@@ -73,14 +73,14 @@ test("scanPlaces does not read the config file given by CCN_CONFIG", async () =>
   mkdirSync(join(root, "cfgdir"));
   writeFileSync(join(root, "ccn-test.json"), "FAKE-CFG-6606\n");
   symlinkSync(join(root, "ccn-test.json"), join(root, "cfgdir", "README.md"));
-  const all = await scanPlaces({ roots: [root], bases: [root], configFile: join(root, "ccn-test.json") });
+  const all = (await scanPlaces({ roots: [root], bases: [root], configFile: join(root, "ccn-test.json") })).places;
   expect(all.find((p) => p.name === "cfgdir")!.readme).toEqual([]);
 });
 
 test("scanPlaces stops at maxDirs", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-many-")));
   for (let i = 0; i < 30; i++) mkdirSync(join(root, `p${i}`));
-  expect((await scanPlaces({ roots: [root], bases: [root], maxDirs: 7 })).length).toBe(7);
+  expect((await scanPlaces({ roots: [root], bases: [root], maxDirs: 7 })).places.length).toBe(7);
 });
 
 test("selectPlaces puts recently used places first, narrows by words and caps count and characters", async () => {
@@ -113,4 +113,171 @@ test("remoteOf reads only remote urls and cleanRemote drops user names and token
   expect(remoteOf('[remote "a"]\n url = git@h:o/a.git\n')).toBe("git@h:o/a.git");
   expect(cleanRemote("ssh://git@h:22/o/r.git")).toBe("ssh://h:22/o/r.git");
   expect(cleanRemote("https://h/o/r.git")).toBe("https://h/o/r.git");
+});
+
+// 止まる偽物の fs。本物の fs に、呼び出しの記録と、hang に当たるパスで返らない（gate を開けるまで待つ）振る舞いを足す
+function trackedFs(hang: (p: string, op: string) => boolean = () => false, delay: (p: string, op: string) => number = () => 0) {
+  const calls: Array<{ op: string; path: string }> = [];
+  const gates: Array<() => void> = [];
+  const wrap = <A extends unknown[], R>(op: string, f: (p: string, ...a: A) => Promise<R>) => async (p: string, ...a: A): Promise<R> => {
+    calls.push({ op, path: p });
+    if (hang(p, op)) await new Promise<void>((r) => gates.push(r));
+    const ms = delay(p, op);
+    if (ms) await new Promise((r) => setTimeout(r, ms));
+    return f(p, ...a);
+  };
+  const fs: PlacesFs = {
+    readdir: wrap("readdir", nodeFs.readdir), realpath: wrap("realpath", nodeFs.realpath), stat: wrap("stat", nodeFs.stat),
+    lstat: wrap("lstat", nodeFs.lstat), readlink: wrap("readlink", nodeFs.readlink), readHead: wrap("readHead", nodeFs.readHead),
+  };
+  return { fs, calls, release: () => { for (const g of gates.splice(0)) g(); }, count: (op: string, path: string) => calls.filter((c) => c.op === op && c.path === path).length };
+}
+
+function macHome() {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-mac-")));
+  for (const n of [...MAC_PROTECTED, "Documents/app", "proj", "Library/Mobile Documents/com~apple~CloudDocs/doc"]) mkdirSync(join(home, n), { recursive: true });
+  writeFileSync(join(home, "Desktop", "README.md"), "desktop\n");
+  // ホームの直下の symlink の先が保護フォルダの中（iCloud Drive など）
+  symlinkSync(join(home, "Library", "Mobile Documents", "com~apple~CloudDocs"), join(home, "cloud"));
+  symlinkSync(join(home, "Downloads"), join(home, "dl"));
+  return home;
+}
+
+test("on macOS scanPlaces never touches the protected folders in the home, not even with stat or realpath", async () => {
+  const home = macHome();
+  const prot = MAC_PROTECTED.map((n) => join(home, n));
+  // 保護フォルダに当たったら返らない（本番の止まり方の再現）。当たらなければすぐ終わる
+  const t = trackedFs((p) => isProtected(p, prot));
+  const started = Date.now();
+  const r = await scanPlaces({ roots: [home], bases: [home], home, platform: "darwin" }, { fs: t.fs, deadlineMs: 2000, opMs: 1000 });
+  expect(Date.now() - started).toBeLessThan(500);
+  expect(r.places.map((p) => p.name).sort()).toEqual(["app", "proj"]);
+  expect(r.partial).toBe(false);
+  expect(r.unreadable).toEqual([]);
+  expect(t.calls.filter((c) => isProtected(c.path, prot))).toEqual([]);
+  // symlink は readlink だけで、先（保護フォルダの中）には realpath も当てていない
+  expect(t.count("readlink", join(home, "cloud"))).toBe(1);
+  expect(t.count("realpath", join(home, "cloud"))).toBe(0);
+  t.release();
+});
+
+test("on Linux the same names are ordinary places, and a root inside a protected folder is still scanned", async () => {
+  const home = macHome();
+  const linux = await scanPlaces({ roots: [home], bases: [home], home, platform: "linux" });
+  expect(linux.places.map((p) => p.name)).toEqual(expect.arrayContaining(["Desktop", "Downloads", "Music", "Public", "proj"]));
+  expect(linux.places.map((p) => p.name)).not.toContain("Library"); // 秘密の置き場（Library/Keychains）を含むので、どこでも外す
+  const desk = await scanPlaces({ roots: [join(home, "Desktop")], bases: [home], home, platform: "darwin" });
+  expect(desk.partial).toBe(false); // 利用者が roots に選んだ保護フォルダは、その下を読む
+  expect(protectedPaths({ home, platform: "darwin", roots: [join(home, "Desktop")] })).not.toContain(join(home, "Desktop"));
+});
+
+test("a directory that does not answer is cut off by the per-call limit, reported as unreadable and the rest is returned", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-hang-")));
+  for (const n of ["a", "b", "slow"]) mkdirSync(join(root, n));
+  writeFileSync(join(root, "a", "README.md"), "a\n");
+  const slow = join(root, "slow");
+  const t = trackedFs((p, op) => p === slow && op === "readdir");
+  const memory = newPlacesMemory();
+  const started = Date.now();
+  const r = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 1000, opMs: 100 });
+  expect(Date.now() - started).toBeLessThan(600);
+  expect(r.places.map((p) => p.name).sort()).toEqual(["a", "b"]);
+  expect(r.places.find((p) => p.name === "a")!.readme).toEqual(["a"]);
+  expect(r).toMatchObject({ partial: true, unreadable: [slow] });
+  expect(memory.stuck.has(slow)).toBe(true);
+  // 次の走査では、止まったディレクトリを開かない（止まったスレッドを増やさない）。覚えていることは unreadable で伝える
+  const again = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 1000, opMs: 100 });
+  expect(t.count("readdir", slow)).toBe(1);
+  expect(again).toMatchObject({ partial: true, unreadable: [slow] });
+  expect(again.places.map((p) => p.name).sort()).toEqual(["a", "b"]);
+  // 呼び出しが後で返っても、ノードが動いている間は開かない
+  t.release();
+  await new Promise((r) => setTimeout(r, 10));
+  await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 1000, opMs: 100 });
+  expect(t.count("readdir", slow)).toBe(1);
+});
+
+test("when the whole scan runs out of time it returns what it has, and does not remember merely slow directories", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-late-")));
+  for (let i = 0; i < 80; i++) { mkdirSync(join(root, `p${i}`)); writeFileSync(join(root, `p${i}`, "README.md"), "r\n"); }
+  // README を読むたびに 40ms かかる。8件ずつ読むので全部で400ms 以上かかり、200ms では全部は読めない
+  const t = trackedFs(() => false, (_p, op) => (op === "readHead" ? 40 : 0));
+  const memory = newPlacesMemory();
+  const started = Date.now();
+  const r = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 200, opMs: 1000 });
+  expect(Date.now() - started).toBeLessThan(400);
+  expect(r.partial).toBe(true);
+  expect(r.places.every((p) => p.readme[0] === "r")).toBe(true); // 途中で切られて README が欠けた候補は返さない
+  expect(r.places.length).toBeGreaterThan(0);
+  expect(r.places.length).toBeLessThan(80);
+  expect(memory.stuck.size).toBe(0); // 遅いだけのものは覚えない
+  await new Promise((r) => setTimeout(r, 60));
+  const full = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 3000, opMs: 1000 });
+  expect(full).toMatchObject({ partial: false, unreadable: [] });
+  expect(full.places).toHaveLength(80);
+});
+
+test("a call still in flight from an earlier scan is not issued again until it returns", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-pending-")));
+  mkdirSync(join(root, "x"));
+  const x = join(root, "x");
+  let hanging = true; // 最初の1回だけ返らない
+  const t = trackedFs((p, op) => p === x && op === "readdir" && hanging);
+  const memory = newPlacesMemory();
+  // 全体の時間切れで待ちを切っただけなので stuck には入れないが、返るまでは開かない
+  const first = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 100, opMs: 1000 });
+  expect(first.partial).toBe(true);
+  expect(memory.stuck.size).toBe(0);
+  const second = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 100, opMs: 1000 });
+  expect(t.count("readdir", x)).toBe(1);
+  expect(second.unreadable).toEqual([x]);
+  hanging = false;
+  t.release();
+  await new Promise((r) => setTimeout(r, 10));
+  expect(memory.pending.size).toBe(0);
+  const third = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 1000, opMs: 1000 });
+  expect(t.count("readdir", x)).toBe(2);
+  expect(third.places.map((p) => p.name)).toEqual(["x"]);
+});
+
+test("PlacesScanner shares one scan between concurrent calls and caches the finished result", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-sf-")));
+  mkdirSync(join(root, "a"));
+  const t = trackedFs(() => false, (p, op) => (op === "readdir" && p === root ? 50 : 0));
+  const s = new PlacesScanner({ fs: t.fs, cacheMs: 100 });
+  const o = { roots: [root], bases: [root], home: root, platform: "darwin" as const };
+  const [r1, r2, r3] = await Promise.all([s.scan(o), s.scan(o), s.scan(o)]);
+  expect(s.scans).toBe(1);
+  expect(t.count("readdir", root)).toBe(1);
+  expect(r1).toBe(r2);
+  expect(r2).toBe(r3);
+  await s.scan(o);
+  expect(s.scans).toBe(1); // 終わってから cacheMs のうちは使い回す
+  await new Promise((r) => setTimeout(r, 120));
+  await s.scan(o);
+  expect(s.scans).toBe(2);
+});
+
+test("resolveCwds leaves cwds outside roots and in protected folders as they are", async () => {
+  const home = macHome();
+  const t = trackedFs((p) => isProtected(p, MAC_PROTECTED.map((n) => join(home, n))));
+  const m = await resolveCwds([join(home, "Desktop", "x"), "/elsewhere/y", join(home, "proj")], { roots: [home], home, platform: "darwin" }, { fs: t.fs });
+  expect(m.get(join(home, "Desktop", "x"))).toBe(join(home, "Desktop", "x"));
+  expect(m.get("/elsewhere/y")).toBe("/elsewhere/y");
+  expect(m.get(join(home, "proj"))).toBe(join(home, "proj"));
+  expect(t.calls.map((c) => c.path)).toEqual([join(home, "proj")]);
+});
+
+test("calls that answer are never blocked by each other: nested roots, bases and cwds are all resolved", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-nest-")));
+  mkdirSync(join(root, "Documents", "app", "sub"), { recursive: true });
+  mkdirSync(join(root, "proj"));
+  const r = await scanPlaces({ roots: [root, join(root, "Documents")], bases: [root, join(root, "Documents")], home: root, platform: "darwin" });
+  expect(r).toMatchObject({ partial: false, unreadable: [] });
+  expect(r.places.map((p) => p.name).sort()).toEqual(["app", "proj"]);
+  const t = trackedFs();
+  const cwds = [root, join(root, "Documents"), join(root, "Documents", "app", "sub")];
+  const m = await resolveCwds(cwds, { roots: [root], home: root, platform: "darwin" }, { fs: t.fs });
+  for (const c of cwds) expect(t.count("realpath", c)).toBe(1);
+  expect(m.get(join(root, "Documents", "app", "sub"))).toBe(join(root, "Documents", "app", "sub"));
 });

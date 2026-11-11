@@ -269,6 +269,13 @@ test("places prints one line per place with remote and last use, passes words an
   expect(JSON.parse(j.lines.join("\n"))).toEqual(body);
 });
 
+test("places says when some folders could not be read in time", async () => {
+  const body = { name: "inc", roots: ["/Users/u"], places: [{ name: "a", path: "/Users/u/a", remote: null, readme: [], lastUsedAt: null }], total: 1, truncated: false, partial: true, unreadable: ["/Users/u/Documents"] };
+  const c = ctx((async () => Response.json(body)) as unknown as typeof fetch);
+  expect(await main(["places"], c)).toBe(0);
+  expect(c.lines.at(-1)).toBe("(一部のフォルダを読めなかった（時間切れ）: /Users/u/Documents)");
+});
+
 test("places on an old node says the node needs ccn update", async () => {
   const n = fakeNode();
   const errs: string[] = [];

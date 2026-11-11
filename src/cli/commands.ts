@@ -27,7 +27,7 @@ export type Ctx = {
 };
 type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; input?: Record<string, unknown>; description?: string }>; cursor?: number };
 type Peer = { name: string; url: string; status: string; self: boolean };
-type PlacesBody = { name?: string; lobby?: string; roots?: string[]; places: Array<{ name: string; path: string; remote: string | null; readme: string[]; lastUsedAt: number | null }>; total: number; truncated: boolean };
+type PlacesBody = { name?: string; lobby?: string; roots?: string[]; places: Array<{ name: string; path: string; remote: string | null; readme: string[]; lastUsedAt: number | null }>; total: number; truncated: boolean; partial?: boolean; unreadable?: string[] };
 const day = (ms: number) => new Date(ms).toLocaleDateString("sv-SE"); // YYYY-MM-DD（手元の時刻）
 
 export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
@@ -148,6 +148,7 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
         for (const l of p.readme) ctx.out(`  | ${l}`);
       }
       ctx.out(b.truncated ? `(${b.total} 件のうち ${b.places.length} 件。語で絞る: ${CLI_NAME} places <語>)` : `(${b.total} 件)`);
+      if (b.partial) ctx.out(`(一部のフォルダを読めなかった（時間切れ）${b.unreadable?.length ? `: ${b.unreadable.join(", ")}` : ""})`);
       return 0;
     }
     case "ls": {
