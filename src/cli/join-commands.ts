@@ -1,7 +1,8 @@
 // ccn の参加側の命令。setup（1回だけの準備）、node add/remove、entry、install、update、uninstall、doctor、serve。cf、常駐、端末、ファイルは deps の裏
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, readlinkSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { entryOf, hostFor, loadConfig, nodeHost, resolveConfigPath, saveConfig, type Config } from "../config";
+import { entryOf, hostFor, loadConfig, lobbyOf, nodeHost, resolveConfigPath, saveConfig, type Config } from "../config";
+import { prepareLobby } from "../lobby/lobby";
 import type { Runner } from "../engine/agents";
 import { addNodeHost, createNodeTunnel, ensureAccessApp, ensureBypassApp, ensureServiceToken, nodeTunnelToken, removeNodeTunnel, renameNodeTunnel, setEntry, type CfRunner } from "../join/cf";
 import { configFromToken, decodeJoinToken, encodeJoinToken, JoinTokenError, type JoinToken } from "../join/token";
@@ -49,6 +50,12 @@ export function joinCommands(d: JoinDeps) {
     if (dropped) await services().install();
     return dropped;
   }
+  // 受け口のディレクトリと CLAUDE.md を、入れた版のひな形で書く。ノードの起動でも同じことをする
+  function writeLobby(ctx: Ctx) {
+    const cfg = loadConfig(readPath());
+    const r = prepareLobby({ dir: lobbyOf(cfg, d.home), appRoot: d.appDir, nodeName: cfg.name, roots: cfg.roots });
+    ctx.out("error" in r ? `-- 受け口 ${r.dir} を用意できない: ${r.error}` : `受け口 ${r.dir}${r.written ? "（CLAUDE.md を書いた）" : ""}`);
+  }
   const needSetup = (cfg: Config): Required<Pick<Config, "domain" | "zone" | "teamDomain" | "aud" | "accountId" | "serviceToken" | "cfApiToken">> & Config => {
     for (const k of ["domain", "zone", "teamDomain", "aud", "accountId", "serviceToken", "cfApiToken"] as const) if (!cfg[k]) throw new CliError(1, `${CONFIG_FILE} に ${k} が無い。先に ${CLI_NAME} setup を実行する`);
     return cfg as ReturnType<typeof needSetup>;
@@ -78,6 +85,7 @@ export function joinCommands(d: JoinDeps) {
       accountId: str(flags["account-id"]) ?? cfg.accountId ?? DEFAULTS.accountId, serviceToken, cfApiToken,
     };
     if (cfg.entry) next.entry = cfg.entry;
+    if (cfg.lobby) next.lobby = cfg.lobby;
     saveConfig(next, configPath);
     ctx.out(`Access アプリ ${ACCESS_APP}: ${app.id} (aud ${app.aud})`);
     ctx.out(`Bypass アプリ ${BYPASS_APP}: ${bypass.id}`);
@@ -135,6 +143,7 @@ export function joinCommands(d: JoinDeps) {
     }
     realFs.writeText(settingsPath, settingsNext);
     linkSkill({ home: d.home, appDir: d.appDir, configDir: d.configDir, now: d.now() }, realFs);
+    writeLobby(ctx);
     dropLegacySkill(mig(ctx));
     await linkBin(ctx);
     await dropLegacyServices(mig(ctx), d.legacyServices(d.platform, paths())); // 同じポートに旧と新が並ばないように、旧を先に外す
@@ -210,6 +219,7 @@ export function joinCommands(d: JoinDeps) {
     renameSync(newDir, d.appDir);
     rmSync(oldDir, { recursive: true, force: true });
     linkSkill({ home: d.home, appDir: d.appDir, configDir: d.configDir, now: d.now() }, realFs);
+    writeLobby(ctx);
     dropLegacySkill(m);
     await linkBin(ctx);
     // 常駐の入れ替えは最後。旧があれば外して新を入れ、新が無ければ入れ、あれば node を再起動する

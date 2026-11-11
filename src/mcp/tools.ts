@@ -103,13 +103,42 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     return { peer: t.peer, ...(await call<Detail>(base, "GET", t.peer, `/api/sessions/${t.id}`)) };
   })());
 
+  server.registerTool("list_places", {
+    title: "List places",
+    description: "Show where a new session can start on one node: the lobby (the default when create_session gets no cwd), the allowed roots, and the directories of recent sessions, newest first. Use it before create_session when you need a cwd.",
+    inputSchema: { peer: peerArg, limit: z.number().int().min(1).max(50).optional().describe("Number of recent directories. Default 10") },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  }, async (a) => run(async () => {
+    const peer = a.peer || base.nodeName;
+    const [host, list] = await Promise.all([
+      call<{ roots?: string[]; lobby?: string }>(base, "GET", a.peer, "/api/host"),
+      call<SessionSummary[]>(base, "GET", a.peer, "/api/sessions"),
+    ]);
+    const seen = new Set<string>();
+    const recent: Array<{ cwd: string; lastActivityAt: number }> = [];
+    for (const s of [...list].sort((x, y) => y.lastActivityAt - x.lastActivityAt)) {
+      if (!s.cwd || seen.has(s.cwd) || s.cwd === host.lobby) continue;
+      seen.add(s.cwd);
+      recent.push({ cwd: s.cwd, lastActivityAt: s.lastActivityAt });
+    }
+    return {
+      peer, lobby: host.lobby ?? null, roots: host.roots ?? [], recent: recent.slice(0, a.limit ?? 10),
+      ...(host.lobby ? {} : { note: `${peer} runs an older ccn without a lobby; give create_session both cwd and prompt` }),
+    };
+  })());
+
   server.registerTool("create_session", {
     title: "Create session",
-    description: "Start a new Claude Code session (a child) on a node, in a directory under that node's allowed roots, with a first message. The message arrives with a from line naming you. Returns the session id, the parent name it records, and cursor 0 for read_messages. Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does.",
+    description: [
+      "Start a new Claude Code session (a child) on a node.",
+      "Omit cwd to start in that node's lobby: a session whose job is to pick the right directory for a request, start a child there, and reply with a line `子: <peer>/<sessionId>` naming it. Usual flow: create_session with no cwd and no prompt, send_message with the request, read_messages until stop=result, then talk to the named child directly with send_message and read_messages.",
+      "Omit prompt to create an idle session that waits for its first message: the id is fixed at once, and claude starts when send_message delivers the first message. With a prompt it starts working right away. A session that never gets a message is cleaned up after 30 minutes.",
+      "Every message arrives with a from line naming you. Returns the session id, its cwd, the parent name it records, and cursor 0 for read_messages. Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does. The lobby gives its child the lobby's own mode.",
+    ].join(" "),
     inputSchema: {
       peer: peerArg,
-      cwd: z.string().describe("Absolute directory on that node"),
-      prompt: z.string().min(1).describe("First message. Make it self-contained: goal, directory, done criteria, what not to touch, and ask it to write the result as text"),
+      cwd: z.string().optional().describe("Absolute directory under that node's roots (see list_places). Omit for the lobby"),
+      prompt: z.string().min(1).optional().describe("First message. Omit to send it later with send_message. When given, make it self-contained: goal, directory, done criteria, what not to touch, and ask it to write the result as text"),
       permission_mode: z.enum(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"]).optional(),
       model: z.string().optional(),
       resume: z.string().optional().describe("Session id to continue instead of starting fresh"),
@@ -121,13 +150,23 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
   }, async (a) => {
     const { ctx, note } = callerWith(base, a.as, a.as_session);
     return run(async () => {
-      const body: Record<string, unknown> = { cwd: a.cwd, prompt: a.prompt };
+      const body: Record<string, unknown> = {};
+      if (a.cwd) body.cwd = a.cwd;
+      if (a.prompt) body.prompt = a.prompt;
       if (a.permission_mode) body.permissionMode = a.permission_mode;
       if (a.model) body.model = a.model;
       if (a.resume) body.resume = a.resume;
       if (a.fork) body.fork = true;
-      const r = await call<{ id: string }>(ctx, "POST", a.peer, "/api/sessions", body);
-      return { peer: a.peer || base.nodeName, id: r.id, parent: ctx.caller.id, cursor: 0, ...(note ? { note } : {}) };
+      let r: { id: string; cwd?: string; state?: string };
+      try { r = await call<{ id: string; cwd?: string; state?: string }>(ctx, "POST", a.peer, "/api/sessions", body); }
+      catch (e) {
+        // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
+        if (e instanceof ToolError && (!a.cwd || !a.prompt) && !a.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
+          throw new ToolError(`${e.message}. ${a.peer || base.nodeName} runs an older ccn without the lobby or prompt-less sessions; give both cwd and prompt`);
+        }
+        throw e;
+      }
+      return { peer: a.peer || base.nodeName, id: r.id, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, cursor: 0, ...(note ? { note } : {}) };
     })();
   });
 

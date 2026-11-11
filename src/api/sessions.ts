@@ -19,6 +19,7 @@ export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: un
 export type Deps = {
   nodeName: string;
   roots: string[];
+  lobby: string; // 受け口。cwd を省いて立てたセッションの置き場（names.ts の lobbyDirOf か設定の lobby）
   store: SessionStore;
   identity: Identity;
   history: History;
@@ -59,7 +60,9 @@ export class Sessions {
 
   async host() {
     const h = await this.d.host();
-    return { name: this.d.nodeName, roots: this.d.roots, ...h, rateLimit: h.rateLimit ?? this.d.store.rateLimit() };
+    // 受け口は symlink を解いた実体で返す（セッションの cwd と同じ形にして、画面が受け口のセッションを見分けられるように）
+    const lobby = await realpath(resolve(this.d.lobby)).catch(() => this.d.lobby);
+    return { name: this.d.nodeName, roots: this.d.roots, lobby, ...h, rateLimit: h.rateLimit ?? this.d.store.rateLimit() };
   }
   peers() { return this.d.registry.peers(); }
   async list(parent: string | null): Promise<SessionSummary[]> {
@@ -71,25 +74,28 @@ export class Sessions {
     const all = [...live, ...terms, ...past];
     return parent ? all.filter((s) => s.parent === parent) : all;
   }
+  // cwd を省くと受け口に立てる。prompt も resume も無ければ id だけ先に決め、1通目（send）が来るまで claude を起動しない（state は idle）
   async create(req: Request, caller: Caller) {
     const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown };
-    if (typeof body.cwd !== "string" || !body.cwd) throw new HttpError(400, { error: "cwd is required" });
+    if (body.cwd !== undefined && (typeof body.cwd !== "string" || !body.cwd)) throw new HttpError(400, { error: "cwd must be a non-empty string or omitted (omit for the lobby)" });
+    const asked = typeof body.cwd === "string" ? body.cwd : this.d.lobby;
     // symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
-    const cwd = await realpath(resolve(body.cwd)).catch(() => null);
-    if (!cwd) throw new HttpError(400, { error: "cwd does not exist" });
+    const cwd = await realpath(resolve(asked)).catch(() => null);
+    if (!cwd) throw new HttpError(400, body.cwd === undefined ? { error: "lobby does not exist", lobby: this.d.lobby, hint: "restart the node or run ccn update" } : { error: "cwd does not exist" });
     if (!underRoot(cwd, await this.roots())) throw new HttpError(400, { error: "cwd is outside roots", roots: this.d.roots });
     const st = await stat(cwd).catch(() => null);
     if (!st?.isDirectory()) throw new HttpError(400, { error: "cwd is not a directory" });
-    if (!body.prompt && !body.resume) throw new HttpError(400, { error: "prompt or resume is required" });
     // 生きている id を fork 無しで resume すると古いプロセスが孤児になるので断る
     if (body.resume && !body.fork) {
       const liveOne = this.d.store.get(body.resume);
       if (liveOne && liveOne.summary().state !== "exited") throw new HttpError(409, { error: "session is still running", hint: "delete first" });
     }
-    const opts: StartOptions = { ...body, cwd, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
+    // sessionId は呼び手から受けない（既にある jsonl と重ねないため）。新規でプロンプトが無いときだけノードが決める
+    const sessionId = !body.prompt && !body.resume ? crypto.randomUUID() : undefined;
+    const opts: StartOptions = { ...body, cwd, sessionId, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
     const driver = await this.d.startNode(opts, caller);
     this.d.store.add(driver);
-    return { id: driver.id };
+    return { id: driver.id, cwd, state: driver.summary().state };
   }
   // cursor は送る前の末尾。CLI の send が控え、read の after にする
   async detail(id: string) {

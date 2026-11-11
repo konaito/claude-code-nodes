@@ -31,7 +31,8 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} peers                                   登録簿（ノードと状態）
   ${CLI_NAME} ls [--peer <名>] [--mine]               セッション一覧（--mine は自分が立てた子）
   ${CLI_NAME} show <対象>                             1つの詳細と保留中の承認
-  ${CLI_NAME} new <dir> <文> [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+  ${CLI_NAME} new [<dir> [<文>]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+                                                       dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
   ${CLI_NAME} send <対象> <文|-> [--as <役割>]         文を送る（- は標準入力）。seq を控える
   ${CLI_NAME} read <対象> [--after <seq>] [--wait <秒>] 返事を読む。終了コード 0 返事、2 時間切れ、3 権限待ち、4 終了
   ${CLI_NAME} run <対象> <文> [--wait <秒>]            send のあと read
@@ -153,18 +154,30 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       return 0;
     }
     case "new": {
-      need(2, "<dir> と <文>");
+      // ccn new → 受け口、ccn new <dir> → その場所、どちらも1通目は ccn send で送る。ccn new <dir> <文> は今までどおり
       const c = clientFor(ctx.cfg, str(flags.peer), str(flags.as), ctx.env);
-      // 相対パスはノードの作業ディレクトリ（ホーム）で解かれてしまうので、手元なら CLI の場所で解き、相手なら断る
-      let cwd = rest[0]!;
-      if (!isAbsolute(cwd)) {
-        if (c.peer !== ctx.cfg.name) throw new CliError(1, `相手のノード（${c.peer}）には絶対パスで指定する: ${cwd}`);
-        cwd = resolvePath(cwd);
+      const body: Record<string, unknown> = { permissionMode: str(flags.mode) ?? "bypassPermissions" };
+      if (rest[0] !== undefined) {
+        // 相対パスはノードの作業ディレクトリ（ホーム）で解かれてしまうので、手元なら CLI の場所で解き、相手なら断る
+        let cwd = rest[0];
+        if (!isAbsolute(cwd)) {
+          if (c.peer !== ctx.cfg.name) throw new CliError(1, `相手のノード（${c.peer}）には絶対パスで指定する: ${cwd}`);
+          cwd = resolvePath(cwd);
+        }
+        body.cwd = cwd;
       }
-      const body: Record<string, unknown> = { cwd, prompt: rest[1], permissionMode: str(flags.mode) ?? "bypassPermissions" };
+      if (rest[1] !== undefined) body.prompt = rest[1];
       if (str(flags.model)) body.model = str(flags.model);
       if (str(flags.resume)) body.resume = str(flags.resume);
-      const r = await api<{ id: string }>(c, "POST", "/api/sessions", body, ctx.fetchFn);
+      let r: { id: string };
+      try { r = await api<{ id: string }>(c, "POST", "/api/sessions", body, ctx.fetchFn); }
+      catch (e) {
+        // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
+        if (e instanceof CliError && body.prompt === undefined && !body.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
+          throw new CliError(1, `${e.message}\n${c.peer} のノードは受け口とプロンプト無しの作成に対応していない古い版。${c.peer} で ${CLI_NAME} update するか、${CLI_NAME} new <dir> <文> で立てる`);
+        }
+        throw e;
+      }
       rememberSeq(`${c.peer}/${r.id}`, 0, sendsPath(ctx));
       ctx.out(`${c.peer}/${r.id}`);
       return 0;

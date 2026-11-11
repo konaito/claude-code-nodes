@@ -199,3 +199,30 @@ test("send uses the cursor from the detail and calls /api/sessions/:id directly 
   // 無い完全な id は 1 を返す
   expect(await main(["send", "ffffffff-0000-0000-0000-000000000000", "hello"], ctx(n.fetchFn))).toBe(1);
 });
+
+test("new without a dir starts in the lobby and without a text waits for the first send", async () => {
+  const n = fakeNode();
+  const c = ctx(n.fetchFn);
+  expect(await main(["new"], c)).toBe(0);
+  expect(c.lines).toEqual(["pro/new00000-1111-2222-3333-444444444444"]);
+  expect(n.calls[0]!.url).toBe("http://127.0.0.1:4323/api/sessions");
+  expect(n.calls[0]!.body).toEqual({ permissionMode: "bypassPermissions" });
+  const d = ctx(n.fetchFn);
+  expect(await main(["new", "--peer", "vm", "--mode", "default"], d)).toBe(0);
+  expect(d.lines).toEqual(["vm/new00000-1111-2222-3333-444444444444"]);
+  expect(n.calls[1]!.body).toEqual({ permissionMode: "default" });
+  const e = ctx(n.fetchFn);
+  expect(await main(["new", "/home/u/proj"], e)).toBe(0);
+  expect(n.calls[2]!.body).toEqual({ cwd: "/home/u/proj", permissionMode: "bypassPermissions" });
+});
+
+test("new without a text on an old node says the node needs ccn update", async () => {
+  for (const error of ["prompt or resume is required", "cwd is required"]) {
+    const fetchFn = (async () => new Response(JSON.stringify({ error }), { status: 400, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    const errs: string[] = [];
+    const c = ctx(fetchFn, { err: (s) => errs.push(s) });
+    expect(await main(["new", "--peer", "vm"], c)).toBe(1);
+    expect(errs.join("\n")).toContain("古い版");
+    expect(errs.join("\n")).toContain("update");
+  }
+});

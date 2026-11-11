@@ -25,6 +25,7 @@ function harness(over: Partial<Deps> = {}) {
   const deps: Deps = {
     nodeName: "vm",
     roots: ["/home/u", tmpdir()],
+    lobby: over.lobby ?? join(tmpdir(), "ccn-test-lobby"),
     store,
     identity: new HeaderIdentity(),
     history: {
@@ -84,9 +85,43 @@ test("POST /api/sessions rejects cwd outside roots or missing with 400", async (
   expect((await app.fetch(post("/api/sessions", { cwd: `${tmpdir()}/nope-cc-xyz`, prompt: "x" }))).status).toBe(400);
 });
 
-test("POST /api/sessions requires prompt or resume", async () => {
-  const { app } = harness();
-  expect((await app.fetch(post("/api/sessions", { cwd: tmpdir() }))).status).toBe(400);
+test("POST /api/sessions without prompt or resume decides the id up front and starts nothing yet", async () => {
+  const { app, startCalls } = harness();
+  const r = await app.fetch(post("/api/sessions", { cwd: tmpdir(), sessionId: "11111111-1111-4111-8111-111111111111" }));
+  expect(r.status).toBe(201);
+  const opts = startCalls[0]!.opts as { prompt?: string; sessionId?: string };
+  expect(opts.prompt).toBeUndefined();
+  // 呼び手の sessionId は使わず、ノードが UUID を決める
+  expect(opts.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  expect(opts.sessionId).not.toBe("11111111-1111-4111-8111-111111111111");
+});
+
+test("POST /api/sessions with a prompt or resume does not pass a sessionId", async () => {
+  const { app, startCalls } = harness();
+  await app.fetch(post("/api/sessions", { cwd: tmpdir(), prompt: "hi" }));
+  await app.fetch(post("/api/sessions", { cwd: tmpdir(), resume: "old1" }));
+  expect((startCalls[0]!.opts as { sessionId?: string }).sessionId).toBeUndefined();
+  expect((startCalls[1]!.opts as { sessionId?: string }).sessionId).toBeUndefined();
+});
+
+test("POST /api/sessions without cwd starts in the lobby; a missing lobby is a 400 with a hint", async () => {
+  const lobby = mkdtempSync(join(tmpdir(), "ccn-lobby-"));
+  const { app, startCalls } = harness({ lobby });
+  const r = await app.fetch(post("/api/sessions", {}));
+  expect(r.status).toBe(201);
+  const b = await r.json();
+  expect(b.cwd).toBe(realpathSync(lobby));
+  expect((startCalls[0]!.opts as { cwd: string }).cwd).toBe(realpathSync(lobby));
+  const gone = harness({ lobby: join(tmpdir(), "ccn-no-such-lobby-xyz") });
+  const r2 = await gone.app.fetch(post("/api/sessions", {}));
+  expect(r2.status).toBe(400);
+  expect((await r2.json()).error).toBe("lobby does not exist");
+  expect((await harness({ lobby }).app.fetch(post("/api/sessions", { cwd: "" }))).status).toBe(400);
+});
+
+test("GET /api/host tells the lobby", async () => {
+  const { app } = harness({ lobby: "/home/u/.local/share/ccn/lobby" });
+  expect((await (await app.fetch(req("/api/host"))).json()).lobby).toBe("/home/u/.local/share/ccn/lobby");
 });
 
 test("POST /api/sessions creates, prefixes the from line and registers", async () => {

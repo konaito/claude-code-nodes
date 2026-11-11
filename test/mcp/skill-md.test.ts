@@ -15,7 +15,7 @@ const appRoot = join(import.meta.dir, "..", "..");
 function app() {
   const registry = new StaticRegistry([]);
   const deps = {
-    nodeName: "vm", roots: ["/tmp"], store: new SessionStore(),
+    nodeName: "vm", roots: ["/tmp"], lobby: "/tmp/lobby", store: new SessionStore(),
     identity: new AccessIdentity({ teamDomain: "t.cloudflareaccess.com", aud: "aud", fetchJwks: async () => ({ keys: [] }) }),
     history: {} as Deps["history"], startNode: async () => { throw new Error("no"); }, agents: async () => [], terminalFor: () => { throw new Error("no"); },
     host: async () => ({ claudeVersion: "x", load: [] }), registry, relay: new Relay({ registry, nodeName: "vm" }), appRoot,

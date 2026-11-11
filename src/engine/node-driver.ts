@@ -14,6 +14,8 @@ export type StartOptions = {
   model?: string;
   resume?: string;
   fork?: boolean;
+  // 新規のときに先に決める id（SDK の sessionId）。これがあって prompt も resume も無ければ、1通目が来るまで claude を起動しない
+  sessionId?: string;
   settingSources?: SettingSource[];
   mcpServers?: Record<string, unknown>;
 };
@@ -31,7 +33,8 @@ export class NodeDriver implements Driver {
   private input = new AsyncQueue<SDKUserMessage>();
   private out = new AsyncQueue<RawEvent>();
   private waiting = new Map<string, Waiting>();
-  private q!: Query;
+  private q?: Query;
+  private deferred = false; // 1通目を待っていて、まだ claude を起動していない
   private abort = new AbortController();
   private startedAt = Date.now();
   private lastActivityAt = Date.now();
@@ -46,33 +49,21 @@ export class NodeDriver implements Driver {
 
   static async start(opts: StartOptions, deps: NodeDeps): Promise<NodeDriver> {
     const d = new NodeDriver(opts, deps);
+    // 遅延起動。待っている claude は1体で約300MB（2026-11-11 実測）あり、画面の「新しく」は打たずに離れることがあるので、1通目まで起動しない。
+    // id は sessionId で先に決まり、init と jsonl のファイル名も同じ id になる（同日に実機で確認）
+    if (opts.sessionId && !opts.prompt && !opts.resume) {
+      d.id = opts.sessionId;
+      d.deferred = true;
+      d.permissionMode = opts.permissionMode;
+      d.model = opts.model;
+      return d;
+    }
     if (opts.prompt) { d.enqueueUser(opts.prompt); d.state = "running"; }
-    const init = new Promise<void>((resolve, reject) => { d.initResolve = resolve; d.initReject = reject; });
-    init.catch(() => {}); // race の後に reject しても未処理にしない
-    d.q = deps.queryFn({
-      prompt: d.input,
-      options: {
-        cwd: opts.cwd,
-        permissionMode: opts.permissionMode,
-        // この層は呼び手を信じる設計なので、bypass を頼まれたら SDK の必須フラグも付ける
-        allowDangerouslySkipPermissions: opts.permissionMode === "bypassPermissions" ? true : undefined,
-        model: opts.model,
-        resume: opts.resume,
-        forkSession: opts.fork,
-        settingSources: opts.settingSources ?? ["user", "project", "local"],
-        includePartialMessages: true,
-        mcpServers: opts.mcpServers as never,
-        abortController: d.abort,
-        // 同梱の実行ファイルではなく、ログイン済みの PATH の claude を使う（版を揃えるため）
-        pathToClaudeCodeExecutable: deps.claudePath,
-        canUseTool: (toolName, input, { signal, suggestions }) => d.onPermission(toolName, input, signal, suggestions),
-      },
-    });
-    void d.pump();
+    d.launch();
     // init が来るまで待つ。resume で入力が無いと init が初回の文まで来ないことがあるので、そのときは resume の id で進める（実機で確かめる）
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<"timeout">((r) => { timer = setTimeout(() => r("timeout"), deps.initTimeoutMs ?? 15000); });
-    const r = await Promise.race([init.then(() => "init" as const), timeout]);
+    const r = await Promise.race([d.init.then(() => "init" as const), timeout]);
     clearTimeout(timer);
     if (r === "timeout" && !d.id) {
       if (opts.resume) d.id = opts.resume;
@@ -81,11 +72,48 @@ export class NodeDriver implements Driver {
     return d;
   }
 
+  private init!: Promise<void>;
+  // claude を起動する。遅延起動では1通目の send から1回だけ呼ぶ
+  private launch() {
+    this.deferred = false;
+    const opts = this.opts;
+    this.init = new Promise<void>((resolve, reject) => { this.initResolve = resolve; this.initReject = reject; });
+    this.init.catch(() => {}); // race の後に reject しても未処理にしない
+    try {
+      this.q = this.deps.queryFn({
+        prompt: this.input,
+        options: {
+          cwd: opts.cwd,
+          permissionMode: (this.permissionMode ?? opts.permissionMode) as PermissionMode | undefined,
+          // この層は呼び手を信じる設計なので、bypass を頼まれたら SDK の必須フラグも付ける
+          allowDangerouslySkipPermissions: (this.permissionMode ?? opts.permissionMode) === "bypassPermissions" ? true : undefined,
+          model: opts.model,
+          resume: opts.resume,
+          forkSession: opts.fork,
+          // sessionId は resume と一緒には渡せない（fork のときは別）。遅延起動の新規だけが持つ
+          sessionId: opts.resume ? undefined : opts.sessionId,
+          settingSources: opts.settingSources ?? ["user", "project", "local"],
+          includePartialMessages: true,
+          mcpServers: opts.mcpServers as never,
+          abortController: this.abort,
+          // 同梱の実行ファイルではなく、ログイン済みの PATH の claude を使う（版を揃えるため）
+          pathToClaudeCodeExecutable: this.deps.claudePath,
+          canUseTool: (toolName, input, { signal, suggestions }) => this.onPermission(toolName, input, signal, suggestions),
+        },
+      });
+    } catch (e) {
+      this.finish(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    void this.pump();
+  }
+
   summary(): SessionSummary {
     return {
       id: this.id, kind: this.kind, capabilities: this.capabilities, cwd: this.opts.cwd, state: this.state,
       startedAt: this.startedAt, lastActivityAt: this.lastActivityAt, model: this.model, permissionMode: this.permissionMode,
       usage: { ...this.usage }, exitReason: this.exitReason, parent: this.deps.caller,
+      ...(this.deferred ? { awaitingFirst: true } : {}),
     };
   }
   async send(text: string) {
@@ -93,6 +121,7 @@ export class NodeDriver implements Driver {
     this.enqueueUser(text);
     this.state = this.waiting.size ? "waiting_permission" : "running";
     this.lastActivityAt = Date.now();
+    if (this.deferred) this.launch();
     return { delivered: "stdin" as const };
   }
   events(): AsyncIterable<RawEvent> { return this.out; }
@@ -107,8 +136,9 @@ export class NodeDriver implements Driver {
     this.out.push({ at: Date.now(), type: "permission_answered", data: { requestId, behavior: a.behavior } });
     this.afterAnswer();
   }
-  async interrupt() { await this.q.interrupt(); }
-  async setPermissionMode(mode: string) { await this.q.setPermissionMode(mode as PermissionMode); this.permissionMode = mode; }
+  // 起動前は止めるターンが無い。権限モードは起動のときに渡す
+  async interrupt() { if (this.q) await this.q.interrupt(); }
+  async setPermissionMode(mode: string) { if (this.q) await this.q.setPermissionMode(mode as PermissionMode); this.permissionMode = mode; }
   async stop() { this.input.close(); this.abort.abort(); this.finish("stopped"); }
 
   private enqueueUser(text: string) {
@@ -132,6 +162,7 @@ export class NodeDriver implements Driver {
   }
   private afterAnswer() { if (!this.waiting.size && this.state === "waiting_permission") this.state = "running"; }
   private async pump() {
+    if (!this.q) return;
     try {
       for await (const m of this.q) {
         this.lastActivityAt = Date.now();

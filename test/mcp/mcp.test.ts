@@ -2,7 +2,7 @@
 import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { realpathSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createApp, type Deps } from "../../src/api/app";
@@ -37,6 +37,7 @@ function harness(over: Partial<Deps> = {}) {
   const deps: Deps = {
     nodeName: "vm",
     roots: ["/home/u", tmpdir()],
+    lobby: over.lobby ?? join(tmpdir(), "ccn-test-lobby"),
     store,
     identity: new HeaderIdentity(),
     history: {
@@ -80,13 +81,13 @@ async function connect(app: { fetch: (r: Request) => Promise<Response> }, header
 const text = (r: unknown) => ((r as { content: Array<{ text: string }> }).content[0]!.text);
 const json = (r: unknown) => JSON.parse(text(r));
 
-test("initialize and tools/list expose the nine tools with annotations", async () => {
+test("initialize and tools/list expose the ten tools with annotations", async () => {
   const { app } = harness();
   const c = await connect(app);
   expect(c.getServerVersion()?.name).toBe("ccn");
   expect(c.getInstructions()).toContain("/skill.md");
   const { tools } = await c.listTools();
-  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "stop_session"]);
+  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "stop_session"]);
   const by = Object.fromEntries(tools.map((t) => [t.name, t]));
   expect(by.list_sessions!.annotations?.readOnlyHint).toBe(true);
   expect(by.read_messages!.annotations?.readOnlyHint).toBe(true);
@@ -272,4 +273,41 @@ test("/mcp keeps the CSRF guard and answers only POST", async () => {
   expect(cross.status).toBe(403);
   expect((await app.fetch(new Request("http://127.0.0.1:4330/mcp"))).status).toBe(405);
   expect((await app.fetch(new Request("http://127.0.0.1:4330/mcp", { method: "DELETE" }))).status).toBe(405);
+});
+
+test("create_session without cwd and prompt starts an idle session in the lobby", async () => {
+  const lobby = mkdtempSync(join(tmpdir(), "ccn-mcp-lobby-"));
+  const { app, starts } = harness({ lobby });
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "create_session", arguments: {} }));
+  expect(r).toMatchObject({ peer: "vm", id: "new1", cwd: realpathSync(lobby), parent: "local", cursor: 0 });
+  expect(starts[0]!.opts.cwd).toBe(realpathSync(lobby));
+  expect(starts[0]!.opts.prompt).toBeUndefined();
+  const { tools } = await c.listTools();
+  const desc = tools.find((t) => t.name === "create_session")!.description!;
+  expect(desc).toContain("lobby");
+  expect(desc).toContain("子: <peer>/<sessionId>");
+});
+
+test("list_places returns the lobby, roots and recent directories without the lobby itself", async () => {
+  const { app, store } = harness({ lobby: "/home/u/.local/share/ccn/lobby" });
+  const inLobby = new FakeDriver({ id: "lob1", capabilities: caps(true) });
+  inLobby.cwd = "/home/u/.local/share/ccn/lobby";
+  store.add(inLobby);
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "list_places", arguments: {} }));
+  expect(r.lobby).toBe("/home/u/.local/share/ccn/lobby");
+  expect(r.roots).toEqual(["/home/u", tmpdir()]);
+  expect(r.recent.map((x: { cwd: string }) => x.cwd).sort()).toEqual(["/home/u/proj", "/home/u/x"]);
+  expect(r.note).toBeUndefined();
+});
+
+test("create_session without a prompt on an older peer explains that it needs cwd and prompt", async () => {
+  const registry = new StaticRegistry([{ name: "vm", url: "https://ccn-vm.fybe.jp", status: "healthy", self: true }, { name: "old", url: "https://ccn-old.fybe.jp", status: "healthy", self: false }]);
+  const oldFetch = (async () => Response.json({ error: "prompt or resume is required" }, { status: 400 })) as unknown as typeof fetch;
+  const { app } = harness({ registry, relay: new Relay({ registry, nodeName: "vm", serviceToken: { clientId: "c", clientSecret: "s" }, fetchFn: oldFetch }) });
+  const c = await connect(app);
+  const r = await c.callTool({ name: "create_session", arguments: { peer: "old", cwd: "/r" } });
+  expect(r.isError).toBe(true);
+  expect(text(r)).toContain("older ccn");
 });

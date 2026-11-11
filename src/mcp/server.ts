@@ -11,7 +11,7 @@ import { registerTools, type ToolClock } from "./tools";
 export type ApiCall = (caller: Caller, method: string, peer: string | undefined, path: string, body?: unknown) => Promise<{ status: number; body: unknown }>;
 export type McpOptions = Partial<ToolClock>;
 
-const INSTRUCTIONS = `Claude Code Nodes (ccn): list, create and drive Claude Code sessions on this node and its peers. Read ${SKILL_MD_PATH} on this host for the workflow. Typical flow: create_session or send_message (keep the returned cursor), then read_messages with after=cursor until stop is result, permission or exited.`;
+const INSTRUCTIONS = `Claude Code Nodes (ccn): list, create and drive Claude Code sessions on this node and its peers. Read ${SKILL_MD_PATH} on this host for the workflow. To hand off a task without knowing the directory, create_session with no cwd and no prompt (an idle session in the node's lobby), send_message the request, and read_messages until stop=result: the lobby starts a child in the right directory and replies with a line \`子: <peer>/<sessionId>\`; then talk to that child directly. Otherwise: create_session or send_message (keep the returned cursor), then read_messages with after=cursor until stop is result, permission or exited.`;
 
 export function mcpHandler(o: { nodeName: string } & McpOptions) {
   const clock: ToolClock = {

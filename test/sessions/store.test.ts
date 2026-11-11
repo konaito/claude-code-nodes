@@ -135,3 +135,24 @@ test("ended sessions are swept after the ttl and beyond the cap; live ones stay"
   expect(store.list().map((s) => s.id)).toEqual(["live"]);
   expect(() => store.subscribe("e2", 0)).toThrow();
 });
+
+test("sessions that never got a first message are stopped and swept after the ttl; sent ones stay", async () => {
+  let t = 0;
+  const store = new SessionStore({ unsentTtlMs: 1000, now: () => t });
+  class Unsent extends FakeDriver {
+    awaiting = true; stopped = 0;
+    summary() { return { ...super.summary(), state: "idle" as const, startedAt: 0, ...(this.awaiting ? { awaitingFirst: true } : {}) }; }
+    async stop() { this.stopped++; await super.stop(); }
+  }
+  const caps = { send: true, permissions: true, interrupt: true, stop: true, events: true };
+  const a = new Unsent({ id: "a", capabilities: caps });
+  const b = new Unsent({ id: "b", capabilities: caps });
+  b.awaiting = false; // 1通届いた idle
+  store.add(a); store.add(b);
+  t = 999;
+  expect(store.list().map((s) => s.id).sort()).toEqual(["a", "b"]);
+  t = 1000;
+  expect(store.list().map((s) => s.id)).toEqual(["b"]);
+  expect(a.stopped).toBe(1);
+  expect(b.stopped).toBe(0);
+});
