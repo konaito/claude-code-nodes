@@ -555,7 +555,7 @@ async function fillPlaces() {
   const h = hosts[peer];
   const lobby = h && h.lobby;
   $("new-cwd").placeholder = lobby ? "場所（空なら受け口）" : "作業ディレクトリ（例 ~/work）";
-  $("new-note").innerHTML = lobby ? `受け口 <code>${esc(home(lobby))}</code>。開いてから1通目を打つ` : h && !h.error ? `${esc(peer)} は古い版で、受け口も1通目を後から打つ形も無い。${esc(peer)} で <code>ccn update</code> が要る` : "";
+  $("new-note").innerHTML = lobby ? `受け口 <code>${esc(home(lobby))}</code>。開いてから1通目を打つ` : h && !h.error ? `${esc(peer)} は古い版で、受け口も1通目を後から打つ形も無い。${esc(peer)} で <code>%%CLI_NAME%% update</code> が要る` : "";
   let list = [];
   try { list = peer === cur.peer && sessions.length ? sessions : await withTimeout(api(peer, "/sessions"), 6000); } catch {}
   const recent = [...recentOf(peer), ...list.slice().sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0)).map((s) => home(s.cwd))];
@@ -574,7 +574,7 @@ $("newform").addEventListener("submit", async (e) => {
   const peer = $("new-peer").value; const cwd = $("new-cwd").value.trim(); const mode = $("new-mode").value;
   if (!peer) { $("new-msg").textContent = "ノードを選ぶ"; return; }
   const h = hosts[peer] || {};
-  if (h.roots && !h.lobby) { $("new-msg").textContent = `${peer} は古い版。${peer} で ccn update する`; return; }
+  if (h.roots && !h.lobby) { $("new-msg").textContent = `${peer} は古い版。${peer} で %%CLI_NAME%% update する`; return; }
   $("new-msg").textContent = "開いている";
   try {
     const root = (h.roots && h.roots[0]) || "";
@@ -586,7 +586,7 @@ $("newform").addEventListener("submit", async (e) => {
     $("new-msg").textContent = ""; $("newform").hidden = true; $("new-cwd").value = "";
     await openPeer(peer, true); await openChat(r.id);
   } catch (err) {
-    $("new-msg").textContent = OLD_NODE.test(err.message) ? `${peer} は古い版で、1通目を後から打つ形に対応していない。${peer} で ccn update する` : `失敗: ${err.message}`;
+    $("new-msg").textContent = OLD_NODE.test(err.message) ? `${peer} は古い版で、1通目を後から打つ形に対応していない。${peer} で %%CLI_NAME%% update する` : `失敗: ${err.message}`;
   }
 });
 

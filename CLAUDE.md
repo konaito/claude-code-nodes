@@ -22,7 +22,7 @@ scripts/smoke-remote.sh                    # サービストークンで外か�
 
 ## 全体の形
 
-- どのノードも同じコードで、ノードごとの役割は無い。入口（cc.fybe.jp）は CNAME が指しているノードで、入口用のコードは無い。
+- どのノードも同じコードで、ノードごとの役割は無い。入口（ccn.fybe.jp）は CNAME が指しているノードで、入口用のコードは無い。
 - ノードはデータを保存しない。会話の正本は Claude Code の jsonl（SDK の `listSessions` と `getSessionMessages` だけで読み、直接は解析しない）、仲間の一覧は Cloudflare のトンネル一覧、画面の状態はブラウザの localStorage にある。
 - 外側への依存は境界の interface を通す。組み立ては `src/main.ts` の `buildDeps` の1か所だけで、試験は偽物の実装（`test/helpers/`）で通す。
 

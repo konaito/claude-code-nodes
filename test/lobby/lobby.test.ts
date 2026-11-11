@@ -40,3 +40,16 @@ test("prepareLobby refuses a lobby outside the roots and reports a missing templ
   const noTpl = prepareLobby({ dir: join(home, "lobby"), appRoot: home, nodeName: "vm", roots: [home] });
   expect("error" in noTpl).toBe(true);
 });
+
+test("the lobby template keeps the strings the page, MCP and docs depend on", () => {
+  const home = mkdtempSync(join(tmpdir(), "ccn-lobby-home-"));
+  const dir = join(home, "lobby");
+  ensureLobby({ dir, appRoot, nodeName: "vm", roots: [home] });
+  const md = readFileSync(join(dir, "CLAUDE.md"), "utf8");
+  expect(md).toContain("子: <peer>/<sessionId>"); // 画面のリンクと MCP の説明がこの形を読む
+  expect(md).toContain("--mode <自分のモード>");   // 子の権限を受け口のモードまでにする
+  expect(md).toContain("--as lobby");
+  expect(md).toContain(`${CLI_NAME} allow`);
+  expect(md).toContain(`${CLI_NAME} deny`);
+  expect(md).toContain("AskUserQuestion");
+});
