@@ -19,8 +19,8 @@ incertotech では `ccn places` が返らない。親の判断で、incertotech 
 ## 更新の前に記録したこと
 
 - 版を表す番号はノードに無い。そこで、`src`、`skills`、`bin`、`package.json`、`bun.lock` の各ファイルの sha256 をまとめた値で比べた。`._` で始まるファイルは除いた。git の各コミットを `git archive` で取り出し、同じ計算をした。
-- 3台とも、値は `689bbf30bd47` だった。この値は ec596c5（PR #13）、d4fd915、49d5999 と同じである。この3つはコードが同じで、違うのは docs だけである。e725a26 は `6f6d3af9a1d3` になる。
-- vm には、束から入った macOS の AppleDouble のファイル（`bin/._ccn`、`src/._api` など）が余分にあった。`._` で始まるファイルを除くと、中身は ec596c5 と同じだった。
+- konaito-pro と incertotech の値は `689bbf30bd47` だった。この値は ec596c5（PR #13）、d4fd915、49d5999 と同じである。この3つはコードが同じで、違うのは docs だけである。e725a26 は `6f6d3af9a1d3` になる。
+- vm の値は、`._` で始まるファイルを含めて計算したので `59f53b1bf5f3` になった。束から入った macOS の AppleDouble のファイル（`bin/._ccn`、`src/._api` など）が余分にあったためである。そこでファイルごとの sha256 を ec596c5 と diff で比べた。`._` で始まるファイルを除くと一致した。
 - `ccn peers` では、3台とも healthy だった。
 - `ccn ls` で見ると、生きている node セッションは3台とも0件だった。exited は konaito-pro が95件、incertotech が44件、vm が20件あった。update はノードを再起動するが、切れるセッションは無かった。
 - vm の常駐の PATH には `~/.bun/bin` と `~/.local/bin` があった。`systemctl --user show ccn-node -p Environment` で見た。
@@ -74,9 +74,9 @@ incertotech では `ccn places` が返らない。親の判断で、incertotech 
 
 ### 何が起きた
 
-- `ccn places --peer incertotech` は、入口を通すと Cloudflare の 524 になった。
+- konaito-pro から `ccn places --peer incertotech` を実行すると、Cloudflare の 524 になった。この要求は konaito-pro のノードが中継し、`ccn-incertotech.fybe.jp` を通る。入口（ccn.fybe.jp）は通っていない。
 - incertotech の中から `127.0.0.1:4323/api/places` を叩いても、60 秒で応答が無かった。同じノードの `/api/host` は 0.04 秒で返った。
-- `sample` でノードのプロセスを2秒見ると、スレッドが2本とも、その間ずっと `__openat_nocancel` で止まっていた。
+- `sample` でノードのプロセスを2秒見た。2本のスレッドが、その間ずっと `__openat_nocancel` で止まっていた。
 
 ### 原因の見立て（未確認）
 
@@ -96,7 +96,11 @@ places は roots の直下の各ディレクトリを readdir し、`~/Documents
 | `/api/sessions` | 5回とも 200、0.154〜0.155 秒 |
 | `/api/peers` | 5回とも 200、0.0006〜0.31 秒 |
 
-konaito-pro からの `ccn ls --peer incertotech` も 0.4 秒で返った。ノードのスレッドは19本、RSS は約 225MB だった。places を呼ぶたびに止まるスレッドが増えるかは確かめていない。親の指示で、places はそれ以上呼んでいない。
+konaito-pro からの `ccn ls --peer incertotech` も 0.4 秒で返った。このときノードのスレッドは18本、RSS は約 225MB だった。スレッドの数は `ps -M` の見出しを除いた行数である。
+
+止まったスレッドの数も数えた。places を始めたのは3回である。中継の `ccn places --peer incertotech` が2回（2回目の `--json` は手元で打ち切った）、incertotech の中の curl が1回である。1回目の `sample` では、`openat` で止まったスレッドが2本だった。親の指示で places を呼ぶのをやめた後、2回目の `sample` では3本だった。1回目の `sample` の時点で、中継の2回目がノードに届いていたかは確かめていない。そのため「呼ぶたびに1本増える」とまでは言えない。2回目のときのスレッドは全部で14本だった。
+
+画面（`src/web/index.html`）は `/api/places` を呼ばない。呼ぶのは CLI の `ccn places` と MCP の `list_places` だけである。画面を開いただけでは止まったスレッドは増えない。
 
 ### 決めたこと
 
