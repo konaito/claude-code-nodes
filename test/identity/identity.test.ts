@@ -28,3 +28,11 @@ test("HeaderIdentity refuses non-loopback hosts", async () => {
   const err = await new HeaderIdentity().callerOf(new Request("http://evil.example:4399/api/x")).catch((e) => e);
   expect(err).toBeInstanceOf(AccessDenied);
 });
+
+test("HeaderIdentity prefers x-ccn-* and falls back to the legacy x-cc-*", async () => {
+  const id = new HeaderIdentity();
+  const both = new Request("http://127.0.0.1/api/host", { headers: { "x-ccn-from": "agent:new", "x-ccn-via": "pro", "x-cc-from": "agent:old", "x-cc-via": "vm" } });
+  expect(await id.callerOf(both)).toEqual({ id: "agent:new", via: "pro", kind: "local" });
+  const legacy = new Request("http://127.0.0.1/api/host", { headers: { "x-cc-from": "agent:old", "x-cc-via": "vm" } });
+  expect(await id.callerOf(legacy)).toEqual({ id: "agent:old", via: "vm", kind: "local" });
+});

@@ -60,7 +60,7 @@ test("ls prints one line per session across peers and --mine filters by parent",
   expect(await main(["ls", "--peer", "vm"], c)).toBe(0);
   expect(c.lines[0]).toBe("vm/abcd1234  node      idle                /home/u/proj  agent:pro/abcdef12/lead  ");
   expect(c.lines[1]).toContain("vm/ffff0000  terminal  idle");
-  expect(n.calls[0]!.url).toBe("https://cc-vm.fybe.jp/api/sessions");
+  expect(n.calls[0]!.url).toBe("https://ccn-vm.fybe.jp/api/sessions");
   expect(n.calls[0]!.headers.get("cf-access-client-id")).toBe("cid");
   const d = ctx(n.fetchFn);
   await main(["ls", "--peer", "vm", "--mine"], d);
@@ -74,7 +74,7 @@ test("new posts cwd, raw prompt and bypass mode by default", async () => {
   expect(await main(["new", "/home/u/proj", "do the thing", "--peer", "vm", "--as", "lead"], c)).toBe(0);
   expect(c.lines).toEqual(["vm/new00000-1111-2222-3333-444444444444"]);
   const call = n.calls[0]!;
-  expect(call.url).toBe("https://cc-vm.fybe.jp/api/sessions");
+  expect(call.url).toBe("https://ccn-vm.fybe.jp/api/sessions");
   expect(call.body).toEqual({ cwd: "/home/u/proj", prompt: "do the thing", permissionMode: "bypassPermissions" });
   expect(call.headers.get("x-cc-from")).toBe("agent:pro/abcdef12/lead");
   const d = ctx(n.fetchFn);
@@ -172,7 +172,7 @@ test("ls skips a down peer with one line instead of calling it", async () => {
   }) as typeof fetch);
   expect(await main(["ls"], c)).toBe(0);
   expect(c.lines.some((l) => l.startsWith("vm  (inactive)"))).toBe(true);
-  expect(n.calls.slice(calls0).some((x) => x.url.startsWith("https://cc-vm.fybe.jp"))).toBe(false);
+  expect(n.calls.slice(calls0).some((x) => x.url.startsWith("https://ccn-vm.fybe.jp"))).toBe(false);
 });
 
 test("new resolves a relative dir for the local node and refuses it for a remote one", async () => {

@@ -1,7 +1,7 @@
 // ノードを呼ぶ道具。手元のノードは 127.0.0.1 に無認証、相手のノードは https://<nodeHost> にサービストークンで。呼び手は HEADER_FROM で名乗る
 import { nodeHost, type Config } from "../config";
 import { AGENT_PREFIX, formatAgent } from "../identity/agent-name";
-import { CONFIG_FILE, HEADER_FROM, HEADER_VIA } from "../names";
+import { CONFIG_FILE, HEADER_FROM, HEADER_VIA, LEGACY_HEADER_FROM, LEGACY_HEADER_VIA } from "../names";
 
 export type Client = { peer: string; base: string; headers: Record<string, string>; retryMs?: number[] }; // retryMs は GET のやり直しの間隔（試験で差し替える）
 export class CliError extends Error { constructor(public code: number, msg: string) { super(msg); this.name = "CliError"; } }
@@ -13,7 +13,8 @@ export function agentName(nodeName: string, sessionId: string | undefined, role:
 
 export function clientFor(cfg: Config, peer: string | undefined, role: string | undefined, env: Record<string, string | undefined>): Client {
   const from = formatAgent(cfg.name, env.CLAUDE_CODE_SESSION_ID, role);
-  const headers: Record<string, string> = { [HEADER_FROM]: from, [HEADER_VIA]: cfg.name };
+  // 移行の間は旧のヘッダも付ける。まだ更新していないノードも呼び手を読める
+  const headers: Record<string, string> = { [HEADER_FROM]: from, [HEADER_VIA]: cfg.name, [LEGACY_HEADER_FROM]: from, [LEGACY_HEADER_VIA]: cfg.name };
   if (!peer || peer === cfg.name) return { peer: cfg.name, base: `http://127.0.0.1:${cfg.port}`, headers };
   if (!cfg.zone && !cfg.domain) throw new CliError(1, `${CONFIG_FILE} に zone も domain も無いので相手のノードを呼べない`);
   if (!cfg.serviceToken) throw new CliError(1, `${CONFIG_FILE} に serviceToken が無いので相手のノードを呼べない`);

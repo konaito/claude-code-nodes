@@ -1,8 +1,8 @@
 // 設定。<configDir>/<CONFIG_FILE>（names.ts）を読み書きする。公開値（名前、ポート、根、ドメイン、Access の aud）と秘密（サービストークン、CF API トークン）を1つの 0600 のファイルにまとめる
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
-import { CONFIG_ENV, CONFIG_FILE, configDirOf, TUNNEL_PREFIX } from "./names";
+import { CONFIG_ENV, CONFIG_FILE, configDirOf, LEGACY_CONFIG_ENV, LEGACY_CONFIG_FILE, legacyConfigDirOf, TUNNEL_PREFIX } from "./names";
 
 export type Config = {
   name: string;
@@ -17,8 +17,16 @@ export type Config = {
   serviceToken?: { clientId: string; clientSecret: string }; // ノード用サービストークン
   cfApiToken?: string;   // 登録簿を読む CF API トークン（Cloudflare Tunnel Read）
 };
-// CONFIG_ENV（CC_CONFIG）で設定ファイルを差し替えられる（手元で別ポートのノードを試すとき用）
-export const defaultPath = () => process.env[CONFIG_ENV] ?? join(configDirOf(homedir()), CONFIG_FILE);
+// CONFIG_ENV（CCN_CONFIG。旧の CC_CONFIG も読む）で設定ファイルを差し替えられる（手元で別ポートのノードを試すとき用）
+export const defaultPath = () => process.env[CONFIG_ENV] ?? process.env[LEGACY_CONFIG_ENV] ?? resolveConfigPath(homedir());
+
+// 新の設定が無く旧（~/.config/cc/cc.json）があれば旧を読む。旧の ccn update が新しいコードを旧の置き場に入れて
+// 旧の常駐で立ち上げたときに、既定の 4322・Access なしで立ち上がらないようにする。移すのは新しいコードの ccn update
+export function resolveConfigPath(home: string, configDir = configDirOf(home)): string {
+  const cur = join(configDir, CONFIG_FILE);
+  const old = join(legacyConfigDirOf(home), LEGACY_CONFIG_FILE);
+  return !existsSync(cur) && existsSync(old) ? old : cur;
+}
 export const APP_VERSION: string = (JSON.parse(readFileSync(join(import.meta.dir, "..", "package.json"), "utf8")) as { version: string }).version;
 
 const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
@@ -52,8 +60,9 @@ export function saveConfig(cfg: Config, path = defaultPath()): void {
 export function nodeHost(name: string, cfg: { zone?: string; domain?: string }): string {
   const zone = cfg.zone ?? cfg.domain?.split(".").slice(1).join(".");
   if (!zone) throw new Error(`${CONFIG_FILE} に zone も domain も無い`);
-  return `${TUNNEL_PREFIX}${name}.${zone}`;
+  return hostFor(TUNNEL_PREFIX, name, zone);
 }
+export const hostFor = (prefix: string, name: string, zone: string) => `${prefix}${name}.${zone}`;
 
 export function entryOf(cfg: Config): string | undefined {
   return cfg.entry ?? (cfg.domain ? `https://${cfg.domain}` : undefined);

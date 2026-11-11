@@ -8,8 +8,8 @@ test("installer reads the token from /dev/tty or stdin and never from argv", () 
   expect(s).toContain("/dev/tty");
   expect(s).toContain("read -r");
   expect(s).not.toContain("$1");
-  expect(s).toContain("https://vm.cc.fybe.jp/install/cc.tar.gz");
-  expect(s).toContain("bun run src/cli/cc.ts install");
+  expect(s).toContain("https://vm.cc.fybe.jp/install/ccn.tar.gz");
+  expect(s).toContain("bun run src/cli/ccn.ts install");
   expect(s).not.toMatch(/--token/);
 });
 

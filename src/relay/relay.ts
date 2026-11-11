@@ -1,7 +1,7 @@
 // /n/:peer/api/... を相手のノードに中継する。相手にはノード用サービストークンで繋ぎ、元の呼び手を HEADER_FROM と HEADER_VIA で運ぶ（仕様 2.3）
 import type { Caller } from "../identity/identity";
 import type { Registry } from "../registry/registry";
-import { HEADER_FROM, HEADER_VIA } from "../names";
+import { HEADER_FROM, HEADER_VIA, LEGACY_HEADER_FROM, LEGACY_HEADER_VIA } from "../names";
 
 export type RelayDeps = {
   registry: Registry;
@@ -38,8 +38,9 @@ export class Relay {
     for (const h of COPY_REQ) { const v = req.headers.get(h); if (v) headers.set(h, v); }
     headers.set("cf-access-client-id", token.clientId);
     headers.set("cf-access-client-secret", token.clientSecret);
-    headers.set(HEADER_FROM, caller.id);
-    headers.set(HEADER_VIA, caller.via ?? this.deps.nodeName);
+    // 移行の間は旧のヘッダも付ける。相手がまだ更新していなくても呼び手が届く
+    for (const h of [HEADER_FROM, LEGACY_HEADER_FROM]) headers.set(h, caller.id);
+    for (const h of [HEADER_VIA, LEGACY_HEADER_VIA]) headers.set(h, caller.via ?? this.deps.nodeName);
     const hasBody = req.method !== "GET" && req.method !== "HEAD";
     const init: RequestInit & { duplex?: "half" } = { method: req.method, headers, redirect: "manual" };
     if (hasBody) { init.body = req.body; init.duplex = "half"; }

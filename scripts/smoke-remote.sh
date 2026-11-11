@@ -1,10 +1,10 @@
 #!/bin/bash
 # 外（Cloudflare 経由）からノードを一通り叩く。使い方: scripts/smoke-remote.sh <host> [cwd]
-# 認証は ~/.config/cc/cc.json のサービストークン。トークンは argv に出さず、curl の -H をプロセス置換で渡す
+# 認証は ~/.config/ccn/ccn.json のサービストークン。トークンは argv に出さず、curl の -H をプロセス置換で渡す
 set -euo pipefail
 HOST=${1:?host}
 CWD=${2:-/tmp}
-CFG=${CC_CONFIG:-$HOME/.config/cc/cc.json}
+CFG=${CCN_CONFIG:-$HOME/.config/ccn/ccn.json}
 B="https://$HOST"
 hdr() { python3 - "$CFG" <<'PY'
 import json,sys
@@ -19,7 +19,7 @@ c() { curl -sS ${RESOLVE:+--resolve "$HOST:443:$RESOLVE"} -H "@$HDR" "$@"; }
 echo "== no auth"; curl -sS ${RESOLVE:+--resolve "$HOST:443:$RESOLVE"} -o /dev/null -w '%{http_code} %{redirect_url}\n' "$B/api/host" | cut -c1-120
 echo "== host"; c "$B/api/host"; echo
 echo "== peers"; c "$B/api/peers"; echo
-echo "== create"; ID=$(c -X POST "$B/api/sessions" -H 'content-type: application/json' -H 'x-cc-from: agent:smoke' -d "{\"cwd\":\"$CWD\",\"prompt\":\"reply with the single word ok\",\"permissionMode\":\"default\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])'); echo "$ID"
+echo "== create"; ID=$(c -X POST "$B/api/sessions" -H 'content-type: application/json' -H 'x-ccn-from: agent:smoke' -d "{\"cwd\":\"$CWD\",\"prompt\":\"reply with the single word ok\",\"permissionMode\":\"default\"}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])'); echo "$ID"
 echo "== events (until result)"; c -N --max-time 90 "$B/api/sessions/$ID/events?after=0" | grep -m1 '^event: result' || true
 echo "== sessions"; c "$B/api/sessions" | python3 -c 'import sys,json;[print(s["kind"], s["state"], s["id"][:8], s.get("parent")) for s in json.load(sys.stdin)[:6]]'
 echo "== send (asks for a Write)"; c -X POST "$B/api/sessions/$ID/messages" -H 'content-type: application/json' -d '{"text":"Use the Write tool to create a file named smoke.txt in the current directory containing exactly: hello"}'; echo

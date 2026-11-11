@@ -1,8 +1,8 @@
-// 常駐。macOS は LaunchAgent、Linux は systemd --user。名前は names.ts（launchdLabel、systemdUnitName）。node は bun で serve、tunnel は cloudflared の token-file
+// 常駐。macOS は LaunchAgent、Linux は systemd --user。名前は names.ts（SERVICE_NAMING。改名前は LEGACY_SERVICE_NAMING）。node は bun で serve、tunnel は cloudflared の token-file
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Runner } from "../engine/agents";
-import { ENTRY_SCRIPT, launchdLabel, SERVICE_DESCRIPTION, systemdUnitName, TUNNEL_TOKEN_FILE } from "../names";
+import { ENTRY_SCRIPT, SERVICE_DESCRIPTION, SERVICE_NAMING, TUNNEL_TOKEN_FILE, type ServiceNaming } from "../names";
 
 export type Paths = { home: string; appDir: string; configDir: string; logDir: string; bun: string; cloudflared: string; uid: number };
 export type ServiceKind = "node" | "tunnel";
@@ -14,9 +14,10 @@ export interface ServiceManager {
   status(): Promise<Record<ServiceKind, ServiceStatus>>;
 }
 export type Platform = "darwin" | "linux";
-const KINDS: ServiceKind[] = ["node", "tunnel"];
-const label = (k: ServiceKind) => launchdLabel(k);
-const unitName = (k: ServiceKind) => systemdUnitName(k);
+export const KINDS: ServiceKind[] = ["node", "tunnel"];
+const label = (k: ServiceKind) => SERVICE_NAMING.label(k);
+export const plistPathOf = (home: string, naming: ServiceNaming, k: ServiceKind) => join(home, "Library", "LaunchAgents", `${naming.label(k)}.plist`);
+export const unitPathOf = (home: string, naming: ServiceNaming, k: ServiceKind) => join(home, ".config", "systemd", "user", `${naming.unit(k)}.service`);
 
 const pathEnv = (p: Paths) => `${dirname(p.bun)}:${join(p.home, ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
 function command(kind: ServiceKind, p: Paths): string[] {
@@ -84,9 +85,12 @@ export function serviceManager(
   run: Runner,
   write: (path: string, text: string) => void = (path, text) => { mkdirSync(dirname(path), { recursive: true }); mkdirSync(p.logDir, { recursive: true }); writeFileSync(path, text); },
   remove: (path: string) => void = (path) => rmSync(path, { force: true }),
+  naming: ServiceNaming = SERVICE_NAMING, // 改名前の常駐を外すときは LEGACY_SERVICE_NAMING
 ): ServiceManager {
-  const plistPath = (k: ServiceKind) => join(p.home, "Library", "LaunchAgents", `${label(k)}.plist`);
-  const unitPath = (k: ServiceKind) => join(p.home, ".config", "systemd", "user", `${unitName(k)}.service`);
+  const label = (k: ServiceKind) => naming.label(k);
+  const unitName = (k: ServiceKind) => naming.unit(k);
+  const plistPath = (k: ServiceKind) => plistPathOf(p.home, naming, k);
+  const unitPath = (k: ServiceKind) => unitPathOf(p.home, naming, k);
   if (platform === "darwin") {
     const domain = `gui/${p.uid}`;
     return {

@@ -1,7 +1,6 @@
 // Cloudflare Access の JWT（Cf-Access-Jwt-Assertion）を呼び手に変える。人は email、ノードはサービストークンの common_name。
-// 規則は仕様 2.1。email なら外から来た HEADER_FROM は捨て、ノード用サービストークンならそのまま受け取り、JWT 無しは同じ機械からだけ通す
-import { AccessDenied, HeaderIdentity, type Caller, type Identity } from "./identity";
-import { HEADER_FROM, HEADER_VIA } from "../names";
+// 規則は仕様 2.1。email なら外から来た呼び手のヘッダ（新旧とも）は捨て、ノード用サービストークンならそのまま受け取り、JWT 無しは同じ機械からだけ通す
+import { AccessDenied, callerHeaders, HeaderIdentity, type Caller, type Identity } from "./identity";
 
 export type Jwks = { keys: (JsonWebKey & { kid: string })[] };
 export type AccessDeps = {
@@ -43,8 +42,7 @@ export class AccessIdentity implements Identity {
     const p = await this.verify(token);
     if (typeof p.email === "string" && p.email) return { id: p.email, kind: "user" };
     if (typeof p.common_name === "string" && p.common_name) {
-      const from = req.headers.get(HEADER_FROM)?.trim();
-      const via = req.headers.get(HEADER_VIA)?.trim();
+      const { from, via } = callerHeaders(req);
       const c: Caller = { id: from || `agent:${p.common_name}`, kind: "node" };
       if (via) c.via = via;
       return c;

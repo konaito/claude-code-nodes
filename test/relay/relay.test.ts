@@ -79,3 +79,11 @@ test("a Cloudflare 5xx html page from the peer is PeerUnreachableError", async (
   const r = await new Relay({ registry, nodeName: "vm", serviceToken: token, fetchFn: ok.fetchFn }).forward("pro", "api/host", new Request("https://vm.cc.fybe.jp/n/pro/api/host"), { id: "x" });
   expect(r.status).toBe(500);
 });
+
+test("sends both the new and the legacy caller headers while nodes migrate", async () => {
+  const { fetchFn, calls } = fakeFetch(() => new Response("{}"));
+  const relay = new Relay({ registry, nodeName: "vm", serviceToken: token, fetchFn });
+  await relay.forward("pro", "api/host", new Request("https://vm.cc.fybe.jp/n/pro/api/host", { headers: { "x-ccn-from": "forged" } }), { id: "ceo@fybe.jp", kind: "user" });
+  const h = calls[0]!.headers;
+  expect([h.get("x-ccn-from"), h.get("x-ccn-via"), h.get("x-cc-from"), h.get("x-cc-via")]).toEqual(["ceo@fybe.jp", "vm", "ceo@fybe.jp", "vm"]);
+});

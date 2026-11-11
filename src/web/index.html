@@ -192,6 +192,16 @@ function ago(ts) {
 }
 const K = "%%STORAGE_PREFIX%%"; // localStorage のキーの頭（names.ts）
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} } };
+// 改名前のキー（%%LEGACY_STORAGE_PREFIX%%*）の値を新しいキーへ1回だけ移す。新しいキーに値があればそちらを残す。localStorage はオリジンごとなので、移るのは同じホスト名で開いたときだけ
+(function migrateKeys(old) {
+  try {
+    if (localStorage.getItem(K + "migrated")) return;
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith(old) && !k.startsWith(K)) keys.push(k); }
+    for (const k of keys) { const nk = K + k.slice(old.length); if (localStorage.getItem(nk) == null) localStorage.setItem(nk, localStorage.getItem(k)); localStorage.removeItem(k); }
+    localStorage.setItem(K + "migrated", "1");
+  } catch {}
+})("%%LEGACY_STORAGE_PREFIX%%");
 const apiOf = (peer) => `/n/${encodeURIComponent(peer)}/api`;
 async function api(peer, path, init) {
   const r = await fetch(apiOf(peer) + path, { ...init, headers: { ...(init && init.body ? { "content-type": "application/json" } : {}), ...(init && init.headers || {}) } });

@@ -15,10 +15,11 @@ test("clientFor targets localhost without a service token and peers with it", ()
   const local = clientFor(cfg, undefined, "lead", env);
   expect(local.base).toBe("http://127.0.0.1:4323");
   expect(local.peer).toBe("pro");
-  expect(local.headers).toEqual({ "x-cc-from": "agent:pro/abcdef12/lead", "x-cc-via": "pro" });
+  // 移行の間は新旧の両方のヘッダを付ける
+  expect(local.headers).toEqual({ "x-ccn-from": "agent:pro/abcdef12/lead", "x-ccn-via": "pro", "x-cc-from": "agent:pro/abcdef12/lead", "x-cc-via": "pro" });
   expect(clientFor(cfg, "pro", "lead", env).base).toBe("http://127.0.0.1:4323");
   const remote = clientFor(cfg, "vm", undefined, env);
-  expect(remote.base).toBe("https://cc-vm.fybe.jp");
+  expect(remote.base).toBe("https://ccn-vm.fybe.jp");
   expect(remote.headers["cf-access-client-id"]).toBe("cid");
   expect(remote.headers["cf-access-client-secret"]).toBe("csec");
   expect(remote.headers["x-cc-from"]).toBe("agent:pro/abcdef12/parent");

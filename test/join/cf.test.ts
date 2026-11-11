@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { ensureAccessApp, ensureBypassApp, ensureServiceToken, createNodeTunnel, removeNodeTunnel, setEntry, nodeTunnelToken, type CfRunner } from "../../src/join/cf";
+import { addNodeHost, ensureAccessApp, ensureBypassApp, ensureServiceToken, createNodeTunnel, removeNodeTunnel, renameNodeTunnel, setEntry, nodeTunnelToken, type CfRunner } from "../../src/join/cf";
 
 // 偽の cf。args を記録し、コマンドの形で決まった JSON を返す
 function fakeCf(state: { apps?: unknown[]; tokens?: unknown[]; tunnels?: unknown[]; dns?: unknown[]; config?: unknown } = {}) {
@@ -19,6 +19,7 @@ function fakeCf(state: { apps?: unknown[]; tokens?: unknown[]; tunnels?: unknown
     if (key.startsWith("tunnels config update")) return out({});
     if (key.startsWith("tunnels token get")) return out("TUNNEL-TOKEN");
     if (key.startsWith("tunnels delete")) return out({});
+    if (key.startsWith("tunnels edit")) return { stdout: "", code: 0 };
     if (key.startsWith("dns records list")) return out(state.dns ?? []);
     if (key.startsWith("dns records create")) return out({ id: "dns-1" });
     if (key.startsWith("dns records delete")) return out({});
@@ -64,10 +65,10 @@ test("ensureBypassApp scopes hosts to /install with an everyone bypass", async (
 
 test("ensureServiceToken returns the secret only on create", async () => {
   const f = fakeCf();
-  expect(await ensureServiceToken(f.cf, { name: "cc-node", duration: "8760h" })).toEqual({ id: "tok-1", clientId: "cid.access", clientSecret: "csec" });
+  expect(await ensureServiceToken(f.cf, { name: "cc-node", duration: "8760h" })).toEqual({ id: "tok-1", name: "cc-node", clientId: "cid.access", clientSecret: "csec" });
   expect(f.body(1)).toEqual({ name: "cc-node", duration: "8760h" });
   const g = fakeCf({ tokens: [{ id: "tok-old", name: "cc-node", client_id: "cid.old" }] });
-  expect(await ensureServiceToken(g.cf, { name: "cc-node", duration: "8760h" })).toEqual({ id: "tok-old", clientId: "cid.old" });
+  expect(await ensureServiceToken(g.cf, { name: "cc-node", duration: "8760h" })).toEqual({ id: "tok-old", name: "cc-node", clientId: "cid.old" });
 });
 
 test("createNodeTunnel runs create, config, dns, token in order and never prints the token", async () => {
@@ -76,7 +77,7 @@ test("createNodeTunnel runs create, config, dns, token in order and never prints
   expect(r).toEqual({ tunnelId: "tun-1", token: "TUNNEL-TOKEN" });
   expect(f.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels create --name", "tunnels config update", "dns records create", "tunnels token get"]);
   expect(f.calls[1]![3]).toBe("tun-1");
-  expect(f.calls[0]).toContain("cc-vm");
+  expect(f.calls[0]).toContain("ccn-vm");
   expect(f.calls[0]).toContain("cloudflare");
   expect(f.body(1)).toEqual({ config: { ingress: [{ hostname: "vm.cc.fybe.jp", service: "http://127.0.0.1:4322" }, { service: "http_status:404" }] } });
   expect(f.calls[2]).toContain("fybe.jp");
@@ -86,11 +87,11 @@ test("createNodeTunnel runs create, config, dns, token in order and never prints
 
 test("removeNodeTunnel deletes dns before tunnel and ignores missing", async () => {
   const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }], dns: [{ id: "dns-1", name: "vm.cc.fybe.jp", type: "CNAME" }] });
-  await removeNodeTunnel(f.cf, { name: "vm", hostname: "vm.cc.fybe.jp", zone: "fybe.jp" });
+  await removeNodeTunnel(f.cf, { tunnelName: "cc-vm", hostname: "vm.cc.fybe.jp", zone: "fybe.jp" });
   const heads = f.calls.map((c) => c.slice(0, 3).join(" "));
   expect(heads.indexOf("dns records delete")).toBeLessThan(heads.indexOf("tunnels delete tun-1"));
   const g = fakeCf();
-  await removeNodeTunnel(g.cf, { name: "vm", hostname: "vm.cc.fybe.jp", zone: "fybe.jp" });
+  await removeNodeTunnel(g.cf, { tunnelName: "cc-vm", hostname: "vm.cc.fybe.jp", zone: "fybe.jp" });
   expect(g.calls.map((c) => c.slice(0, 3).join(" "))).not.toContain("tunnels delete");
 });
 
@@ -111,13 +112,72 @@ test("nodeTunnelToken re-reads the token of an existing tunnel without creating 
   const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }] });
   expect(await nodeTunnelToken(f.cf, { name: "vm" })).toEqual({ tunnelId: "tun-1", token: "TUNNEL-TOKEN" });
   expect(f.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["tunnels list", "tunnels token get"]);
-  await expect(nodeTunnelToken(f.cf, { name: "nope" })).rejects.toThrow(/cc-nope/);
+  await expect(nodeTunnelToken(f.cf, { name: "nope" })).rejects.toThrow(/ccn-nope/);
 });
 
 test("deletes pass --force because cf asks for confirmation otherwise", async () => {
   const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }], dns: [{ id: "dns-1", name: "vm.cc.fybe.jp", type: "CNAME" }] });
-  await removeNodeTunnel(f.cf, { name: "vm", hostname: "vm.cc.fybe.jp", zone: "fybe.jp" });
+  await removeNodeTunnel(f.cf, { tunnelName: "cc-vm", hostname: "vm.cc.fybe.jp", zone: "fybe.jp" });
   const deletes = f.calls.filter((c) => c.includes("delete"));
   expect(deletes.length).toBe(2);
   for (const c of deletes) expect(c).toContain("--force");
+});
+
+test("setup adopts the legacy-named Access app and service token instead of creating new ones", async () => {
+  const f = fakeCf({ apps: [{ id: "app-old", name: "cc", aud: "aud-old" }], tokens: [{ id: "tok-old", name: "cc-node", client_id: "cid.old" }] });
+  const tok = await ensureServiceToken(f.cf, { name: "ccn-node", legacyNames: ["cc-node"], duration: "8760h" });
+  expect(tok).toEqual({ id: "tok-old", name: "cc-node", clientId: "cid.old" });
+  const app = await ensureAccessApp(f.cf, { name: "ccn", legacyNames: ["cc"], hosts: ["ccn-*.fybe.jp", "ccn.fybe.jp", "cc-*.fybe.jp", "cc.fybe.jp"], sessionDuration: "720h", email: "a@b", serviceTokenId: tok.id });
+  expect(app).toEqual({ id: "app-old", aud: "aud-old" });
+  const upd = f.calls.findIndex((c) => c.slice(0, 4).join(" ") === "zero-trust access applications update");
+  expect(f.calls[upd]![4]).toBe("app-old");
+  expect(f.body(upd).name).toBe("ccn");
+  expect(f.body(upd).self_hosted_domains).toEqual(["ccn-*.fybe.jp", "ccn.fybe.jp", "cc-*.fybe.jp", "cc.fybe.jp"]);
+  expect(f.calls.some((c) => c.includes("create"))).toBe(false);
+  // 新の名前が既にあれば、旧より新を選ぶ
+  const g = fakeCf({ apps: [{ id: "app-old", name: "cc" }, { id: "app-new", name: "ccn" }] });
+  expect((await ensureBypassApp(g.cf, { name: "ccn", legacyNames: ["cc"], hosts: ["x"] })).id).toBe("app-new");
+});
+
+test("node tunnels are found by the new name first, then by the legacy name", async () => {
+  const both = fakeCf({ tunnels: [{ id: "tun-old", name: "cc-vm" }, { id: "tun-new", name: "ccn-vm" }] });
+  expect((await nodeTunnelToken(both.cf, { name: "vm" })).tunnelId).toBe("tun-new");
+  // remove は実名で1つに決めるので、旧を消すときに新を消さない
+  const r = fakeCf({ tunnels: [{ id: "tun-old", name: "cc-vm" }, { id: "tun-new", name: "ccn-vm" }] });
+  await removeNodeTunnel(r.cf, { tunnelName: "cc-vm", hostname: "cc-vm.fybe.jp", zone: "fybe.jp" });
+  expect(r.calls.find((c) => c[0] === "tunnels" && c[1] === "delete")).toEqual(["tunnels", "delete", "tun-old", "--force"]);
+});
+
+test("addNodeHost adds the new hostname to a legacy tunnel's ingress and dns once, keeping the old one", async () => {
+  const cfg = { config: { ingress: [{ hostname: "cc-vm.fybe.jp", service: "http://127.0.0.1:4322" }, { service: "http_status:404" }] } };
+  const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }], config: cfg });
+  expect(await addNodeHost(f.cf, { name: "vm", hostname: "ccn-vm.fybe.jp", zone: "fybe.jp" })).toEqual({ ingress: true, dns: true });
+  const upd = f.calls.findIndex((c) => c.slice(0, 3).join(" ") === "tunnels config update");
+  expect(f.body(upd).config.ingress).toEqual([
+    { hostname: "cc-vm.fybe.jp", service: "http://127.0.0.1:4322" },
+    { hostname: "ccn-vm.fybe.jp", service: "http://127.0.0.1:4322" },
+    { service: "http_status:404" },
+  ]);
+  const dns = f.calls.findIndex((c) => c.slice(0, 3).join(" ") === "dns records create");
+  expect(f.body(dns)).toEqual({ type: "CNAME", name: "ccn-vm.fybe.jp", content: "tun-1.cfargotunnel.com", proxied: true });
+  // 2回目は何もしない
+  const again = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }], config: { config: { ingress: [...cfg.config.ingress.slice(0, 1), { hostname: "ccn-vm.fybe.jp", service: "http://127.0.0.1:4322" }] } }, dns: [{ id: "d", name: "ccn-vm.fybe.jp", type: "CNAME" }] });
+  expect(await addNodeHost(again.cf, { name: "vm", hostname: "ccn-vm.fybe.jp", zone: "fybe.jp" })).toEqual({ ingress: false, dns: false });
+  expect(again.calls.some((c) => c.includes("update") || c.includes("create"))).toBe(false);
+});
+
+test("renameNodeTunnel renames cc-<name> to ccn-<name> with cf tunnels edit and is a no-op afterwards", async () => {
+  const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }] });
+  expect(await renameNodeTunnel(f.cf, { name: "vm" })).toEqual({ renamed: true, from: "cc-vm" });
+  expect(f.calls.at(-1)).toEqual(["tunnels", "edit", "tun-1", "--name", "ccn-vm"]);
+  const g = fakeCf({ tunnels: [{ id: "tun-1", name: "ccn-vm" }] });
+  expect(await renameNodeTunnel(g.cf, { name: "vm" })).toEqual({ renamed: false, from: "ccn-vm" });
+  expect(g.calls.some((c) => c[1] === "edit")).toBe(false);
+});
+
+test("removeNodeTunnel with dnsOnly deletes the cname and keeps the tunnel", async () => {
+  const f = fakeCf({ tunnels: [{ id: "tun-1", name: "cc-vm" }], dns: [{ id: "dns-1", name: "cc-vm.fybe.jp", type: "CNAME" }] });
+  await removeNodeTunnel(f.cf, { tunnelName: "cc-vm", hostname: "cc-vm.fybe.jp", zone: "fybe.jp", dnsOnly: true });
+  expect(f.calls.some((c) => c[0] === "tunnels" && c[1] === "delete")).toBe(false);
+  expect(f.calls.some((c) => c.slice(0, 3).join(" ") === "dns records delete")).toBe(true);
 });
