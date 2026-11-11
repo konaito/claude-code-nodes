@@ -5,7 +5,7 @@ import { entryOf, hostFor, loadConfig, nodeHost, resolveConfigPath, saveConfig, 
 import type { Runner } from "../engine/agents";
 import { addNodeHost, createNodeTunnel, ensureAccessApp, ensureBypassApp, ensureServiceToken, nodeTunnelToken, removeNodeTunnel, renameNodeTunnel, setEntry, type CfRunner } from "../join/cf";
 import { configFromToken, decodeJoinToken, encodeJoinToken, JoinTokenError, type JoinToken } from "../join/token";
-import { plistPathOf, unitPathOf, type Paths, type Platform, type ServiceManager } from "../join/services";
+import type { Paths, Platform, ServiceManager } from "../join/services";
 import { withCrossSessionInbound, SettingsError } from "../join/settings";
 import { linkSkill, realFs } from "../join/skill-links";
 import { BUNDLE_PATHS } from "../join/bundle";
@@ -13,7 +13,7 @@ import { CliError, clientFor, api } from "./client";
 import { readUntilResult } from "./read";
 import type { Ctx } from "./commands";
 import type { Parsed } from "./args";
-import { ACCESS_APP, appHomeOf, BUNDLE_PATH, BYPASS_APP, CLI_NAME, CONFIG_FILE, ENTRY_DOMAIN, launchdLabel, LEGACY_ACCESS_APP, LEGACY_BUNDLE_PATH, LEGACY_BYPASS_APP, LEGACY_SERVICE_TOKEN, LEGACY_TUNNEL_PREFIX, legacyAppHomeOf, OLD_CLI_NAMES, SERVICE_NAMING, SERVICE_TOKEN, systemdUnitName, TUNNEL_PREFIX, TUNNEL_TOKEN_FILE } from "../names";
+import { ACCESS_APP, appHomeOf, BUNDLE_PATH, BYPASS_APP, CLI_NAME, CONFIG_FILE, ENTRY_DOMAIN, launchdLabel, LEGACY_ACCESS_APP, LEGACY_BUNDLE_PATH, LEGACY_BYPASS_APP, LEGACY_SERVICE_TOKEN, LEGACY_TUNNEL_PREFIX, legacyAppHomeOf, OLD_CLI_NAMES, SERVICE_TOKEN, systemdUnitName, TUNNEL_PREFIX, TUNNEL_TOKEN_FILE } from "../names";
 import { dropLegacyAppHome, dropLegacyServices, dropLegacySkill, hasLegacy, moveLegacyConfig, realMigrateFs, type MigrateFs } from "../join/migrate";
 
 export type JoinDeps = {
@@ -64,7 +64,7 @@ export function joinCommands(d: JoinDeps) {
     let serviceToken: Config["serviceToken"];
     if (tok.clientSecret) serviceToken = { clientId: tok.clientId, clientSecret: tok.clientSecret };
     else if (cfg.serviceToken?.clientId === tok.clientId) serviceToken = cfg.serviceToken;
-    else throw new CliError(1, `サービストークン ${SERVICE_TOKEN}（${tok.id}）は既にあるが secret が手元に無い。cf zero-trust access service-tokens rotate ${tok.id} で取り直すか、消してからやり直す`);
+    else throw new CliError(1, `サービストークン ${tok.name}（${tok.id}）は既にあるが secret が手元に無い。cf zero-trust access service-tokens rotate ${tok.id} で取り直すか、消してからやり直す`);
     const email = str(flags.email) ?? DEFAULTS.email;
     const app = await ensureAccessApp(d.cf, { name: ACCESS_APP, legacyNames: [LEGACY_ACCESS_APP], hosts, sessionDuration: "720h", email, serviceTokenId: tok.id });
     const bypass = await ensureBypassApp(d.cf, { name: BYPASS_APP, legacyNames: [LEGACY_BYPASS_APP], hosts });
@@ -214,13 +214,13 @@ export function joinCommands(d: JoinDeps) {
     await linkBin(ctx);
     // 常駐の入れ替えは最後。旧があれば外して新を入れ、新が無ければ入れ、あれば node を再起動する
     if (await swapServices(ctx)) ctx.out("旧の常駐を外し、新の常駐を入れた");
-    else if (!hasServiceFiles()) { await services().install(); ctx.out("常駐を入れた"); }
-    else await services().restart("node");
+    else if (await nodeRunning()) await services().restart("node");
+    else { await services().install(); ctx.out("常駐を入れた"); } // 新の常駐が動いていない（前回の途中で止まった、まだ入っていない）
     dropLegacyAppHome(m);
     ctx.out(`更新した: ${d.appDir}。node を再起動した。実行物は ${CLI_NAME}`);
     return 0;
   }
-  const hasServiceFiles = () => (d.migrateFs ?? realMigrateFs).exists(d.platform === "darwin" ? plistPathOf(d.home, SERVICE_NAMING, "node") : unitPathOf(d.home, SERVICE_NAMING, "node"));
+  const nodeRunning = async () => (await services().status().catch(() => undefined))?.node === "running";
 
   async function uninstall(ctx: Ctx): Promise<number> {
     await services().uninstall();
@@ -230,7 +230,7 @@ export function joinCommands(d: JoinDeps) {
     // 設定の置き場は消すが、移行で退避した legacy-session-inbox-* は残す
     const kept: string[] = [];
     for (const name of (d.migrateFs ?? realMigrateFs).list(d.configDir)) {
-      if (name.startsWith("legacy-")) kept.push(name);
+      if (name.startsWith("legacy-session-inbox-")) kept.push(name); // legacy-cc.json などの秘密を含むものは消す
       else rmSync(join(d.configDir, name), { recursive: true, force: true });
     }
     if (!kept.length) rmSync(d.configDir, { recursive: true, force: true });

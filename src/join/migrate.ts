@@ -43,16 +43,19 @@ export async function dropLegacyServices(d: MigrateDeps, legacy: ServiceManager)
   return true;
 }
 
-// ~/.config/cc を ~/.config/ccn に移す。cc.json は ccn.json にする。新の設定が既にあれば何もしない
+// ~/.config/cc を ~/.config/ccn に移す。cc.json は ccn.json にする。ファイルごとに、新に無ければ移す。
+// 新に既にあるもの（移行の前に新しいコードの ccn setup が ccn.json を書いた、など）は新を残し、旧は legacy-<名前> として新の置き場に退避する。
+// tunnel.token は新の常駐が読むので、ccn.json が先にあっても必ず移す
 export function moveLegacyConfig(d: MigrateDeps): void {
   const oldDir = legacyConfigDirOf(d.home);
   const newDir = configDirOf(d.home);
   if (!d.fs.exists(oldDir)) return;
-  if (d.fs.exists(join(newDir, CONFIG_FILE))) { d.out(`旧の設定 ${oldDir} は残した（${join(newDir, CONFIG_FILE)} が既にある）`); return; }
   d.fs.mkdir(newDir);
   for (const name of d.fs.list(oldDir)) {
     const to = join(newDir, name === LEGACY_CONFIG_FILE ? CONFIG_FILE : name);
-    if (!d.fs.exists(to)) d.fs.rename(join(oldDir, name), to);
+    if (!d.fs.exists(to)) { d.fs.rename(join(oldDir, name), to); continue; }
+    const aside = join(newDir, `legacy-${name}`);
+    if (!d.fs.exists(aside)) { d.fs.rename(join(oldDir, name), aside); d.out(`${to} が既にあるので、旧の ${name} は ${aside} に置いた`); }
   }
   if (d.fs.list(oldDir).length === 0) d.fs.rm(oldDir);
   d.out(`設定を ${oldDir} から ${newDir} に移した`);

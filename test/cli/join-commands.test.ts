@@ -138,9 +138,6 @@ test("update swaps app.new into app and restarts node", async () => {
   mkdirSync(w.appDir, { recursive: true });
   writeFileSync(join(w.appDir, "old.txt"), "old");
   saveConfig({ name: "vm", port: 4322, roots: [w.home], domain: "cc.fybe.jp", entry: "https://vm.cc.fybe.jp" }, join(w.configDir, "ccn.json"));
-  // 常駐が入っている機械（plist がある）なので、入れ直さずに node を再起動する
-  mkdirSync(join(w.home, "Library", "LaunchAgents"), { recursive: true });
-  writeFileSync(join(w.home, "Library", "LaunchAgents", "jp.fybe.ccn.node.plist"), "");
   const src = mkdtempSync(join(tmpdir(), "cc-tar-"));
   writeFileSync(join(src, "package.json"), '{"version":"9.9.9"}');
   const tgz = await new Response(Bun.spawn(["tar", "czf", "-", "-C", src, "package.json"], { stdout: "pipe" }).stdout).arrayBuffer();
@@ -197,9 +194,7 @@ test("update --from <dir> installs that checkout, relinks ccn and refreshes chil
   expect(readlinkSync(join(w.home, ".local", "bin", "ccn"))).toBe(join(w.appDir, "bin", "ccn"));
   expect(readFileSync(join(w.home, ".config", "ccn", "child.md"), "utf8")).toBe("new child");
   expect(readFileSync(join(w.home, ".config", "ccn", "child.md.old-20261106-1234"), "utf8")).toBe("old child");
-  // 常駐のファイルが無い機械なので、再起動ではなく入れる
-  expect(w.svc.restarts).toEqual([]);
-  expect(w.svc.installs).toBe(1);
+  expect(w.svc.restarts).toEqual(["node"]);
 });
 
 test("uninstall removes the ccn link and an old cc link into the app, but keeps a foreign cc", async () => {
@@ -403,7 +398,9 @@ test("uninstall keeps the legacy-session-inbox backup", async () => {
   const w = world();
   saveConfig({ name: "vm", port: 4322, roots: [w.home] }, join(w.configDir, "ccn.json"));
   mkdirSync(join(w.configDir, "legacy-session-inbox-20261111"), { recursive: true });
+  writeFileSync(join(w.configDir, "legacy-cc.json"), "{}");
   expect(await main(["uninstall"], w.ctx)).toBe(0);
+  expect(existsSync(join(w.configDir, "legacy-cc.json"))).toBe(false);
   expect(existsSync(join(w.configDir, "ccn.json"))).toBe(false);
   expect(existsSync(join(w.configDir, "legacy-session-inbox-20261111"))).toBe(true);
 });
@@ -436,4 +433,27 @@ test("a config file given by CCN_CONFIG is the one doctor and serve read", async
   const w = world({ configFile: file });
   await main(["doctor"], w.ctx);
   expect(w.lines.some((l) => l.includes("http://127.0.0.1:4999/api/host"))).toBe(true);
+});
+
+test("update installs the services again when the node is not running (a previous update stopped half way)", async () => {
+  const w = world({ services: () => ({ install: async () => { calls.push("install"); }, uninstall: async () => {}, restart: async (k) => { calls.push(`restart ${k}`); }, status: async () => ({ node: "stopped", tunnel: "running" }) }) });
+  const calls: string[] = [];
+  saveConfig({ name: "vm", port: 4322, roots: [w.home] }, join(w.configDir, "ccn.json"));
+  const ctx = { ...w.ctx, fetchFn: (async () => { throw new Error("must not fetch"); }) as unknown as typeof fetch };
+  expect(await main(["update", "--from", bundleSrc()], ctx)).toBe(0);
+  expect(calls).toEqual(["install"]);
+});
+
+test("update moves tunnel.token even when ccn setup already wrote ccn.json, and keeps the old cc.json aside", async () => {
+  const order: string[] = [];
+  const w = legacyWorld(order);
+  // 移行の前に新しいコードの ccn setup が新の置き場に書いた
+  saveConfig({ name: "vm", port: 4322, roots: [w.home], aud: "from-setup" }, join(w.configDir, "ccn.json"));
+  const ctx = { ...w.ctx, fetchFn: (async () => { throw new Error("must not fetch"); }) as unknown as typeof fetch };
+  expect(await main(["update", "--from", bundleSrc()], ctx)).toBe(0);
+  expect(loadConfig(join(w.configDir, "ccn.json")).aud).toBe("from-setup");
+  expect(readFileSync(join(w.configDir, "tunnel.token"), "utf8")).toBe("TUNNEL");
+  expect(readFileSync(join(w.configDir, "sends.json"), "utf8")).toContain("vm/x");
+  expect(loadConfig(join(w.configDir, "legacy-cc.json")).serviceToken?.clientId).toBe("cid");
+  expect(existsSync(join(w.home, ".config", "cc"))).toBe(false);
 });
