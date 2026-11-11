@@ -199,21 +199,22 @@ test("a directory that does not answer is cut off by the per-call limit, reporte
 
 test("when the whole scan runs out of time it returns what it has, and does not remember merely slow directories", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-late-")));
-  for (let i = 0; i < 40; i++) mkdirSync(join(root, `p${i}`));
-  // 候補の中を読むたびに 40ms かかる。8件ずつ読むので、200ms では全部は読めない
-  const t = trackedFs(() => false, (p, op) => (op === "readdir" && p !== root ? 40 : 0));
+  for (let i = 0; i < 80; i++) { mkdirSync(join(root, `p${i}`)); writeFileSync(join(root, `p${i}`, "README.md"), "r\n"); }
+  // README を読むたびに 40ms かかる。8件ずつ読むので全部で400ms 以上かかり、200ms では全部は読めない
+  const t = trackedFs(() => false, (_p, op) => (op === "readHead" ? 40 : 0));
   const memory = newPlacesMemory();
   const started = Date.now();
   const r = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 200, opMs: 1000 });
   expect(Date.now() - started).toBeLessThan(400);
   expect(r.partial).toBe(true);
+  expect(r.places.every((p) => p.readme[0] === "r")).toBe(true); // 途中で切られて README が欠けた候補は返さない
   expect(r.places.length).toBeGreaterThan(0);
-  expect(r.places.length).toBeLessThan(40);
+  expect(r.places.length).toBeLessThan(80);
   expect(memory.stuck.size).toBe(0); // 遅いだけのものは覚えない
   await new Promise((r) => setTimeout(r, 60));
   const full = await scanPlaces({ roots: [root], bases: [root], home: root, platform: "darwin" }, { fs: t.fs, memory, deadlineMs: 3000, opMs: 1000 });
   expect(full).toMatchObject({ partial: false, unreadable: [] });
-  expect(full.places).toHaveLength(40);
+  expect(full.places).toHaveLength(80);
 });
 
 test("a call still in flight from an earlier scan is not issued again until it returns", async () => {
@@ -265,4 +266,18 @@ test("resolveCwds leaves cwds outside roots and in protected folders as they are
   expect(m.get("/elsewhere/y")).toBe("/elsewhere/y");
   expect(m.get(join(home, "proj"))).toBe(join(home, "proj"));
   expect(t.calls.map((c) => c.path)).toEqual([join(home, "proj")]);
+});
+
+test("calls that answer are never blocked by each other: nested roots, bases and cwds are all resolved", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-places-nest-")));
+  mkdirSync(join(root, "Documents", "app", "sub"), { recursive: true });
+  mkdirSync(join(root, "proj"));
+  const r = await scanPlaces({ roots: [root, join(root, "Documents")], bases: [root, join(root, "Documents")], home: root, platform: "darwin" });
+  expect(r).toMatchObject({ partial: false, unreadable: [] });
+  expect(r.places.map((p) => p.name).sort()).toEqual(["app", "proj"]);
+  const t = trackedFs();
+  const cwds = [root, join(root, "Documents"), join(root, "Documents", "app", "sub")];
+  const m = await resolveCwds(cwds, { roots: [root], home: root, platform: "darwin" }, { fs: t.fs });
+  for (const c of cwds) expect(t.count("realpath", c)).toBe(1);
+  expect(m.get(join(root, "Documents", "app", "sub"))).toBe(join(root, "Documents", "app", "sub"));
 });

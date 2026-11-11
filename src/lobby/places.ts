@@ -38,13 +38,14 @@ const README_RE = /^readme(\.(md|markdown|txt|rst))?$/i;
 
 // macOS のホームの直下で開かない場所。
 // TCC の対象（Apple Platform Security の「Controlling app access to files in macOS」と、この機械の TCC.framework の承認の文言で確かめた）:
-//   Desktop、Downloads（kTCCServiceSystemPolicyDesktopFolder、DownloadsFolder）、
-//   Library（Mobile Documents は iCloud Drive、CloudStorage は FileProvider、Containers と Group Containers は SystemPolicyAppData）、
+//   Desktop、Downloads（kTCCServiceSystemPolicyDesktopFolder、DownloadsFolder）。
+// 資料で確かめたのはサービス名と語（iCloud Drive、他のアプリのデータ、FileProvider、写真ライブラリ、ミュージックのライブラリ）までで、次のパスへの対応は資料に無い（よく知られた置き場から当てた）:
+//   Library（Mobile Documents が iCloud Drive、CloudStorage が FileProvider、Containers と Group Containers が SystemPolicyAppData）、
 //   Pictures（写真ライブラリ、kTCCServicePhotos）、Music（ミュージックのライブラリ、kTCCServiceMediaLibrary）。
 // TCC の対象だという根拠は無いが、行き先にならない標準のフォルダなので外すもの: Movies、Public、Applications、iCloud Drive（利用者が置く symlink の名前）。
 // Documents も TCC の対象（DocumentsFolder）だが、受け口の主な行き先なので外さない。止まったときは時間の上限で抜ける
 export const MAC_PROTECTED = ["Desktop", "Downloads", "Library", "Pictures", "Music", "Movies", "Public", "Applications", "iCloud Drive"] as const;
-// symlink の先が取り外しやネットワークのボリューム（kTCCServiceSystemPolicyRemovableVolumes、NetworkVolumes）なら開かない
+// symlink の先が取り外しやネットワークのボリューム（kTCCServiceSystemPolicyRemovableVolumes、NetworkVolumes）なら開かない。/Volumes がその置き場だということは資料に無い
 const MAC_VOLUMES = "/Volumes";
 
 export type Ent = { name: string; isDirectory(): boolean; isSymbolicLink(): boolean };
@@ -82,7 +83,7 @@ export type ScanOptions = {
 
 const under = (p: string, roots: string[]) => roots.some((r) => p === r || p.startsWith(r.endsWith(sep) ? r : r + sep));
 
-// 走査をまたいで覚えること。stuck は fs の呼び出し1回の上限を超えたパス（ノードが動いている間は開かない）。
+// 走査をまたいで覚えること。stuck は fs の呼び出し1回の上限を超えたパス（ノードが動いている間は開かない。本人が後で TCC を承認しても、ノードを再起動するまでその下は places に出ない）。
 // pending は、呼び出しがまだ返っていないパス（時間切れで見捨てても、裏のスレッドは止まったまま）。返るまでは同じパスを開かず、止まったスレッドを増やさない
 export type PlacesMemory = { stuck: Set<string>; pending: Map<string, number> };
 export const newPlacesMemory = (): PlacesMemory => ({ stuck: new Set(), pending: new Map() });
@@ -116,15 +117,16 @@ class Watch {
     const left = this.deadlineAt - Date.now();
     if (left <= 0) { this.expired = true; return null; }
     const mem = this.mem;
-    mem.pending.set(key, (mem.pending.get(key) ?? 0) + 1);
-    const settle = () => { const n = (mem.pending.get(key) ?? 1) - 1; if (n > 0) mem.pending.set(key, n); else mem.pending.delete(key); };
-    const work = Promise.resolve().then(() => fn(this.fs)).then((v) => v, () => null).finally(settle);
+    const work = Promise.resolve().then(() => fn(this.fs)).then((v) => v, () => null);
     const wait = Math.min(this.opMs, left);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<"late">((r) => { timer = setTimeout(() => r("late"), wait); });
     const v = await Promise.race([work, late]);
     clearTimeout(timer);
     if (v !== "late") return v as T | null;
+    // 待ちを切った呼び出しだけを、返るまで pending に入れる（返っている並行の呼び出しは止めない）
+    mem.pending.set(key, (mem.pending.get(key) ?? 0) + 1);
+    void work.finally(() => { const n = (mem.pending.get(key) ?? 1) - 1; if (n > 0) mem.pending.set(key, n); else mem.pending.delete(key); });
     // 呼び出し1回の上限を超えたものだけ覚える。全体の時間切れで待ちを切っただけのもの（遅いだけかもしれない）は覚えない
     if (wait >= this.opMs) { mem.stuck.add(key); this.unreadable.add(key); }
     else this.expired = true;
@@ -266,7 +268,7 @@ export async function scanPlaces(o: ScanOptions, go: GuardOptions = {}): Promise
     while (next < found.length && !w.expired) {
       const f = found[next++]!;
       const p = await placeOf(f.path, f.mtimeMs, g);
-      if (p) places.push(p);
+      if (p && !w.expired) places.push(p); // 途中で時間切れになった候補（README や remote が欠けたもの）は返さない
     }
   }));
   if (next < found.length) w.expired = true;
