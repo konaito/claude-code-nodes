@@ -30,10 +30,10 @@ cf zero-trust access applications list > /tmp/access-before.json
 jq -r '(.result // .)[] | select(.name=="ccn" or .name=="ccn-install") | [.name, .aud, (.self_hosted_domains|join(","))] | @tsv' /tmp/access-before.json
 ```
 
-2026-11-11 の改名の後は、旧のホスト名を片付けていないので、`ccn` のホスト名は4つのはず（`docs/runbooks/2026-11-11-ccn-rename.md` の手順2と6）。控えの値と同じなら、次のとおり渡す。違えば控えの値を渡す。
+2026-11-11 に旧のホスト名を片付けたので、`ccn` のホスト名は2つのはず（`docs/runbooks/2026-11-11-ccn-rename.md` の手順6）。控えの値と同じなら、次のとおり渡す。違えば控えの値を渡す。
 
 ```bash
-ccn setup --hosts 'ccn-*.fybe.jp,ccn.fybe.jp,cc-*.fybe.jp,cc.fybe.jp'
+ccn setup --hosts 'ccn-*.fybe.jp,ccn.fybe.jp'
 ```
 
 ダッシュボードで足した方針や設定は、setup の全文送りで消える。控えと見比べる。
@@ -59,7 +59,7 @@ claude mcp list   # ccn が Connected
 本番の Access アプリ `ccn` で Managed OAuth を有効にすると、未認証の非ブラウザ要求に Access が 401 と OAuth の案内を返し、MCP クライアントはブラウザのログインに進む。ノードには今と同じ JWT が届くので、ノードのコードは変えなくてよい。
 
 - ダッシュボードの Access controls > Applications > `ccn` > Edit > Advanced settings > Managed OAuth を有効にする。手元の CLI を通すなら Allow localhost clients と Allow loopback clients を入れる。
-- `ccn setup` は Access アプリを全文で上書きする。一覧の応答に `oauth_configuration` が載っていれば引き継ぐようにしたが、載るかどうかは未確認。setup をやり直したら、ダッシュボードで Managed OAuth が残っているかを見る。
+- `ccn setup` は Access アプリを全文で上書きする。一覧の応答に載る `oauth_configuration` を引き継ぐ。2026-11-11 の旧ホスト名の片付けで setup をやり直し、前後の `applications get` の `oauth_configuration` が同じだった（`docs/results/2026-11-11-ccn-legacy-off.md`）。setup をやり直したら、同じように前後を比べる。
 
 有効にする前に確かめること（未確認）。
 

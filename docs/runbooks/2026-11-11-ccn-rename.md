@@ -118,16 +118,61 @@ ccn update --entry https://ccn.fybe.jp
 - `ccn peers` の URL が `https://ccn-<name>.fybe.jp` になる。
 - https://ccn.fybe.jp を開くと、見出しが Claude Code Nodes の画面が出る。localStorage はオリジンごとなので、選んでいたノードや下書きは ccn.fybe.jp では引き継がれない。
 
-## 6. 旧のホスト名はしばらく残す
+## 6. 旧のホスト名を片付ける（2026-11-11 に済んだ）
 
-`cc-<name>.fybe.jp` と `cc.fybe.jp` は、旧のブックマークや手元の古い設定のために残す。片付けるときは次のとおり。
+`cc-<name>.fybe.jp` と `cc.fybe.jp` は、手順5の後しばらく残していた。2026-11-11 に消した。記録は `docs/results/2026-11-11-ccn-legacy-off.md` にある。
+
+消す順は DNS、ingress、Access のホスト名とする。Access のホスト名を先に外すと、旧名がまだノードへ届くうちに Access を通らなくなる。
+
+先に、旧名を見ている設定が無いかを探す。
 
 ```bash
-ccn node remove <name> --legacy   # cc-<name>.fybe.jp の DNS だけを消す。トンネルは消さない
-ccn setup --hosts 'ccn-*.fybe.jp,ccn.fybe.jp'
+rg -nP '(?<![A-Za-z0-9])cc(\.|-[A-Za-z0-9*-]+\.)fybe\.jp' ~/.config/ccn ~/.claude ~/.agents/skills
+jq '{domain, entry}' ~/.config/ccn/ccn.json   # 各機械で。entry が無いと https://<domain> を入口にする
 ```
 
-`cc.fybe.jp` の CNAME と ingress は `cf` で消す（`ccn` には命令が無い）。
+Cloudflare の今の値を控える。Access アプリ `ccn` と `ccn-install` は id で全文を取る。
+
+```bash
+B=~/.config/ccn/backup-$(date +%Y%m%d)-legacy-off; mkdir -p -m 700 "$B"
+cf zero-trust access applications get <ccn の id> -q > "$B/ccn-app.json"
+cf zero-trust access applications get <ccn-install の id> -q > "$B/ccn-install-app.json"
+cf tunnels config get <トンネルの id> -q > "$B/tunnel-config-<name>.json"   # 3本とも
+cf dns records list -z fybe.jp -q > "$B/dns-records.json"
+```
+
+1. DNS を消す。
+
+   ```bash
+   ccn node remove <name> --legacy   # cc-<name>.fybe.jp の CNAME だけを消す。トンネルと ingress は残る
+   cf dns records delete <cc.fybe.jp の CNAME の id> -z fybe.jp --force
+   ```
+
+2. 各トンネルの ingress から `cc-` と `cc.` で始まるホスト名を落とす。`ccn` には命令が無いので `cf` で行う。`ccn entry` は行き先を既定の 4322 にするので使わない。
+
+   ```bash
+   cf tunnels config get <id> -q \
+     | jq -c '(.config // .) as $c | {config: ($c | .ingress |= map(select((.hostname // "") | test("^cc[.-]") | not)))}' > /tmp/body.json
+   jq -c '.config.ingress' /tmp/body.json   # 残るホスト名と行き先のポート、末尾の http_status:404 を見てから送る
+   cf tunnels config update <id> --body "$(cat /tmp/body.json)" -q
+   ```
+
+   行き先のポートは incertotech と konaito-pro が 4323、vm が 4322。
+
+3. 旧名が解決されないことを `dig +short @1.1.1.1 cc.fybe.jp` で見てから、Access のホスト名を新だけにする。
+
+   ```bash
+   ccn setup --hosts 'ccn-*.fybe.jp,ccn.fybe.jp'
+   ```
+
+   setup は Access アプリを全文で上書きする。一覧の `oauth_configuration` は引き継ぐ。上書きの後にアプリを id で取り直し、控えと比べる。
+
+   ```bash
+   N='del(.updated_at, .created_at) | .policies |= map(del(.id,.uid,.created_at,.updated_at,.precedence))'
+   diff <(jq -S "$N" "$B/ccn-app.json") <(cf zero-trust access applications get <ccn の id> -q | jq -S "$N")
+   ```
+
+   差は `destinations` と `self_hosted_domains` から旧名が消えたことだけになる。aud、`oauth_configuration`、方針の中身が変わっていれば、控えの値で `applications update` して戻す。
 
 ## 7. GitHub の repo と手元のディレクトリを改名する
 
