@@ -11,6 +11,7 @@ import type { Identity, Caller } from "../identity/identity";
 import type { Registry } from "../registry/registry";
 import type { Relay } from "../relay/relay";
 import { withFromLine } from "../identity/from-line";
+import type { McpOptions } from "../mcp/server";
 import { HttpError } from "./errors";
 import { sse } from "./sse";
 
@@ -27,7 +28,8 @@ export type Deps = {
   host: () => Promise<HostInfo>;
   registry: Registry;
   relay: Relay;
-  appRoot: string; // 実行物の置き場。/install が配る
+  appRoot: string; // 実行物の置き場。/install と /skill.md が配る
+  mcp?: McpOptions; // MCP の待ちの時計と間隔（試験で差し替える）。無ければ実時間
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));

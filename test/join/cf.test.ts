@@ -54,13 +54,25 @@ test("ensureAccessApp updates by id when the name exists", async () => {
   expect(f.body(1).self_hosted_domains).toEqual(["*.cc.fybe.jp", "cc.fybe.jp"]);
 });
 
-test("ensureBypassApp scopes hosts to /install with an everyone bypass", async () => {
+test("ensureBypassApp scopes each host to /install and /skill.md with an everyone bypass", async () => {
   const f = fakeCf();
-  await ensureBypassApp(f.cf, { name: "cc-install", hosts: ["*.cc.fybe.jp"] });
+  await ensureBypassApp(f.cf, { name: "cc-install", hosts: ["*.cc.fybe.jp", "cc.fybe.jp"] });
   const b = f.body(1);
   expect(b.domain).toBe("*.cc.fybe.jp/install");
-  expect(b.self_hosted_domains).toEqual(["*.cc.fybe.jp/install"]);
+  expect(b.self_hosted_domains).toEqual(["*.cc.fybe.jp/install", "*.cc.fybe.jp/skill.md", "cc.fybe.jp/install", "cc.fybe.jp/skill.md"]);
   expect(b.policies).toEqual([{ name: "public", decision: "bypass", include: [{ everyone: {} }] }]);
+});
+
+test("updating an Access app keeps its Managed OAuth settings", async () => {
+  const oauth = { enabled: true, dynamic_client_registration: { enabled: true, allow_any_on_localhost: true } };
+  const f = fakeCf({ apps: [{ id: "app-1", name: "ccn", aud: "aud-1", oauth_configuration: oauth }] });
+  await ensureAccessApp(f.cf, { name: "ccn", hosts: ["ccn-*.fybe.jp"], sessionDuration: "720h", email: "a@b", serviceTokenId: "tok" });
+  const upd = f.calls.findIndex((c) => c.slice(0, 4).join(" ") === "zero-trust access applications update");
+  expect(f.body(upd).oauth_configuration).toEqual(oauth);
+  // 無ければ足さない
+  const g = fakeCf({ apps: [{ id: "app-1", name: "ccn", aud: "aud-1" }] });
+  await ensureAccessApp(g.cf, { name: "ccn", hosts: ["x"], sessionDuration: "720h", email: "a@b", serviceTokenId: "tok" });
+  expect("oauth_configuration" in g.body(1)).toBe(false);
 });
 
 test("ensureServiceToken returns the secret only on create", async () => {

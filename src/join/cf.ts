@@ -1,6 +1,6 @@
 // cf CLI の包み。Access アプリ、サービストークン、トンネル、DNS を「あるべき形」に揃える。cf は OAuth で動くので、秘密を argv に渡すことはない
 import type { Runner } from "../engine/agents";
-import { LEGACY_TUNNEL_PREFIX, TUNNEL_PREFIX } from "../names";
+import { LEGACY_TUNNEL_PREFIX, PUBLIC_PATHS, TUNNEL_PREFIX } from "../names";
 
 export type CfRunner = Runner; // 本物は cf を spawn し、-q を付ける
 export class CfError extends Error { constructor(msg: string) { super(msg); this.name = "CfError"; } }
@@ -22,7 +22,7 @@ async function call<T = unknown>(cf: CfRunner, args: string[]): Promise<T> {
 }
 const body = (o: unknown) => ["--body", JSON.stringify(o)];
 
-type App = { id: string; name: string; aud: string };
+type App = { id: string; name: string; aud: string; oauth_configuration?: unknown };
 type Policy = { name: string; decision: string; include: unknown[] };
 function appBody(o: { name: string; hosts: string[]; sessionDuration?: string; policies: Policy[] }) {
   return {
@@ -31,12 +31,14 @@ function appBody(o: { name: string; hosts: string[]; sessionDuration?: string; p
     app_launcher_visible: false, policies: o.policies,
   };
 }
-// 名前が name のアプリ、無ければ legacyNames（改名前の名前）のアプリを、新しい名前と中身で上書きする。aud は変わらない
-async function ensureApp(cf: CfRunner, name: string, legacyNames: string[], b: unknown): Promise<App> {
+// 名前が name のアプリ、無ければ legacyNames（改名前の名前）のアプリを、新しい名前と中身で上書きする。aud は変わらない。
+// update は全文を送るので、ダッシュボードで入れた Managed OAuth（oauth_configuration）は、一覧に載っていれば引き継ぐ
+async function ensureApp(cf: CfRunner, name: string, legacyNames: string[], b: Record<string, unknown>): Promise<App> {
   const apps = await call<App[]>(cf, ["zero-trust", "access", "applications", "list"]);
   const found = [name, ...legacyNames].map((n) => (apps ?? []).find((a) => a.name === n)).find(Boolean);
+  const keep = found?.oauth_configuration ? { oauth_configuration: found.oauth_configuration } : {};
   return found
-    ? call<App>(cf, ["zero-trust", "access", "applications", "update", found.id, ...body(b)])
+    ? call<App>(cf, ["zero-trust", "access", "applications", "update", found.id, ...body({ ...b, ...keep })])
     : call<App>(cf, ["zero-trust", "access", "applications", "create", ...body(b)]);
 }
 
@@ -52,10 +54,10 @@ export async function ensureAccessApp(cf: CfRunner, o: { name: string; legacyNam
   return { id: app.id, aud: app.aud };
 }
 
-// Bypass アプリ（BYPASS_APP）。<host>/install だけ Access を外す
+// Bypass アプリ（BYPASS_APP）。<host>/install と <host>/skill.md（PUBLIC_PATHS）だけ Access を外す。1アプリの domain は 50 件まで
 export async function ensureBypassApp(cf: CfRunner, o: { name: string; legacyNames?: string[]; hosts: string[] }): Promise<{ id: string }> {
   const app = await ensureApp(cf, o.name, o.legacyNames ?? [], appBody({
-    name: o.name, hosts: o.hosts.map((h) => `${h}/install`),
+    name: o.name, hosts: o.hosts.flatMap((h) => PUBLIC_PATHS.map((p) => `${h}${p}`)),
     policies: [{ name: "public", decision: "bypass", include: [{ everyone: {} }] }],
   }));
   return { id: app.id };
