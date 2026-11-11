@@ -6,16 +6,18 @@
 
 旧名を `rg -nP '(?<![A-Za-z0-9])cc(\.|-[A-Za-z0-9*-]+\.)fybe\.jp'` で探した。
 
-| 場所 | 結果 |
-| --- | --- |
-| 3台の `~/.config/ccn/ccn.json` | `domain` は `ccn.fybe.jp`、`entry` は `https://ccn.fybe.jp`。直すものは無かった |
-| `~/.config/ccn/child.md`（3台）と、正本の `skills/ccn/child.md` | 2行目に「移行の間は https://cc.fybe.jp も」がある。この PR では直していない |
-| `~/.config/ccn/legacy-cc.json`、`legacy-session-inbox-20261111/` | 退避の控え。ノードは読まない |
-| `~/.cloudflared/session-inbox.yml` | 改名前の `cc-node-pro.fybe.jp` を持つ古い設定。これを使う cloudflared は動いていない |
-| `~/.claude` の CLAUDE.md、settings、hooks | 無かった。skills はリンク先の `ccn/child.md` だけ |
-| `~/.cam/profiles/*/` の CLAUDE.md と settings | 無かった |
-| リポジトリの `src` | `src/config.ts` のコメント2か所だけ |
-| リポジトリの `CLAUDE.md` | 25行目に「入口（cc.fybe.jp）」がある。この PR では直していない |
+| 機械 | 場所 | 結果 |
+| --- | --- | --- |
+| 3台 | `~/.config/ccn/ccn.json` | `domain` は `ccn.fybe.jp`、`entry` は `https://ccn.fybe.jp`。直すものは無かった |
+| 3台 | `~/.config/ccn/child.md` | 2行目に「移行の間は https://cc.fybe.jp も」がある。正本の `skills/ccn/child.md` も同じ。この PR では直していない |
+| konaito-pro | `~/.config/ccn/legacy-cc.json`、`legacy-session-inbox-20261111/` | 退避の控え。ノードは読まない。incertotech と vm にも `legacy-session-inbox-20261111/` がある |
+| konaito-pro | `~/.cloudflared/session-inbox.yml` | 改名前の `cc-node-pro.fybe.jp` を持つ古い設定。これを使う cloudflared は動いていない |
+| konaito-pro | `~/.claude` の CLAUDE.md、settings、hooks、skills | 無かった。skills はリンク先の `ccn/child.md` だけ |
+| konaito-pro | `~/.cam/profiles/*/` の CLAUDE.md と settings、`~/.agents/skills` | 無かった。`~/.agents/skills` はリンク先の `ccn/child.md` だけ |
+| incertotech | `~/.claude/CLAUDE.md`、`settings.json`、`hooks` | 無かった |
+| vm | `~/.claude/CLAUDE.md`、`settings.json` | 無かった |
+| リポジトリ | `src` | `src/config.ts` のコメント2か所だけ |
+| リポジトリ | `CLAUDE.md` | 25行目に「入口（cc.fybe.jp）」がある。この PR では直していない |
 
 ## 消したもの
 
@@ -57,7 +59,7 @@ curl の結果（前後で同じ）。
 401 には4ホストとも `www-authenticate: Bearer realm="OAuth"` が付いていた。
 
 - `dig +short @1.1.1.1` と、fybe.jp の権威 NS に直接聞いた `dig +short` は、4つの旧名とも空だった。消す前は Cloudflare の IP を返していた。
-- 手元のキャッシュで旧名に届いた curl は、530 か 404 を返した。ノードには届いていない。
+- konaito-pro の curl は、消した後も旧名で 530 か 404 を返した。macOS のローカルの DNS キャッシュ（`dscacheutil -q host`）が古い IP を持っていたため。上流のリゾルバ（LAN のルーターと ISP の2つ）は空を返した。530 と 404 は Cloudflare の応答で、ノードには届いていない。
 - `ccn peers` は3台とも、3つのノードが `https://ccn-<name>.fybe.jp` で healthy だった。
 - `ccn doctor` の外からの API は3台とも 200。常駐の node と tunnel は running。
 - `cf tunnels list` で `ccn-incertotech`、`ccn-konaito-pro`、`ccn-vm` が healthy。
