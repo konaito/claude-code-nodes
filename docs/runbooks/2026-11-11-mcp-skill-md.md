@@ -23,9 +23,20 @@ ccn update
 
 cf にログイン済みの機械（konaito-pro）で、setup をやり直す。Bypass アプリ `ccn-install` の宛先が、ホストごとに `/install` と `/skill.md` の2つになる。Access アプリ、サービストークン、aud は変わらない。
 
+setup は Access アプリ `ccn` と `ccn-install` を全文で上書きする。`--hosts` には、今の Access アプリ `ccn` のホスト名をそのまま渡す。先に今の値を控える。
+
+```bash
+cf zero-trust access applications list > /tmp/access-before.json
+jq -r '(.result // .)[] | select(.name=="ccn" or .name=="ccn-install") | [.name, .aud, (.self_hosted_domains|join(","))] | @tsv' /tmp/access-before.json
+```
+
+2026-11-11 の改名の後は、旧のホスト名を片付けていないので、`ccn` のホスト名は4つのはず（`docs/runbooks/2026-11-11-ccn-rename.md` の手順2と6）。控えの値と同じなら、次のとおり渡す。違えば控えの値を渡す。
+
 ```bash
 ccn setup --hosts 'ccn-*.fybe.jp,ccn.fybe.jp,cc-*.fybe.jp,cc.fybe.jp'
 ```
+
+ダッシュボードで足した方針や設定は、setup の全文送りで消える。控えと見比べる。
 
 確認する。
 

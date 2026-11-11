@@ -197,6 +197,19 @@ test("read_messages cuts at max_chars and the cursor resumes after the last show
   expect(next.startsWith("1".repeat(600))).toBe(true);
 });
 
+test("reading an exited session with a live-era cursor hints to start over from 0", async () => {
+  const OLD = "aaaaaaaa-0000-0000-0000-000000000000";
+  const past = { id: OLD, kind: "node", capabilities: caps(false), cwd: "/home/u/x", state: "exited", startedAt: 1, lastActivityAt: 1 };
+  const msgs = [{ type: "assistant", message: { content: "done" } }];
+  const { app } = harness({ history: { list: async () => [past], get: async () => past, count: async () => 1, messages: async (_: string, after = 0) => ({ messages: msgs.slice(after), next: after < 1 ? 1 : undefined }) } as unknown as Deps["history"] });
+  const c = await connect(app);
+  const stale = text(await c.callTool({ name: "read_messages", arguments: { session: OLD, after: 34, wait_seconds: 0 } }));
+  expect(stale).toContain("[hint] nothing after 34");
+  expect(stale).toContain("stop=exited");
+  const fresh = text(await c.callTool({ name: "read_messages", arguments: { session: OLD, after: 0, wait_seconds: 0 } }));
+  expect(fresh).toMatch(/^done\nstop=exited state=exited pending=0 cursor=1 /);
+});
+
 test("capability errors come back as tool errors with the API's message", async () => {
   const term = { pid: 7, cwd: "/home/u/t", kind: "interactive", startedAt: 2, sessionId: "term1-0000-0000", status: "busy" } as const;
   const { app } = harness({ agents: async () => [term] });

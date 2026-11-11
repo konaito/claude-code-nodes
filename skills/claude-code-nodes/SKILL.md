@@ -46,32 +46,31 @@ MCP の口は `{{ORIGIN}}/mcp`（Streamable HTTP、状態なし、POST だけ）
 claude mcp add --transport http ccn http://127.0.0.1:4322/mcp
 ```
 
-### ノード用サービストークンを持つ機械から
+### ノード用サービストークンで外から
 
-Access のサービストークンをヘッダで送る。秘密をコマンドの引数や設定ファイルに書かず、`headersHelper` で手元のファイルから読む。次をプロジェクトの `.mcp.json` に書く。
+ノードを入れていない機械やスクリプトから入口を呼ぶ道。ノードのある機械は、前の節の 127.0.0.1 で足りる。
 
-```json
-{
-  "mcpServers": {
-    "ccn": {
-      "type": "http",
-      "url": "{{ORIGIN}}/mcp",
-      "headersHelper": "jq -c '{\"CF-Access-Client-Id\": .serviceToken.clientId, \"CF-Access-Client-Secret\": .serviceToken.clientSecret}' ~/.config/ccn/ccn.json"
-    }
-  }
-}
+Access のサービストークンをヘッダで送る。秘密をコマンドの引数や MCP の設定に書かず、Claude Code の `headersHelper` で手元のファイルから読む。ファイルはノードの `ccn.json` と同じ形（`serviceToken` の `clientId` と `clientSecret`）で、0600 にする。
+
+```bash
+cat > ~/.config/ccn/mcp-headers.sh <<'SH'
+#!/bin/sh
+exec jq -c '{"CF-Access-Client-Id": .serviceToken.clientId, "CF-Access-Client-Secret": .serviceToken.clientSecret}' ~/.config/ccn/ccn.json
+SH
+chmod 700 ~/.config/ccn/mcp-headers.sh
+claude mcp add-json --scope user ccn '{"type":"http","url":"{{ORIGIN}}/mcp","headersHelper":"~/.config/ccn/mcp-headers.sh"}'
 ```
 
 ### OAuth で（Claude Code、claude.ai のカスタムコネクタ）
 
-ノードの持ち主が Access アプリで Managed OAuth を有効にしているときだけ使える。有効なら、未認証の要求に Access が 401 と OAuth の案内を返し、クライアントはブラウザでのログインに進む。
+ノードの持ち主が Access アプリで Managed OAuth を有効にしているときだけ使える。有効なら、未認証の要求に Access が 401 と OAuth の案内を返し、クライアントはブラウザでのログインに進む。この道は、まだ本番で通していない。
 
 ```bash
 claude mcp add --transport http ccn {{ORIGIN}}/mcp
 # Claude Code の中で /mcp を開き、ccn を選んでブラウザでログインする
 ```
 
-claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログインする。OAuth で来た呼び手は email なので、`as` は効かず、子の `parent` は email になる。
+claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログインする。OAuth で来た呼び手が email として届くなら、`as` は効かず、子の `parent` は email になる。
 
 ## ツール
 
@@ -105,7 +104,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | --- | --- | --- |
 | result | ターンが終わり、返事が出そろった | 読んで次を決める |
 | permission | 子がツールの承認を待っている | `[pending]` 行の requestId で `ccn:answer_permission` |
-| exited | 子のプロセスが終わった | 続けるなら `ccn:create_session` に `resume=<id>` |
+| exited | 子のプロセスが終わった | 続けるなら `ccn:create_session` に `resume=<id>`。終わった後の会話は位置で数え直すので、読み直すときは `after=0` |
 | timeout | まだ動いている | 同じ `session` で `after=<cursor>` を渡して呼び直す |
 | truncated | 文字数の上限に達した | `after=<cursor>` で続きを読む |
 
