@@ -1,6 +1,6 @@
 // 引数の分解。--k v、--k=v、--flag を flags に、残りを words に入れる。値を取らない旗は BOOLS
 export type Parsed = { words: string[]; flags: Record<string, string | true> };
-const BOOLS = new Set(["mine", "help", "fork", "yes", "cf-token-stdin"]);
+const BOOLS = new Set(["mine", "help", "fork", "yes", "cf-token-stdin", "json"]);
 
 export function parseArgs(argv: string[]): Parsed {
   const words: string[] = [];

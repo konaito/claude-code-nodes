@@ -25,8 +25,8 @@ Claude Code Nodes は、Claude Code がログイン済みの機械ごとに1つ�
 - 受け口は子を立てると、返事に `子: <peer>/<sessionId>` の行を書いて、すぐターンを終える。そのあとは、この子と直接やりとりする。
 - 受け口は子を自分と同じ権限モードで立て、子の最初のターンの承認には受け口が答える。受け口のモードと依頼の範囲を超える操作は断り、返事でそのことを伝える。受け口自身を `default` で立てると、受け口の Bash にも承認が要る。
 - 行き先を決められないとき、受け口は候補を並べた文で聞き返す。そのときは答えを `ccn:send_message` で受け口に送る。
-- 読むだけの依頼（ファイルの中身、git log、状態を見て答える）には、受け口が子を立てずに答える。
-- 受け口の場所、許された根（roots）、最近使われた場所は `ccn:list_places` で読める。
+- どこにどんなディレクトリがあるか、セッションと機械の状態は、受け口が子を立てずに答える。ファイルの中身や git log を読む依頼は、受け口が行き先に子を立てて任せる。
+- 受け口の場所、許された根（roots）、最近使われた場所、行き先の候補（roots と Documents の直下のディレクトリごとの README の先頭、git の remote、最近使ったか）は `ccn:list_places` で読める。`query` で絞れる。
 
 ## セッションの種類
 
@@ -91,7 +91,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | `ccn:list_peers` | ノードの一覧と healthy、down | なし |
 | `ccn:list_sessions` | 1つのノードのセッション一覧。既定は終わっていないものだけ | `peer`、`parent`、`include_exited`、`limit` |
 | `ccn:get_session` | 1つの詳細、保留中の承認、`cursor` | `peer`、`session` |
-| `ccn:list_places` | 受け口、許された根、最近使われた場所 | `peer`、`limit` |
+| `ccn:list_places` | 受け口、許された根、最近使われた場所、行き先の候補（`places`） | `peer`、`limit`、`query`、`places_limit` |
 | `ccn:create_session` | 子を立てる。`cwd` を省くと受け口、`prompt` を省くと1通目を待つ | `peer`、`cwd`、`prompt`、`permission_mode`、`model`、`resume`、`fork`、`as`、`as_session` |
 | `ccn:send_message` | 文を1つ送り、送る前の `cursor` を返す | `peer`、`session`、`text`、`as`、`as_session` |
 | `ccn:read_messages` | `after` より後を読み、ターンの終わりまで最大50秒待つ | `peer`、`session`、`after`、`wait_seconds`、`max_chars` |
@@ -114,7 +114,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 
 行き先が分かっているときは、受け口を通さずに立ててよい。
 
-1. `ccn:list_places` で受け口、許された根、最近使われた場所を見る。
+1. `ccn:list_places` で受け口、許された根、最近使われた場所、行き先の候補を見る。候補が多いときは `query` に語を入れて絞る。
 2. `ccn:create_session` に `cwd`（許された根の下の絶対パス）を渡す。最初の文があれば `prompt` に入れる。`as` に役割（例 lead）、`as_session` に自分の sessionId を入れると、`parent` で自分の子だけを探せる。返る `id`、`parent`、`cursor` を覚える。
 3. `prompt` を省いたときは、`ccn:send_message` で1通目を送る。
 4. `ccn:read_messages` に `after` として `cursor` を渡して待つ。結果の最後の行の `stop` で次を決める。

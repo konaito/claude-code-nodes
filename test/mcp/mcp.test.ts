@@ -2,7 +2,7 @@
 import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createApp, type Deps } from "../../src/api/app";
@@ -318,6 +318,52 @@ test("list_places returns the lobby, roots and recent directories without the lo
   expect(r.roots).toEqual(["/home/u", tmpdir()]);
   expect(r.recent.map((x: { cwd: string }) => x.cwd).sort()).toEqual(["/home/u/proj", "/home/u/x"]);
   expect(r.note).toBeUndefined();
+});
+
+test("list_places adds candidate places with README, remote and last use, narrowed by query, without secrets", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-mcp-places-")));
+  mkdirSync(join(root, "Documents", "notes", ".git"), { recursive: true });
+  writeFileSync(join(root, "Documents", "notes", "README.md"), "# Notes\nメモ\n");
+  writeFileSync(join(root, "Documents", "notes", ".git", "config"), '[remote "origin"]\n\turl = https://bob:FAKE-TOKEN-1@github.com/o/notes.git\n');
+  mkdirSync(join(root, "other"));
+  mkdirSync(join(root, ".ssh"));
+  writeFileSync(join(root, ".ssh", "README.md"), "FAKE-SSH-2\n");
+  const { app, store } = harness({ roots: [root], home: root, lobby: join(root, "lobby") });
+  const used = new FakeDriver({ id: "use1", capabilities: caps(true) });
+  used.cwd = join(root, "Documents", "notes", "sub"); // 候補の下で動いたセッションも、その候補を使ったことにする
+  const summary = used.summary.bind(used);
+  used.summary = () => ({ ...summary(), lastActivityAt: 1234 });
+  store.add(used);
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "list_places", arguments: {} }));
+  expect(r.places.map((p: { path: string }) => p.path)).toEqual([join(root, "Documents", "notes"), join(root, "other")]);
+  expect(r.places[0]).toMatchObject({ name: "notes", remote: "https://github.com/o/notes.git", readme: ["# Notes"], lastUsedAt: 1234 });
+  expect(r).toMatchObject({ total: 2, truncated: false, roots: [root] });
+  expect(r.recent.map((x: { cwd: string }) => x.cwd)).toContain(join(root, "Documents", "notes", "sub"));
+  const q = json(await c.callTool({ name: "list_places", arguments: { query: "notes" } }));
+  expect(q.places).toHaveLength(1);
+  expect(q.places[0].readme).toEqual(["# Notes", "メモ"]);
+  const all = JSON.stringify(r) + JSON.stringify(q);
+  expect(all).not.toContain("FAKE-");
+  expect(all).not.toContain("bob");
+});
+
+test("list_places on an older peer without /api/places keeps lobby, roots and recent and says so in note", async () => {
+  const registry = new StaticRegistry([{ name: "vm", url: "https://ccn-vm.fybe.jp", status: "healthy", self: true }, { name: "old", url: "https://ccn-old.fybe.jp", status: "healthy", self: false }]);
+  const oldFetch = (async (input: RequestInfo | URL) => {
+    const path = new URL(new Request(input).url).pathname;
+    if (path === "/api/host") return Response.json({ name: "old", roots: ["/r"], lobby: "/r/lobby" });
+    if (path === "/api/sessions") return Response.json([{ id: "99999999-0000-0000-0000-000000000000", kind: "node", state: "idle", cwd: "/r/a", lastActivityAt: 5 }]);
+    return Response.json({ error: "not found" }, { status: 404 });
+  }) as unknown as typeof fetch;
+  const { app } = harness({ registry, relay: new Relay({ registry, nodeName: "vm", serviceToken: { clientId: "c", clientSecret: "s" }, fetchFn: oldFetch }) });
+  const c = await connect(app);
+  const r = await c.callTool({ name: "list_places", arguments: { peer: "old" } });
+  expect(r.isError).toBeFalsy();
+  const b = json(r);
+  expect(b).toMatchObject({ peer: "old", lobby: "/r/lobby", roots: ["/r"], recent: [{ cwd: "/r/a", lastActivityAt: 5 }] });
+  expect(b.places).toBeUndefined();
+  expect(b.note).toContain("older ccn without places");
 });
 
 test("create_session without a prompt on an older peer explains that it needs cwd and prompt", async () => {

@@ -246,3 +246,34 @@ test("show without a target shows this Claude Code session (CLAUDE_CODE_SESSION_
   expect(await main(["show"], { ...bare, err: (s) => errs.push(s) })).toBe(1);
   expect(errs.join("\n")).toContain("対象");
 });
+
+test("places prints one line per place with remote and last use, passes words and --limit, and --json prints the body", async () => {
+  const body = { name: "pro", lobby: "/home/u/.local/share/ccn/lobby", roots: ["/home/u"], places: [
+    { name: "notes", path: "/home/u/Documents/notes", remote: "https://github.com/o/notes.git", readme: ["# Notes"], lastUsedAt: Date.UTC(2026, 10, 10, 3) },
+    { name: "x", path: "/home/u/x", remote: null, readme: [], lastUsedAt: null },
+  ], total: 5, truncated: true };
+  const urls: string[] = [];
+  const fetchFn = (async (i: RequestInfo | URL, init?: RequestInit) => { const r = new Request(i, init); urls.push(r.url); return Response.json(body); }) as typeof fetch;
+  const c = ctx(fetchFn);
+  expect(await main(["places", "notes", "greeter", "--limit", "5"], c)).toBe(0);
+  expect(urls[0]).toBe("http://127.0.0.1:4323/api/places?q=notes+greeter&limit=5");
+  expect(c.lines[0]).toBe("lobby: /home/u/.local/share/ccn/lobby");
+  expect(c.lines[1]).toBe("roots: /home/u");
+  expect(c.lines[2]).toMatch(/^\/home\/u\/Documents\/notes  remote=https:\/\/github.com\/o\/notes.git  used=2026-11-1\d$/);
+  expect(c.lines[3]).toBe("  | # Notes");
+  expect(c.lines[4]).toBe("/home/u/x");
+  expect(c.lines[5]).toContain("5 件のうち 2 件");
+  const j = ctx(fetchFn);
+  expect(await main(["places", "--json"], j)).toBe(0);
+  expect(urls[1]).toBe("http://127.0.0.1:4323/api/places");
+  expect(JSON.parse(j.lines.join("\n"))).toEqual(body);
+});
+
+test("places on an old node says the node needs ccn update", async () => {
+  const n = fakeNode();
+  const errs: string[] = [];
+  const c = ctx(n.fetchFn, { err: (s) => errs.push(s) });
+  expect(await main(["places", "--peer", "vm"], c)).toBe(1);
+  expect(errs.join("\n")).toContain("places に対応していない古い版");
+  expect(n.calls[0]!.url).toBe("https://ccn-vm.fybe.jp/api/places");
+});

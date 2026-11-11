@@ -13,14 +13,14 @@ export const LOBBY_CLAUDE_MD = "CLAUDE.md";
 export const LOBBY_SETTINGS = [".claude", "settings.json"]; // 本人が足す分は同じ場所の settings.local.json に書く
 
 // 受け口が承認なしで使える命令。ひな形の手順に要るものだけにする。書き込み、削除、ネットワークに出る命令は入れない。
-// ccn は下位命令ごとに許す（update、uninstall、node、setup、serve、send などは入れない）。読むのは roots の下だけ。
-// git は入れない。git -C <dir> remote -v を許す規則は * を下位命令の前に置くことになり、-c で別の program を走らせる形まで通るため。
-// remote はひな形で <dir>/.git/config を読ませる
-export const LOBBY_CLI_SUBCOMMANDS = ["peers", "ls", "show", "new", "run", "read", "allow", "deny", "stop"] as const;
+// ccn は下位命令ごとに許す（update、uninstall、node、setup、serve、send などは入れない）。
+// ファイルを読む規則（Read）は入れない。Read(//<root>/**) を許すと、grep -r、rg、ワイルドカードの cat や head が deny をすり抜けたため（docs/results/2026-11-11-lobby.md）。
+// 行き先を探す読み取りは ccn places（ノードが README と .git/config だけを読み、秘密の置き場を辿らない）に寄せる。git も入れない
+export const LOBBY_CLI_SUBCOMMANDS = ["peers", "places", "ls", "show", "new", "run", "read", "allow", "deny", "stop"] as const;
 
 // 承認の有無にかかわらず読ませない秘密の置き場。roots とホームのそれぞれを基点にする（roots がホームでない機械や、allow が効かない bypassPermissions でも塞ぐため）。
 // deny は allow より先に評価され、allow で穴を開けられない（公式の permissions の文書）。Read の deny は Edit と Write、Bash の cat、head などにも当たる。
-// 当たらないのは、ファイル名を書かずに読む命令（grep -r）と、ファイルを自分で開くスクリプト
+// 当たらないのは、パスを文字どおり書かずに読む命令（grep -r、rg、ワイルドカード）と、ファイルを自分で開くスクリプト。ccn places の判定（isSecretPath）も同じ一覧を使う
 export const LOBBY_SECRET_DIRS = [".ssh", ".gnupg", ".aws", ".cloudflared", relativeToHome(configDirOf), relativeToHome(legacyConfigDirOf), ".config/gh", "Library/Keychains"] as const;
 export const LOBBY_SECRET_FILES = [".netrc", ".claude/.credentials.json"] as const;
 // どこにあっても読ませないファイル名（//** はファイルシステムの根から）
@@ -30,8 +30,34 @@ function relativeToHome(of: (home: string) => string): string { return relative(
 // Read の // は絶対パス（先頭の / が1本だと設定ファイルの場所からの相対になる）
 const readRule = (abs: string) => `Read(/${abs})`;
 
+// 秘密の置き場の基点。roots とノードのホーム
+export const secretBases = (roots: string[], s: LobbySecrets = {}): string[] => [...new Set([...roots, s.home ?? homedir()].map((r) => resolve(r)))];
+
+// 名前が LOBBY_SECRET_NAMES に当たるか（.env、.env.*、*.pem、*.key）
+const SECRET_NAME_RES = LOBBY_SECRET_NAMES.map((g) => new RegExp(`^${g.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".")}$`));
+const secretName = (name: string) => SECRET_NAME_RES.some((re) => re.test(name));
+
+// abs（絶対パス）が受け口の deny と同じ秘密の置き場に当たるか。ccn places がノードのプロセスで読むファイルとディレクトリを、この判定で選ぶ。
+// ノードのプロセスには deny が効かないので、deny と同じ一覧をここでも使う。bases は symlink を解いた形も渡す
+export function isSecretPath(abs: string, bases: string[], configFile?: string): boolean {
+  const p = resolve(abs);
+  for (const b of bases) {
+    for (const d of LOBBY_SECRET_DIRS) { const dir = join(b, d); if (p === dir || p.startsWith(dir + sep)) return true; }
+    for (const f of LOBBY_SECRET_FILES) if (p === join(b, f)) return true;
+  }
+  if (secretName(p.slice(p.lastIndexOf(sep) + 1))) return true;
+  if (configFile) { const f = resolve(configFile); if (p === f || p === join(dirname(f), TUNNEL_TOKEN_FILE)) return true; }
+  return false;
+}
+
+// dir の下に秘密の置き場があるか（~/Library の下の Keychains など）。そういうディレクトリは ccn places の候補にしない
+export function containsSecretDir(abs: string, bases: string[]): boolean {
+  const p = resolve(abs);
+  return bases.some((b) => LOBBY_SECRET_DIRS.some((d) => join(b, d).startsWith(p + sep)));
+}
+
 export function lobbyDeny(roots: string[], s: LobbySecrets = {}): string[] {
-  const bases = [...new Set([...roots, s.home ?? homedir()].map((r) => resolve(r)))];
+  const bases = secretBases(roots, s);
   const rules: string[] = [];
   for (const b of bases) {
     for (const d of LOBBY_SECRET_DIRS) rules.push(readRule(`${join(b, d)}/**`));
@@ -50,11 +76,7 @@ export function lobbyDeny(roots: string[], s: LobbySecrets = {}): string[] {
 export function lobbySettings(roots: string[], s: LobbySecrets = {}): { permissions: { allow: string[]; deny: string[] } } {
   return {
     permissions: {
-      allow: [
-        ...LOBBY_CLI_SUBCOMMANDS.map((c) => `Bash(${CLI_NAME} ${c} *)`),
-        // ls、head、cat の対象もこれで決まる。秘密の置き場は deny が先に当たる
-        ...roots.map((r) => readRule(`${resolve(r)}/**`)),
-      ],
+      allow: LOBBY_CLI_SUBCOMMANDS.map((c) => `Bash(${CLI_NAME} ${c} *)`),
       deny: lobbyDeny(roots, s),
     },
   };

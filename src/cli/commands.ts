@@ -1,4 +1,4 @@
-// CLI の親向けの命令。peers、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
+// CLI の親向けの命令。peers、places、ls、show、new、send、read、run、wait、allow、deny、interrupt、stop。参加側の命令は join-commands.ts
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as resolvePath } from "node:path";
 import type { Config } from "../config";
@@ -27,9 +27,13 @@ export type Ctx = {
 };
 type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; input?: Record<string, unknown>; description?: string }>; cursor?: number };
 type Peer = { name: string; url: string; status: string; self: boolean };
+type PlacesBody = { name?: string; lobby?: string; roots?: string[]; places: Array<{ name: string; path: string; remote: string | null; readme: string[]; lastUsedAt: number | null }>; total: number; truncated: boolean };
+const day = (ms: number) => new Date(ms).toLocaleDateString("sv-SE"); // YYYY-MM-DD（手元の時刻）
 
 export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} peers                                   登録簿（ノードと状態）
+  ${CLI_NAME} places [<語>...] [--peer <名>] [--limit <n>] [--json]
+                                                       行き先の候補（roots と Documents の直下、README の先頭、remote、最近使ったか）。語で絞る
   ${CLI_NAME} ls [--peer <名>] [--mine]               セッション一覧（--mine は自分が立てた子）
   ${CLI_NAME} show [<対象>]                           1つの詳細と保留中の承認（対象を省くと、Claude Code の中なら自分のセッション）
   ${CLI_NAME} new [<dir> [<文>]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
@@ -125,6 +129,25 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
   switch (cmd) {
     case "peers": {
       for (const p of await peersOf(ctx)) ctx.out(`${p.name} ${p.status} ${p.url}${p.self ? " (self)" : ""}`);
+      return 0;
+    }
+    case "places": {
+      const c = clientFor(ctx.cfg, str(flags.peer), undefined, ctx.env);
+      const qs = new URLSearchParams();
+      if (rest.length) qs.set("q", rest.join(" "));
+      if (str(flags.limit)) qs.set("limit", str(flags.limit)!);
+      const path = `/api/places${qs.size ? `?${qs}` : ""}`;
+      const r = await request(c, "GET", path, undefined, ctx.fetchFn);
+      if (r.status === 404) { await r.body?.cancel().catch(() => {}); throw new CliError(1, `${c.peer} のノードは places に対応していない古い版。${c.peer} で ${CLI_NAME} update する`); }
+      const b = await readJson<PlacesBody>(c, "GET", path, r);
+      if (flags.json) { ctx.out(JSON.stringify(b, null, 1)); return 0; }
+      if (b.lobby) ctx.out(`lobby: ${b.lobby}`);
+      if (b.roots) ctx.out(`roots: ${b.roots.join(", ")}`);
+      for (const p of b.places) {
+        ctx.out([p.path, p.remote ? `remote=${p.remote}` : "", p.lastUsedAt ? `used=${day(p.lastUsedAt)}` : ""].filter(Boolean).join("  "));
+        for (const l of p.readme) ctx.out(`  | ${l}`);
+      }
+      ctx.out(b.truncated ? `(${b.total} 件のうち ${b.places.length} 件。語で絞る: ${CLI_NAME} places <語>)` : `(${b.total} 件)`);
       return 0;
     }
     case "ls": {

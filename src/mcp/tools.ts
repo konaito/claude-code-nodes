@@ -108,14 +108,28 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
 
   server.registerTool("list_places", {
     title: "List places",
-    description: "Show where a new session can start on one node: the lobby (the default when create_session gets no cwd), the allowed roots, and the directories of recent sessions, newest first. Use it before create_session when you need a cwd.",
-    inputSchema: { peer: peerArg, limit: z.number().int().min(1).max(50).optional().describe("Number of recent directories. Default 10") },
+    description: [
+      "Show where a new session can start on one node: the lobby (the default when create_session gets no cwd), the allowed roots, the directories of recent sessions (recent), and candidate directories (places).",
+      "places lists the directories directly under each root and under <root>/Documents, each with its absolute path, the first README line(s), the git remote url and lastUsedAt, recently used first. Give query (space-separated words matched against name, path, remote and README) to narrow it down and get up to 5 README lines.",
+      "The node reads only README files and git config to build it and skips dot directories and secret locations. Check total and truncated; when truncated, narrow with query. Use it before create_session when you need a cwd.",
+    ].join(" "),
+    inputSchema: {
+      peer: peerArg,
+      limit: z.number().int().min(1).max(50).optional().describe("Number of recent directories. Default 10"),
+      query: z.string().optional().describe("Words to narrow places, e.g. a project or repo name from the request"),
+      places_limit: z.number().int().min(1).max(300).optional().describe("Number of places. Default 60"),
+    },
     annotations: { readOnlyHint: true, openWorldHint: false },
   }, async (a) => run(async () => {
     const peer = a.peer || base.nodeName;
-    const [host, list] = await Promise.all([
+    const qs = new URLSearchParams();
+    if (a.query) qs.set("q", a.query);
+    if (a.places_limit) qs.set("limit", String(a.places_limit));
+    const [host, list, placesRes] = await Promise.all([
       call<{ roots?: string[]; lobby?: string }>(base, "GET", a.peer, "/api/host"),
       call<SessionSummary[]>(base, "GET", a.peer, "/api/sessions"),
+      // 古い版のノードには /api/places が無い（404）。そのときは places を省き、note で伝える
+      base.api(base.caller, "GET", a.peer, `/api/places${qs.size ? `?${qs}` : ""}`),
     ]);
     const seen = new Set<string>();
     const recent: Array<{ cwd: string; lastActivityAt: number }> = [];
@@ -126,9 +140,21 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       seen.add(s.cwd);
       recent.push({ cwd: s.cwd, lastActivityAt: s.lastActivityAt });
     }
+    const notes: string[] = [];
+    if (!host.lobby) notes.push(`${peer} runs an older ccn without a lobby; give create_session both cwd and prompt`);
+    let places: Record<string, unknown> = {};
+    if (placesRes.status >= 200 && placesRes.status < 300) {
+      const p = placesRes.body as { places: unknown[]; total: number; truncated: boolean };
+      places = { places: p.places, total: p.total, truncated: p.truncated };
+    } else if (placesRes.status === 404) {
+      notes.push(`${peer} runs an older ccn without places; pick from roots and recent`);
+    } else {
+      const b = (placesRes.body ?? {}) as { error?: string };
+      notes.push(`places failed on ${peer}: ${placesRes.status} ${b.error ?? ""}`.trim());
+    }
     return {
-      peer, lobby: host.lobby ?? null, roots: host.roots ?? [], recent: recent.slice(0, a.limit ?? 10),
-      ...(host.lobby ? {} : { note: `${peer} runs an older ccn without a lobby; give create_session both cwd and prompt` }),
+      peer, lobby: host.lobby ?? null, roots: host.roots ?? [], recent: recent.slice(0, a.limit ?? 10), ...places,
+      ...(notes.length ? { note: notes.join("; ") } : {}),
     };
   })());
 

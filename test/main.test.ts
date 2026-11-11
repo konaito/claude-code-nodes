@@ -29,6 +29,8 @@ test("start writes the lobby's CLAUDE.md and .claude/settings.json before servin
   console.log = log;
   try {
     expect(readFileSync(join(lobby, "CLAUDE.md"), "utf8")).toContain("受け口（Claude Code Nodes、dev）");
-    expect(JSON.parse(readFileSync(join(lobby, ".claude", "settings.json"), "utf8")).permissions.allow).toContain(`Read(/${root}/**)`);
+    const allow = JSON.parse(readFileSync(join(lobby, ".claude", "settings.json"), "utf8")).permissions.allow as string[];
+    expect(allow).toContain("Bash(ccn places *)");
+    expect(allow.some((r) => r.startsWith("Read"))).toBe(false);
   } finally { server.stop(true); }
 });

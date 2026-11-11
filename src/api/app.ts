@@ -106,6 +106,10 @@ async function route(req: Request, s: Sessions, caller: Caller): Promise<Respons
     if (parts[1] === "host" && parts.length === 2 && m === "GET") return json(await s.host());
     if (parts[1] === "events" && parts.length === 2 && m === "GET") return s.allEvents();
     if (parts[1] === "peers" && parts.length === 2 && m === "GET") return json(await s.peers());
+    if (parts[1] === "places" && parts.length === 2 && m === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? "");
+      return json(await s.places(url.searchParams.get("q"), Number.isFinite(limit) && limit > 0 ? limit : null));
+    }
     if (parts[1] === "sessions") {
       const [, , id, sub, rid] = parts;
       if (!id) {

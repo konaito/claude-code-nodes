@@ -56,15 +56,16 @@ test("the lobby template keeps the strings the page, MCP and docs depend on", ()
 
 const readSettings = (dir: string) => JSON.parse(readFileSync(join(dir, ".claude", "settings.json"), "utf8")) as { permissions: { allow: string[]; deny?: string[] } };
 
-test("ensureLobby writes .claude/settings.json with the ccn subcommands and absolute Read rules for each root", () => {
+test("ensureLobby writes .claude/settings.json with the ccn subcommands and no Read rule in allow", () => {
   const home = mkdtempSync(join(tmpdir(), "ccn-lobby-home-"));
   const dir = join(home, "lobby");
   ensureLobby({ dir, appRoot, nodeName: "vm", roots: [home, "/srv/work"] });
   const s = readSettings(dir);
   expect(s.permissions.allow).toContain(`Bash(${CLI_NAME} new *)`);
   expect(s.permissions.allow).toContain(`Bash(${CLI_NAME} allow *)`);
-  expect(s.permissions.allow).toContain(`Read(/${home}/**)`); // // で始まる絶対パス
-  expect(s.permissions.allow).toContain("Read(//srv/work/**)");
+  expect(s.permissions.allow).toContain(`Bash(${CLI_NAME} places *)`);
+  // Read(//<root>/**) を許すと grep -r、rg、ワイルドカードの cat が deny をすり抜けた。読み取りは ccn places に寄せる
+  expect(s.permissions.allow.some((r) => r.startsWith("Read"))).toBe(false);
   expect(Object.keys(s)).toEqual(["permissions"]);              // hooks、env、additionalDirectories などは置かない
   expect(Object.keys(s.permissions)).toEqual(["allow", "deny"]);
   expect(s.permissions.deny).toContain(`Read(/${home}/.ssh/**)`);
@@ -110,13 +111,14 @@ test("the lobby's allow list has nothing that names a secret place or carves an 
 test("the lobby's allow list has no write, delete, network, git or broad rules", () => {
   const allow = lobbySettings(["/home/u"], { home: "/home/u" }).permissions.allow;
   for (const rule of allow) {
-    // 許すのは ccn の決まった下位命令と、roots の下の Read だけ
-    expect(rule).toMatch(new RegExp(`^(Bash\\(${CLI_NAME} (peers|ls|show|new|run|read|allow|deny|stop) \\*\\)|Read\\(//.+/\\*\\*\\))$`));
+    // 許すのは ccn の決まった下位命令だけ（Read、Grep、Glob も許さない）
+    expect(rule).toMatch(new RegExp(`^Bash\\(${CLI_NAME} (peers|places|ls|show|new|run|read|allow|deny|stop) \\*\\)$`));
   }
   const banned = ["Edit", "Write", "WebFetch", "WebSearch", "Bash(*)", "Bash(git", "Bash(rm", "Bash(curl", "Bash(wget", `Bash(${CLI_NAME} *)`, `Bash(${CLI_NAME}:*)`, `${CLI_NAME} update`, `${CLI_NAME} uninstall`, `${CLI_NAME} send`, `${CLI_NAME} node`, `${CLI_NAME} setup`, `${CLI_NAME} serve`];
   for (const b of banned) expect(allow.some((r) => r === b || r.startsWith(b))).toBe(false);
   expect(allow).not.toContain("Bash");
   expect(allow).not.toContain("Read");
+  expect(allow).toHaveLength(10);
 });
 
 test("ensureLobby rewrites a changed settings.json and never touches settings.local.json", () => {
@@ -157,7 +159,12 @@ test("the lobby template tells the lobby to avoid the command shapes that always
   const md = readFileSync(join(dir, "CLAUDE.md"), "utf8");
   expect(md).toContain("settings.local.json");
   expect(md).toContain(`\`${join(home, "Documents")}\``); // ~ を使わずに絶対パスで書く
-  expect(md).toContain(".git/config");
+  expect(md).toContain(`${CLI_NAME} places`);
+  expect(md).toContain(`${CLI_NAME} places <語>`);
+  expect(md).not.toContain("head -20");      // README を head で読ませない
+  expect(md).not.toContain("git -C <dir>");  // remote は places に出る
+  expect(md).toContain("bypassPermissions の受け口では、deny のほかの許可の規則が効かない");
+  expect(md).toContain("子にも頼まない");    // 断られた読み出しを子に回さない
   expect(md).not.toContain("show $CLAUDE_CODE_SESSION_ID");
   expect(md).not.toContain("~/Documents");
 });

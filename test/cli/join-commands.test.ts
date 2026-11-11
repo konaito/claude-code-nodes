@@ -469,7 +469,8 @@ test("update --from writes the lobby and its CLAUDE.md from the installed templa
   const md = readFileSync(join(w.home, ".local", "share", "ccn", "lobby", "CLAUDE.md"), "utf8");
   expect(md).toContain("受け口（Claude Code Nodes、vm）");
   const settings = JSON.parse(readFileSync(join(w.home, ".local", "share", "ccn", "lobby", ".claude", "settings.json"), "utf8"));
-  expect(settings.permissions.allow).toContain(`Read(/${w.home}/**)`);
+  expect(settings.permissions.allow).toContain("Bash(ccn places *)");
+  expect((settings.permissions.allow as string[]).some((r) => r.startsWith("Read"))).toBe(false);
   expect(w.lines.join("\n")).toContain("CLAUDE.md と .claude/settings.json を書いた");
 });
 
