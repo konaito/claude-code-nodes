@@ -14,6 +14,7 @@ import { StaticRegistry } from "../../src/registry/registry";
 import { Relay } from "../../src/relay/relay";
 import { makeKeys } from "../helpers/jwt";
 import { describePending } from "../../src/sessions/pending";
+import { nodeFs, PlacesScanner, type PlacesFs } from "../../src/lobby/places";
 
 const caps = (p: boolean) => ({ send: true, permissions: p, interrupt: p, stop: p, events: p });
 const settle = () => new Promise((r) => setTimeout(r, 10));
@@ -374,4 +375,31 @@ test("create_session without a prompt on an older peer explains that it needs cw
   const r = await c.callTool({ name: "create_session", arguments: { peer: "old", cwd: "/r" } });
   expect(r.isError).toBe(true);
   expect(text(r)).toContain("older ccn");
+});
+
+// 止まるディレクトリのある places。走査は1つにまとまり、上限で打ち切られ、MCP と API に partial と note で伝わる
+test("list_places and /api/places return partial places with a note when a folder does not answer, sharing one scan", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ccn-mcp-places-hang-")));
+  mkdirSync(join(root, "ok"));
+  mkdirSync(join(root, "stuck"));
+  const stuck = join(root, "stuck");
+  let readdirs = 0;
+  const fs: PlacesFs = { ...nodeFs, readdir: (p) => { if (p === stuck) { readdirs++; return new Promise(() => {}); } return nodeFs.readdir(p); } };
+  const scanner = new PlacesScanner({ fs, deadlineMs: 1000, opMs: 100, cacheMs: 0 });
+  const { app } = harness({ roots: [root], home: root, lobby: join(root, "lobby"), places: scanner });
+  const get = () => app.fetch(new Request("http://127.0.0.1:4330/api/places")).then((r) => r.json() as Promise<Record<string, unknown>>);
+  const started = Date.now();
+  const [a, b] = await Promise.all([get(), get()]);
+  expect(Date.now() - started).toBeLessThan(800);
+  expect(scanner.scans).toBe(1);
+  expect(a).toEqual(b);
+  expect(a).toMatchObject({ partial: true, unreadable: [stuck], total: 1 });
+  expect((a.places as Array<{ name: string }>).map((p) => p.name)).toEqual(["ok"]);
+  expect(String(a.note)).toContain(stuck);
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "list_places", arguments: {} }));
+  expect(r).toMatchObject({ partial: true, unreadable: [stuck] });
+  expect(r.note).toContain("partial");
+  expect(scanner.scans).toBe(2);
+  expect(readdirs).toBe(1); // 2回目の走査では止まったディレクトリを開かない
 });

@@ -111,7 +111,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     description: [
       "Show where a new session can start on one node: the lobby (the default when create_session gets no cwd), the allowed roots, the directories of recent sessions (recent), and candidate directories (places).",
       "places lists the directories directly under each root and under <root>/Documents, each with its absolute path, the first README line(s), the git remote url and lastUsedAt, recently used first. Give query (space-separated words matched against name, path, remote and README) to narrow it down and get up to 5 README lines.",
-      "The node reads only README files and git config to build it and skips dot directories and secret locations. Check total and truncated; when truncated, narrow with query. Use it before create_session when you need a cwd.",
+      "The node reads only README files and git config to build it and skips dot directories, secret locations and, on macOS, the protected folders in the home (Desktop, Downloads, Library, Pictures, Music, Movies, Public, Applications). Check total and truncated; when truncated, narrow with query. The scan stops after 3 seconds: then partial is true, unreadable lists the folders that did not answer, and note says so. Use it before create_session when you need a cwd.",
     ].join(" "),
     inputSchema: {
       peer: peerArg,
@@ -144,8 +144,9 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     if (!host.lobby) notes.push(`${peer} runs an older ccn without a lobby; give create_session both cwd and prompt`);
     let places: Record<string, unknown> = {};
     if (placesRes.status >= 200 && placesRes.status < 300) {
-      const p = placesRes.body as { places: unknown[]; total: number; truncated: boolean };
-      places = { places: p.places, total: p.total, truncated: p.truncated };
+      const p = placesRes.body as { places: unknown[]; total: number; truncated: boolean; partial?: boolean; unreadable?: string[]; note?: string };
+      places = { places: p.places, total: p.total, truncated: p.truncated, ...(p.partial ? { partial: true, unreadable: p.unreadable ?? [] } : {}) };
+      if (p.partial) notes.push(`places on ${peer} is partial: ${p.note ?? "some folders did not answer in time"}`);
     } else if (placesRes.status === 404) {
       notes.push(`${peer} runs an older ccn without places; pick from roots and recent`);
     } else {

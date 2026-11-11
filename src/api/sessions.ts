@@ -1,6 +1,7 @@
 // セッションの監視と管理の処理。台帳（生きているもの）、agents（端末）、履歴（過去）を合成し、能力で振る舞いを決める
 import { resolve, sep } from "node:path";
 import { realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import type { Driver } from "../engine/driver";
 import type { AgentInfo } from "../engine/agents";
 import type { StartOptions } from "../engine/node-driver";
@@ -14,7 +15,7 @@ import { withFromLine } from "../identity/from-line";
 import type { McpOptions } from "../mcp/server";
 import { HttpError } from "./errors";
 import { lobbySettingsFor, secretBases } from "../lobby/lobby";
-import { scanPlaces, selectPlaces, usageOf, type ScannedPlace } from "../lobby/places";
+import { PlacesScanner, selectPlaces, usageOf } from "../lobby/places";
 import { sse } from "./sse";
 
 export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: unknown; load: number[] };
@@ -35,12 +36,12 @@ export type Deps = {
   home?: string;       // 秘密の置き場の基点（places が辿らない場所）。無ければ os.homedir()
   configFile?: string; // 読んでいる設定ファイル。places はこのファイルと隣の tunnel.token も読まない
   mcp?: McpOptions; // MCP の待ちの時計と間隔（試験で差し替える）。無ければ実時間
+  places?: PlacesScanner; // places の走査（試験で止まる fs に差し替える）。無ければ本物の fs
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
 
 const CACHE_MS = 2000; // 一覧のたびに claude を起動しないための短いメモリキャッシュ
-const PLACES_CACHE_MS = 10_000; // places の走査（README と .git/config を読む）のキャッシュ
 
 export class Sessions {
   private cache = new Map<string, { at: number; value: Promise<unknown> }>();
@@ -70,21 +71,20 @@ export class Sessions {
     return { name: this.d.nodeName, roots: this.d.roots, lobby, ...h, rateLimit: h.rateLimit ?? this.d.store.rateLimit() };
   }
   peers() { return this.d.registry.peers(); }
-  private scan?: { at: number; value: Promise<ScannedPlace[]> };
-  // 行き先の候補。roots の直下と Documents の直下のディレクトリごとに、README の先頭、remote、最近使われたかを返す（src/lobby/places.ts）
+  private scanner?: PlacesScanner;
+  // 行き先の候補。roots の直下と Documents の直下のディレクトリごとに、README の先頭、remote、最近使われたかを返す（src/lobby/places.ts）。
+  // 走査は同時の呼び出しで1つを共有し、3秒で打ち切る。読めなかった場所があれば partial、unreadable、note で伝える
   async places(q: string | null, limit: number | null) {
-    if (!this.scan || Date.now() - this.scan.at >= PLACES_CACHE_MS) {
-      const value = scanPlaces({ roots: this.d.roots, bases: secretBases(this.d.roots, { home: this.d.home }), configFile: this.d.configFile, lobby: this.d.lobby });
-      this.scan = { at: Date.now(), value };
-      value.catch(() => { this.scan = undefined; });
-    }
-    const [all, sessions, host] = await Promise.all([this.scan.value, this.list(null), realpath(resolve(this.d.lobby)).catch(() => this.d.lobby)]);
-    // 履歴の cwd は symlink を解いていないことがあるので、解いてから比べる
-    const cwds = new Map<string, string>();
-    await Promise.all([...new Set(sessions.map((s) => s.cwd).filter(Boolean))].map(async (c) => cwds.set(c, await realpath(c).catch(() => c))));
-    const used = usageOf(all, sessions.filter((s) => s.cwd).map((s) => ({ cwd: cwds.get(s.cwd) ?? s.cwd, lastActivityAt: s.lastActivityAt })));
-    const r = selectPlaces(all, used, { q: q ?? undefined, limit: limit ?? undefined });
-    return { name: this.d.nodeName, lobby: host, roots: this.d.roots, ...r };
+    const scanner = (this.scanner ??= this.d.places ?? new PlacesScanner());
+    const home = this.d.home ?? homedir();
+    const scan = scanner.scan({ roots: this.d.roots, bases: secretBases(this.d.roots, { home }), configFile: this.d.configFile, lobby: this.d.lobby, home });
+    const [res, sessions, host] = await Promise.all([scan, this.list(null), realpath(resolve(this.d.lobby)).catch(() => this.d.lobby)]);
+    // 履歴の cwd は symlink を解いていないことがあるので、解いてから比べる。roots の外と保護フォルダの中は解かない
+    const cwds = await scanner.resolveCwds(sessions.map((s) => s.cwd).filter(Boolean), { roots: [...this.d.roots, ...(await this.roots())], home });
+    const used = usageOf(res.places, sessions.filter((s) => s.cwd).map((s) => ({ cwd: cwds.get(s.cwd) ?? s.cwd, lastActivityAt: s.lastActivityAt })));
+    const r = selectPlaces(res.places, used, { q: q ?? undefined, limit: limit ?? undefined });
+    const partial = res.partial ? { partial: true, unreadable: res.unreadable, note: `some folders did not answer in time and were skipped${res.unreadable.length ? `: ${res.unreadable.slice(0, 10).join(", ")}` : ""}` } : { partial: false };
+    return { name: this.d.nodeName, lobby: host, roots: this.d.roots, ...r, ...partial };
   }
   async list(parent: string | null): Promise<SessionSummary[]> {
     const live = this.d.store.list();

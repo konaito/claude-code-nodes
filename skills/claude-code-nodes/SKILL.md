@@ -26,7 +26,7 @@ Claude Code Nodes は、Claude Code がログイン済みの機械ごとに1つ�
 - 受け口は子を自分と同じ権限モードで立て、子の最初のターンの承認には受け口が答える。受け口のモードと依頼の範囲を超える操作は断り、返事でそのことを伝える。受け口自身を `default` で立てると、受け口の Bash にも承認が要る。
 - 行き先を決められないとき、受け口は候補を並べた文で聞き返す。そのときは答えを `ccn:send_message` で受け口に送る。
 - どこにどんなディレクトリがあるか、セッションと機械の状態は、受け口が子を立てずに答える。ファイルの中身や git log を読む依頼は、受け口が行き先に子を立てて任せる。
-- 受け口の場所、許された根（roots）、最近使われた場所、行き先の候補（roots と Documents の直下のディレクトリごとの README の先頭、git の remote、最近使ったか）は `ccn:list_places` で読める。`query` で絞れる。
+- 受け口の場所、許された根（roots）、最近使われた場所、行き先の候補（roots と Documents の直下のディレクトリごとの README の先頭、git の remote、最近使ったか）は `ccn:list_places` で読める。`query` で絞れる。macOS の保護フォルダ（Desktop、Downloads など）は候補に出ない。`partial` が true なら、読めなかったフォルダが `unreadable` にある。
 
 ## セッションの種類
 
