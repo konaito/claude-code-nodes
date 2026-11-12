@@ -100,11 +100,13 @@ export class Sessions {
   // 前に見えていた端末のセッションが消えたら、終わったセッションの一覧を次の要求で取り直す
   private noteAgents(a: AgentInfo[]) {
     const ids = new Set(a.map((x) => x.sessionId).filter((x): x is string => !!x));
-    if (this.agentIds && [...this.agentIds].some((id) => !ids.has(id))) {
-      const h = this.cache.get("history");
-      if (h && !h.refreshing) h.at = 0;
-    }
+    if (this.agentIds && [...this.agentIds].some((id) => !ids.has(id))) this.expireHistory();
     this.agentIds = ids;
+  }
+  // 終わったセッションの一覧を、次の要求で取り直させる
+  private expireHistory() {
+    const h = this.cache.get("history");
+    if (h && !h.refreshing) h.at = 0;
   }
   private past() { return this.cached("history", HISTORY_MS, () => this.d.history.list()); }
 
@@ -233,6 +235,8 @@ export class Sessions {
     if (!driver.capabilities.stop) throw new HttpError(409, { error: "capability stop not available" });
     await driver.stop();
     this.d.store.remove(id);
+    // 台帳から消したセッションは、終わったセッションの一覧から出す。立ててすぐ止めた子が一覧から消えないように
+    this.expireHistory();
   }
   events(id: string, after: number): Response {
     const live = this.d.store.get(id);

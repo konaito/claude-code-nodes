@@ -310,6 +310,18 @@ test("the history list is re-read when a terminal session disappears from claude
   } finally { setSystemTime(); }
 });
 
+test("DELETE makes the next list re-read the history so a just-stopped session stays listed", async () => {
+  let hist = 0;
+  const base = harness().deps.history;
+  const { app } = harness({ history: { ...base, list: async () => { hist++; return base.list(); } } as unknown as Deps["history"] });
+  await app.fetch(req("/api/sessions"));
+  expect(hist).toBe(1);
+  expect((await app.fetch(req("/api/sessions/live1", { method: "DELETE" }))).status).toBe(204);
+  await app.fetch(req("/api/sessions"));
+  await settle();
+  expect(hist).toBe(2);
+});
+
 test("a failed first read of the history is not remembered; the next GET reads again", async () => {
   let calls = 0;
   const base = harness().deps.history;
