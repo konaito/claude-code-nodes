@@ -110,6 +110,11 @@ async function route(req: Request, s: Sessions, caller: Caller, store: Deps["sto
     if (parts[1] === "host" && parts.length === 2 && m === "GET") return json(await s.host());
     if (parts[1] === "events" && parts.length === 2 && m === "GET") return s.allEvents();
     if (parts[1] === "peers" && parts.length === 2 && m === "GET") return json(await s.peers());
+    if (parts[1] === "depth" && parts.length === 2 && m === "GET") {
+      const raw = url.searchParams.get("hops");
+      const hops = raw ? Number(raw) : NaN;
+      return json(await s.depth(url.searchParams.get("session"), Number.isInteger(hops) ? hops : null, caller));
+    }
     if (parts[1] === "places" && parts.length === 2 && m === "GET") {
       const limit = Number(url.searchParams.get("limit") ?? "");
       return json(await s.places(url.searchParams.get("q"), Number.isFinite(limit) && limit > 0 ? limit : null));

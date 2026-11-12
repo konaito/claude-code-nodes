@@ -18,6 +18,7 @@ import { HttpError } from "./errors";
 import { lobbySettingsFor, secretBases } from "../lobby/lobby";
 import { PlacesScanner, selectPlaces, usageOf } from "../lobby/places";
 import { sse } from "./sse";
+import { DEPTH_HINT, DEPTH_HOPS, DEPTH_REFUSAL, DepthTracer, MAX_DEPTH, type SessionDepth } from "./depth";
 
 export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: unknown; load: number[] };
 export type Deps = {
@@ -61,13 +62,44 @@ const AGENTS_MS = 2000;   // 端末のセッション（claude agents --json）�
 // 終わったセッション（SDK の listSessions）。重いので長く。15秒だと Claude Town の一覧だけでノードの CPU が約2%になった（#23）。
 // 端末のセッションが agents から消えたときは、待たずに取り直す（閉じた端末のセッションを、終わったものとしてすぐ出すため）
 const HISTORY_MS = 60_000;
+const DEPTH_REMOTE_MS = 5000; // 別のノードに深さを聞く待ち。過ぎたら分からないものとして通す
 
 type CacheEntry = { at: number; value: Promise<unknown>; refreshing: boolean };
 
 export class Sessions {
   private cache = new Map<string, CacheEntry>();
   private realRoots?: Promise<string[]>;
+  private depths = new Map<string, number>(); // 作ったときに刻んだ深さ。台帳と同じくメモリだけ
   constructor(private d: Deps) {}
+
+  // 深さをたどる道具。別のノードへは呼び手のまま中継で GET /api/depth を聞く
+  private tracer(caller: Caller): DepthTracer {
+    return new DepthTracer({
+      nodeName: this.d.nodeName,
+      stamped: (id) => (this.d.store.get(id) ? this.depths.get(id) : undefined),
+      find: async (sid) => (await this.list(null)).filter((s) => s.id.startsWith(sid)),
+      firstParent: async (id) => (await this.d.history.get(id))?.parent,
+      isLobby: async (cwd) => !!cwd && (cwd === this.d.lobby || cwd === (await realpath(resolve(this.d.lobby)).catch(() => this.d.lobby))),
+      remote: (peer, sid, hops) => this.remoteDepth(peer, sid, hops, caller),
+    });
+  }
+  private async remoteDepth(peer: string, sid: string, hops: number, caller: Caller): Promise<SessionDepth | undefined> {
+    const q = new URLSearchParams({ session: sid, hops: String(hops) });
+    const ask = this.d.relay.forward(peer, "api/depth", new Request(`http://${this.d.nodeName}.invalid/api/depth?${q}`), caller).then(async (r) => {
+      if (r.status !== 200) { await r.body?.cancel().catch(() => {}); return undefined; } // 古い版のノードは 404
+      const b = (await r.json()) as { found?: boolean; id?: string; depth?: unknown; lobby?: boolean; known?: boolean };
+      return b.found && typeof b.depth === "number" ? { id: String(b.id ?? sid), depth: b.depth, lobby: !!b.lobby, known: b.known !== false } : undefined;
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<undefined>((ok) => { timer = setTimeout(() => ok(undefined), DEPTH_REMOTE_MS); });
+    return Promise.race([ask.catch(() => undefined), late]).finally(() => clearTimeout(timer));
+  }
+  // GET /api/depth?session=<sessionId か先頭8文字>。別のノードが、自分の子の呼び手の深さを聞きに来る
+  async depth(session: string | null, hops: number | null, caller: Caller) {
+    if (!session || !/^[0-9a-f][0-9a-f-]{7,35}$/i.test(session)) throw new HttpError(400, { error: "session must be a sessionId or its first 8+ characters" });
+    const d = await this.tracer(caller).session(session.toLowerCase(), Math.min(Math.max(hops ?? DEPTH_HOPS, 0), DEPTH_HOPS));
+    return d ? { found: true, ...d } : { found: false };
+  }
 
   // 根も symlink（macOS の /var など）を解いて比べる。解けない根はそのまま
   private roots(): Promise<string[]> {
@@ -133,7 +165,7 @@ export class Sessions {
     return { name: this.d.nodeName, lobby: host, roots: this.d.roots, ...r, ...partial };
   }
   async list(parent: string | null): Promise<SessionSummary[]> {
-    const live = this.d.store.list();
+    const live = this.d.store.list().map((s) => (this.depths.has(s.id) ? { ...s, depth: this.depths.get(s.id) } : s));
     const seen = new Set(live.map((s) => s.id));
     // PTY の子は `claude agents --json` にも出る。id で除き、端末で /clear して id が変わっても pid で除く
     const ptyPids = new Set(live.filter((s) => s.kind === "pty" && s.state !== "exited" && s.pid).map((s) => s.pid));
@@ -147,6 +179,12 @@ export class Sessions {
   async create(req: Request, caller: Caller) {
     const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown; terminal?: unknown; name?: unknown; cols?: unknown; rows?: unknown };
     const pty = body.terminal === true ? ptyFields(body) : undefined;
+    // 深さの上限。呼び手が孫（深さ2）なら断る。as_session を名乗らない呼び手は人と見分けられないので、暴走止めであって防御ではない
+    const tracer = this.tracer(caller);
+    const child = await tracer.childOf(caller.id);
+    if (child.depth > MAX_DEPTH) {
+      throw new HttpError(409, { error: `${DEPTH_REFUSAL}（呼び手 ${caller.id} の深さ: ${child.callerDepth}）`, hint: DEPTH_HINT, depth: child.callerDepth, limit: MAX_DEPTH });
+    }
     if (body.cwd !== undefined && (typeof body.cwd !== "string" || !body.cwd)) throw new HttpError(400, { error: "cwd must be a non-empty string or omitted (omit for the lobby)" });
     const asked = typeof body.cwd === "string" ? body.cwd : this.d.lobby;
     // symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
@@ -164,23 +202,39 @@ export class Sessions {
       if (!this.d.startPty) throw new HttpError(400, { error: "terminal sessions are not supported on this node" });
       const settings = await lobbySettingsFor(cwd, this.d.lobby);
       const prompt = body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined;
+      const depth = await this.stampDepth(tracer, child.depth, body.resume);
       const driver = await this.d.startPty({ cwd, prompt, permissionMode: body.permissionMode, model: body.model, resume: body.resume, fork: body.fork, settings, ...pty }, caller);
+      this.setDepth(driver.id, depth);
       this.d.store.add(driver);
-      return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind };
+      return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth };
     }
     // sessionId は呼び手から受けない（既にある jsonl と重ねないため）。新規でプロンプトが無いときだけノードが決める
     const sessionId = !body.prompt && !body.resume ? crypto.randomUUID() : undefined;
     // settings は呼び手から受けない。受け口（resume を含む）のときだけ、ノードが書いた受け口の許可を渡す
     const settings = await lobbySettingsFor(cwd, this.d.lobby);
     const opts: StartOptions = { ...body, cwd, sessionId, settings, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
+    const depth = await this.stampDepth(tracer, child.depth, body.resume);
     const driver = await this.d.startNode(opts, caller);
+    this.setDepth(driver.id, depth);
     this.d.store.add(driver);
-    return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind };
+    return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth };
+  }
+  // resume（転出の取り込みも同じ）では呼び手が新しい親になる。元の親（刻んだ値か最初の文の from 行）の深さと比べて大きいほうを刻む。
+  // 人が孫を resume しても深さ0に戻さない
+  private async stampDepth(tracer: DepthTracer, depth: number, resume: string | undefined): Promise<number> {
+    if (!resume) return depth;
+    const past = this.d.store.get(resume)?.summary() ?? (await this.d.history.get(resume).catch(() => undefined));
+    const before = await tracer.of({ id: resume, cwd: past?.cwd ?? "", parent: past?.parent }).catch(() => undefined);
+    return Math.max(depth, before?.depth ?? 0);
+  }
+  private setDepth(id: string, depth: number) {
+    for (const k of this.depths.keys()) if (!this.d.store.get(k)) this.depths.delete(k);
+    this.depths.set(id, depth);
   }
   // cursor は送る前の末尾。CLI の send が控え、read の after にする
   async detail(id: string) {
     const driver = await this.find(id);
-    if (driver) return { ...driver.summary(), pending: driver.pending(), cursor: await this.cursor(id) };
+    if (driver) return { ...driver.summary(), ...(this.depths.has(driver.id) ? { depth: this.depths.get(driver.id) } : {}), pending: driver.pending(), cursor: await this.cursor(id) };
     const past = await this.d.history.get(id);
     if (past) return { ...past, pending: [], cursor: await this.cursor(id) };
     throw new HttpError(404, { error: "unknown session" });
