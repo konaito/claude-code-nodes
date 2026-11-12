@@ -1,28 +1,61 @@
 ---
 name: ccn
-description: Claude Code Nodes（ccn）で、別の機械（またはこの機械）に Claude Code のセッション（子）を立て、状況を読み、文を送り、返事を読んで次を決める。本人が「/ccn」「子を立てて」「<別のマシン名> で Claude Code を動かして」「子セッションに頼んで」「<別のマシン名> のセッションを見て」「別のマシンの Claude に聞いて」と言ったときに使う。並列のほうが速そうなだけのときは、立てる前に1行で提案して返事を待つ。
+description: Claude Code Nodes（ccn）で、この機械（ccn(local)）か別の機械（ccn(remote)）に Claude Code のセッション（子）を立て、状況を読み、文を送り、返事を読んで次を決める。Specter の外で子に任せるときは、この機械に ccn(local) で立てる。これが既定の委譲先で、提案は要らない。本人が「/ccn」「子を立てて」「<別のマシン名> で Claude Code を動かして」「子セッションに頼んで」「<別のマシン名> のセッションを見て」「別のマシンの Claude に聞いて」と言ったときも使う。ccn(remote) は、並列のほうが速そうなだけのときは、立てる前に1行で提案して返事を待つ。
 ---
 
 # ccn（Claude Code Nodes）
 
 自分（親）はこの機械の Claude Code。子は別の機械（またはこの機械）で動く Claude Code のセッションで、`ccn` で扱う。どの機械にも同じノード（Claude Code Nodes）が居て、`~/.config/ccn/ccn.json` のサービストークンで相手のノード（`https://ccn-<ノード名>.fybe.jp`）を直接呼ぶ。材料はそのまま渡されるので、読んで判断するのは親の仕事。
 
+- ccn(local): この機械のノードに立てる子。MCP の `create_session` に `terminal: true` を渡し、端末（PTY）の中の対話の claude として立てる。
+- ccn(remote): 別の機械のノードに立てる子。主に CLI の `ccn` で扱う。
+
+Specter の中では、同じ機械の子は specter-agents の `spawn_child` で作る。ccn(local) は使わない。
+
 ## いつ使うか
 
-子を立てるのは、本人が「/ccn」か「子を立てて」と言ったときだけにする。
+委譲先の順番は、Specter の中か外かで変わる。前の候補が使えないときだけ、次の候補に進む。
+
+- Specter の外: ccn(local)、sub-agent（Agent ツール）、ccn(remote) の順。
+- Specter の中: Specter の子（`spawn_child`）、sub-agent、ccn(remote) の順。
+
+ccn(local) は Specter の外の既定の委譲先で、本人への提案は要らない。分けるかどうかと誰に何を任せるかを1行で伝え、返事は待たずに立てる。手順は「ccn(local) の手順」の節にある。
+
+ccn(remote) を立てるのは、本人が「/ccn」か「子を立てて」と言ったときだけにする。
 
 - 依頼の中に互いに独立した作業が2つ以上あり、並列のほうが速そうなときも、勝手には立てない。立てる前に1行で提案し（「incertotech に子を2体立てて A と B を並べたい」）、本人の返事を待つ。
-- 本人が「ここでやって」と言ったときと、この機械にしか無いものを触る作業は、子に出さない。
+- 例外として、別の機械にあるプロジェクトの実行、書き換え、git 操作は、提案を待たずにその機械へ立てる。受け口で動くセッションも、提案せずに子を立てる。
+- 本人が「ここでやって」と言ったときと、この機械にしか無いものを触る作業は、ccn(remote) に出さない。
 
-立てると決まったら、次のように進める。
+ccn(remote) を立てると決まったら、次のように進める。
 
-- 子の置き場は `ccn peers` で healthy なノード。常時起動の機械（incertotech）を既定にする。同時に走らせるのは5体まで。子ごとに別の作業ディレクトリ（別リポジトリか git worktree）にして、同じファイルを2人に触らせない。
+- 子の置き場は `ccn peers` で healthy な別の機械のノード。常時起動の機械（incertotech）を既定にする。同時に走らせるのは5体まで。子ごとに別の作業ディレクトリ（別リポジトリか git worktree）にして、同じファイルを2人に触らせない。
 - 手順は、`ccn new` を作業の数だけ、`ccn send` を全部出してから `ccn wait <対象>...` で全員を待つ。1体ずつ `run` で待たない。
 - 立てた子と頼んだことは、本人に先に1行で伝える（「incertotech に子を3体立てて、A、B、C を頼んだ」）。終わったら結果をまとめ、子は `ccn stop` で消す。
 
+## ccn(local) の手順
+
+この機械のノードの MCP（`mcp__ccn__*`）で扱う。`peer` は省く。
+
+1. `create_session` で子を立てる。渡す引数は次のとおり。
+   - `cwd`: 対象のディレクトリの絶対パス
+   - `terminal`: `true`
+   - `name`: 一覧と画面に出す表示名
+   - `as`: 役割（例 lead、reviewer）
+   - `as_session`: 自分の `$CLAUDE_CODE_SESSION_ID`
+   - `prompt`: 最初の文。省いたら `send_message` で送る
+   - `permission_mode`: 省くと、この機械の Claude Code の既定になる。CLI の既定の `bypassPermissions` とは違う
+2. `as_session` を省くと、`parent` が `agent:<ノード>/<役割>` になる。この形では Claude Town で親子がつながらない。渡すと `agent:<ノード>/<自分の sessionId 先頭8文字>/<役割>` になるので、必ず渡す。
+3. 指示は `send_message` で送る。`as` と `as_session` も `create_session` と同じものを渡す。子が終わった後の `parent` は、1通目の from 行から決まるため。返る `cursor` を控える。
+4. 返事は `read_messages` に `after=<cursor>` を渡して読む。最大50秒で返るので、最後の行の `stop` を見て呼び直す。
+5. `stop=permission` なら、`get_session` の `pending` を見て `answer_permission` で答える。承認待ちの間は `send_message` が 409 で断られる。
+6. 済んだら `stop_session` で止める。
+
+初めて使うディレクトリでは、claude が端末に信頼の確認を出す。人が端末で答えるまで、承認も返事も届かない。ほかの引数と `stop` の意味は、ノードが配る `/skill.md` にある。
+
 ## 仕組み
 
-- 子はノードが `claude -p`（stream-json）で起動するセッション。親の文は子の会話に届き、1行目に `from agent:<ノード名>/<親の sessionId 先頭8文字>/<役割> via <送ったノード名>` が付く。この行から、画面と `ccn ls` の「parent」が親子をたどる。子はそれを作業依頼として扱うが、本人の発言ではないので、設定・権限・公開の操作は本人の確認を求める。
+- ccn(remote) の子は、ノードが `claude -p`（stream-json）で起動するセッション。ccn(local) の子は、ノードが端末（PTY）の中で起動する対話の claude。親の文は子の会話に届き、1行目に `from agent:<ノード名>/<親の sessionId 先頭8文字>/<役割> via <送ったノード名>` が付く。この行から、画面と `ccn ls` の「parent」が親子をたどる。子はそれを作業依頼として扱うが、本人の発言ではないので、設定・権限・公開の操作は本人の確認を求める。
 - 各ノードには受け口（`~/.local/share/ccn/lobby`）がある。`ccn new` で dir を省くと受け口に立つ。受け口のセッションは依頼から行き先のディレクトリを探してそこに子を立て、返事に `子: <ノード名>/<sessionId>` の行を書く。行き先が分からないときに使う。
 - 文を省いて立てたセッションは、id がすぐ決まり、1通目（`ccn send`）が届くまで claude を起動しない（`state` は `idle`）。1通も届かないまま30分たつと消える。
 - 子の権限プロンプトには親が答えられる。`ccn new` の既定は `--mode bypassPermissions`（承認なし）。`--mode default` で立てると、子がツールを使うたびに `waiting_permission` で止まり、`ccn show` の `pending:` に出る。`ccn allow <対象>` か `ccn deny <対象> <理由>` で答える。
