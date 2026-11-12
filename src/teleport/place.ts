@@ -61,11 +61,17 @@ export async function resolveDest(meta: CheckInput, cwdArg: string | undefined, 
     const docs = join(d.home, "Documents");
     const target = join(docs, g.repoName);
     if (!under(resolve(target), d.roots)) throw new PlaceError(`${target} is outside roots (${d.roots.join(", ")}); pass --cwd`, "outside_roots");
-    if (existsSync(target)) throw new PlaceError(`${target} exists but its remote does not match ${g.remote}; pass --cwd`, "exists");
-    mkdirSync(docs, { recursive: true });
-    await clone(d.git, g.remote, target);
-    top = real(target);
-    cloned = true;
+    // places に出ていなくても（走査の打ち切りや10秒の覚え）、remote が一致するリポジトリが既にあればそれを使う
+    const there = existsSync(target) ? await topOf(d.git, target) : null;
+    if (there && real(there) === real(target) && (await remoteMatches(d.git, there, g.remote))) {
+      top = real(target);
+    } else {
+      if (existsSync(target)) throw new PlaceError(`${target} exists but its remote does not match ${g.remote}; pass --cwd`, "exists");
+      mkdirSync(docs, { recursive: true });
+      await clone(d.git, g.remote, target);
+      top = real(target);
+      cloned = true;
+    }
   }
   if (!(await topOf(d.git, top))) throw new PlaceError(`${top} is not a git repository`);
   await checkClean(d.git, top);

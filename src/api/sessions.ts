@@ -473,7 +473,10 @@ export class Sessions {
     if (check.status === 404 && !(check.body as { code?: string })?.code) throw new HttpError(502, { error: `${to} does not know teleport (old version?). Run ccn update on ${to}`, stage: "check" });
     if (check.status >= 300) throw new HttpError(check.status, { ...(check.body as object), at: to, stage: "check" });
     const pack = await this.exportPack(id, fork);
-    const qs = typeof body.cwd === "string" ? `?cwd=${encodeURIComponent(body.cwd)}` : "";
+    // 取り込みでは探し直さず、下見で決まった場所（リポジトリの最上位か、git でなければ cwd）を渡す。下見の clone が places の覚えに載っていないことがあるため
+    const checked = check.body as { top?: string | null; cwd?: string };
+    const at = typeof body.cwd === "string" ? body.cwd : checked.top ?? checked.cwd;
+    const qs = at ? `?cwd=${encodeURIComponent(at)}` : "";
     const r = await this.peerCall(to, `api/teleport${qs}`, encodePack(pack), PACK_CONTENT_TYPE, caller);
     if (r.status >= 300) {
       const hint = pack.fork ? undefined : `the source session was stopped; resume it on ${this.d.nodeName} with: ccn new ${info.from.cwd} --peer ${this.d.nodeName} --resume ${id}`;

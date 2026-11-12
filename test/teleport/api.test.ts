@@ -111,10 +111,10 @@ function node(name: string, o: { home: string; fns: TranscriptFns; configDir: st
 }
 const post = (path: string, body: unknown) => new Request(`http://127.0.0.1${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
-function pair(opts: { agents?: AgentInfo[] } = {}) {
+function pair(opts: { agents?: AgentInfo[]; places?: () => Array<{ path: string; remote: string | null }> } = {}) {
   let dst: Node;
   const src = node("src", { home: join(base, "srchome"), fns: memFns(convs), configDir: join(base, "srcclaude"), agents: opts.agents, peer: () => dst });
-  dst = node("dst", { home: dstHome, fns: fileFns(dstConfig), configDir: dstConfig, places: () => (existsSync(dstRepo) ? [{ path: dstRepo, remote }] : []) });
+  dst = node("dst", { home: dstHome, fns: fileFns(dstConfig), configDir: dstConfig, places: opts.places ?? (() => (existsSync(dstRepo) ? [{ path: dstRepo, remote }] : [])) });
   return { src, dst };
 }
 const liveSrc = (src: Node, state: "idle" | "running" = "idle") => {
@@ -210,6 +210,40 @@ test("no matching place: clones into <home>/Documents/<repo>, creating Documents
   expect(body.cwd).toBe(join(dstHome, "Documents", "remote"));
   expect(readFileSync(join(body.cwd, "a.txt"), "utf8")).toBe("a\n");
   expect(dst.starts[0]!.cwd).toBe(body.cwd);
+});
+
+test("places that never show the clone (stale scan) still work: the import uses the place the check chose", async () => {
+  // 2026-11-12 に vm で起きた。下見で clone した直後、places の10秒の覚えに clone が無く、取り込みが同じ場所へ clone し直そうとして止まった
+  const { src, dst } = pair({ places: () => [] });
+  liveSrc(src);
+  const { rmSync } = await import("node:fs");
+  rmSync(join(dstHome, "Documents"), { recursive: true, force: true });
+  const r = await src.app.fetch(post(`/api/sessions/${ID}/teleport`, { to: "dst" }));
+  const body = (await r.json()) as { cwd: string; cloned: boolean };
+  expect(r.status).toBe(200);
+  expect(body).toMatchObject({ cwd: join(dstHome, "Documents", "remote"), cloned: true });
+  expect(dst.starts[0]!.cwd).toBe(body.cwd);
+});
+
+test("an existing clone at <home>/Documents/<repo> with the same remote is used even when places misses it", async () => {
+  const { src } = pair({ places: () => [] });
+  liveSrc(src);
+  await sh(dstHome, "clone", "-q", remote, join(dstHome, "Documents", "remote"));
+  const r = await src.app.fetch(post(`/api/sessions/${ID}/teleport`, { to: "dst" }));
+  const body = (await r.json()) as { cwd: string; cloned: boolean };
+  expect(r.status).toBe(200);
+  expect(body).toMatchObject({ cwd: join(dstHome, "Documents", "remote"), cloned: false });
+});
+
+test("a different repository at the clone target is refused", async () => {
+  const { src } = pair({ places: () => [] });
+  const d = liveSrc(src);
+  mkdirSync(join(dstHome, "Documents", "remote"), { recursive: true });
+  await sh(join(dstHome, "Documents", "remote"), "init", "-q");
+  const r = await src.app.fetch(post(`/api/sessions/${ID}/teleport`, { to: "dst" }));
+  expect(r.status).toBe(409);
+  expect(((await r.json()) as { code: string; stage: string })).toMatchObject({ code: "exists", stage: "check" });
+  expect(d.summary().state).toBe("idle");
 });
 
 test("teleporting to the node itself or to an old peer is refused with a clear message", async () => {
