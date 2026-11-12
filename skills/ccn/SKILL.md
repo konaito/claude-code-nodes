@@ -42,14 +42,13 @@ ccn(remote) を立てると決まったら、次のように進める。
    - `terminal`: `true`
    - `name`: 一覧と画面に出す表示名
    - `as`: 役割（例 lead、reviewer）
-   - `as_session`: 自分の `$CLAUDE_CODE_SESSION_ID`
+   - `as_session`: 自分の `$CLAUDE_CODE_SESSION_ID`。必ず渡す。省くと `parent` が `agent:<ノード>/<役割>` になり、Claude Town で親子がつながらない。渡すと `agent:<ノード>/<自分の sessionId 先頭8文字>/<役割>` になる
    - `prompt`: 最初の文。省いたら `send_message` で送る
    - `permission_mode`: 省くと、この機械の Claude Code の既定になる。CLI の既定の `bypassPermissions` とは違う
-2. `as_session` を省くと、`parent` が `agent:<ノード>/<役割>` になる。この形では Claude Town で親子がつながらない。渡すと `agent:<ノード>/<自分の sessionId 先頭8文字>/<役割>` になるので、必ず渡す。
-3. 指示は `send_message` で送る。`as` と `as_session` も `create_session` と同じものを渡す。子が終わった後の `parent` は、1通目の from 行から決まるため。返る `cursor` を控える。
-4. 返事は `read_messages` に `after=<cursor>` を渡して読む。最大50秒で返るので、最後の行の `stop` を見て呼び直す。
-5. `stop=permission` なら、`get_session` の `pending` を見て `answer_permission` で答える。承認待ちの間は `send_message` が 409 で断られる。
-6. 済んだら `stop_session` で止める。
+2. 指示は `send_message` で送り、返る `cursor` を控える。子が終わった後の `parent` は1通目の from 行から決まるので、`as` と `as_session` も `create_session` と同じものを渡す。
+3. 返事は `read_messages` に `after=<cursor>` を渡して読む。最大50秒で返るので、最後の行の `stop` を見て呼び直す。
+4. `stop=permission` なら、`get_session` の `pending` を見て `answer_permission` で答える。承認待ちの間は `send_message` が 409 で断られる。
+5. 済んだら `stop_session` で止める。
 
 初めて使うディレクトリでは、claude が端末に信頼の確認を出す。人が端末で答えるまで、承認も返事も届かない。ほかの引数と `stop` の意味は、ノードが配る `/skill.md` にある。
 
@@ -64,6 +63,8 @@ ccn(remote) を立てると決まったら、次のように進める。
 - 子に質問をさせない。文に判断の材料を全部入れ、「迷ったら自分で決めて、決めたことと理由を書け」と書く。子が AskUserQuestion を出すと止まり、親には答えられない。
 
 ## 流れ
+
+この節と次の「命令」の節は、CLI で ccn(remote) を扱う手順。ccn(local) は「ccn(local) の手順」の節に従う。
 
 1. `ccn peers` でノードと状態を見る。`ccn ls` で全ノードのセッションを見る。
 2. 子が無ければ `ccn new <dir> "<最初の文>" --peer <ノード名> --as <役割>` で立てる。`<ノード名>/<sessionId>` が返る。行き先のディレクトリが分からないときは、`ccn new --peer <ノード名>` で受け口に立て、`ccn run <対象> "<依頼>"` の返事にある `子:` の行の子を使う。
