@@ -1,7 +1,7 @@
 // SDK から過去のセッションと会話を読む。jsonl を直接は読まない。親（子認識）は firstPrompt の from 行から導く
 import type { listSessions, getSessionMessages, getSessionInfo, SDKSessionInfo, SessionMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionSummary } from "../sessions/types";
-import { parseFromLine } from "../identity/from-line";
+import { parseFirstPrompt } from "../identity/from-line";
 
 export type HistoryFns = { listSessions: typeof listSessions; getSessionMessages: typeof getSessionMessages; getSessionInfo: typeof getSessionInfo };
 const PAGE = 200;
@@ -80,6 +80,6 @@ function toSummary(i: SDKSessionInfo): SessionSummary {
     startedAt: i.lastModified,
     lastActivityAt: i.lastModified,
     title: i.customTitle ?? i.summary,
-    parent: i.firstPrompt ? parseFromLine(i.firstPrompt)?.id : undefined,
+    parent: i.firstPrompt ? parseFirstPrompt(i.firstPrompt)?.id : undefined,
   };
 }

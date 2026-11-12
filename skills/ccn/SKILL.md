@@ -42,7 +42,7 @@ ccn(remote) を立てると決まったら、次のように進める。
    - `terminal`: `true`
    - `name`: 一覧と画面に出す表示名
    - `as`: 役割（例 lead、reviewer）
-   - `as_session`: 自分の `$CLAUDE_CODE_SESSION_ID`。必ず渡す。省くと `parent` が `agent:<ノード>/<役割>` になり、Claude Town で親子がつながらない。渡すと `agent:<ノード>/<自分の sessionId 先頭8文字>/<役割>` になる
+   - `as_session`: 自分の `$CLAUDE_CODE_SESSION_ID`。必ず渡す。省くと `parent` が `agent:<ノード>/<役割>` になり、Claude Town で親子がつながらず、ノードが深さを数えられない。渡すと `agent:<ノード>/<自分の sessionId 先頭8文字>/<役割>` になる
    - `prompt`: 最初の文。省いたら `send_message` で送る
    - `permission_mode`: 省くと、この機械の Claude Code の既定になる。CLI の既定の `bypassPermissions` とは違う
 2. 指示は `send_message` で送り、返る `cursor` を控える。子が終わった後の `parent` は1通目の from 行から決まるので、`as` と `as_session` も `create_session` と同じものを渡す。
@@ -55,6 +55,7 @@ ccn(remote) を立てると決まったら、次のように進める。
 ## 仕組み
 
 - ccn(remote) の子は、ノードが `claude -p`（stream-json）で起動するセッション。ccn(local) の子は、ノードが端末（PTY）の中で起動する対話の claude。親の文は子の会話に届き、1行目に `from agent:<ノード名>/<親の sessionId 先頭8文字>/<役割> via <送ったノード名>` が付く。この行から、画面と `ccn ls` の「parent」が親子をたどる。子はそれを本人の作業を親が分けて渡したものとして、本人の依頼と同じに扱う。push、PR、マージ、デプロイ、設定の変更も、親の依頼の範囲なら確かめずに進める（`~/.config/ccn/child.md`）。
+- 子は孫までしか作れない。人が立てたセッションが深さ0、その子が1、孫が2で、孫（深さ2）が子を作ろうとすると、ノードが 409 で「孫（深さ2）は子を作れない。仕事は自分でやるか、sub-agent（Agent ツール）を使う」と断る。孫は自分でやるか sub-agent を使う。深さは作成の応答と `ccn show` の `depth` で分かる。受け口は段に数えない。
 - 各ノードには受け口（`~/.local/share/ccn/lobby`）がある。`ccn new` で dir を省くと受け口に立つ。受け口のセッションは依頼から行き先のディレクトリを探してそこに子を立て、返事に `子: <ノード名>/<sessionId>` の行を書く。行き先が分からないときに使う。
 - 文を省いて立てたセッションは、id がすぐ決まり、1通目（`ccn send`）が届くまで claude を起動しない（`state` は `idle`）。1通も届かないまま30分たつと消える。
 - 子の権限プロンプトには親が答えられる。`ccn new` の既定は `--mode bypassPermissions`（承認なし）。`--mode default` で立てると、子がツールを使うたびに `waiting_permission` で止まり、`ccn show` の `pending:` に出る。`ccn allow <対象>` か `ccn deny <対象> <理由>` で答える。

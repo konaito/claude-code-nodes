@@ -174,7 +174,7 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       const { c } = r;
       const d = await detailOf(ctx, r);
       const caps = Object.entries(d.capabilities).filter(([, v]) => v).map(([k]) => k).join(",");
-      for (const [k, v] of [["id", d.id], ["peer", c.peer], ["kind", d.kind], ["state", d.state], ["cwd", d.cwd], ["model", d.model], ["permissionMode", d.permissionMode], ["parent", d.parent], ["title", d.title], ["pid", d.pid], ["exitReason", d.exitReason], ["capabilities", caps], ["usage", d.usage ? JSON.stringify(d.usage) : undefined]] as const) {
+      for (const [k, v] of [["id", d.id], ["peer", c.peer], ["kind", d.kind], ["state", d.state], ["cwd", d.cwd], ["model", d.model], ["permissionMode", d.permissionMode], ["parent", d.parent], ["depth", d.depth], ["title", d.title], ["pid", d.pid], ["exitReason", d.exitReason], ["capabilities", caps], ["usage", d.usage ? JSON.stringify(d.usage) : undefined]] as const) {
         if (v !== undefined && v !== "") ctx.out(`${k}: ${String(v)}`);
       }
       for (const p of d.pending ?? []) ctx.out(`pending: ${p.requestId} ${describePending(p)}`);
