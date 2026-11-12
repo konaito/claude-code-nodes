@@ -4,12 +4,12 @@
 
 ## bun test と tsc
 
-- `bun test` は 297件が通り、1件は飛ばした（既存の `CC_LIVE` の試験）。失敗は0件だった。
+- `bun test` は 301件が通り、1件は飛ばした（既存の `CC_LIVE` の試験）。失敗は0件だった。
 - `bunx tsc --noEmit -p .` はエラーなしで終わった。
 - 足した試験は次のとおり。
   - `test/teleport/git.test.ts`（8件）。本物の git と一時リポジトリで確かめた。stage した変更、stage していない変更、stage した削除、未追跡、実行権限、symlink、バイナリ、push していない commit が移動先にそろうこと。ignore の対象（node_modules）は運ばないこと。移動元の index と ref が変わらないことも見た。止まる場合として、汚れた移動先、分岐したブランチ、前提の commit が無い場合を入れた。祖先のブランチは進めること、detached HEAD はそのままになることも確かめた。
   - `test/teleport/transcript.test.ts`（6件）。本物の SDK（`importSessionToStore`、`getSessionInfo`、`getSessionMessages`、`forkSession`、`deleteSession`）を、一時の `CLAUDE_CONFIG_DIR` で使った。置き場の名前が SDK と一致することを、短いパス、200字を超えるパス、日本語のパスで確かめた。書き戻しで書き換わるのが `cwd` だけであること、サブエージェントの `.meta.json` の扱い、古い写しの置き換えと別の会話の拒否、fork で移動元に写しが残らないことも見た。claude は使わない。
-  - `test/teleport/api.test.ts`（11件）。2つのノードを同じプロセスで立てた。move で移動元を止め、移動先は遅延起動の子にすること、fork、running の移動元を断ること、汚れた移動先は下見で止めて移動元を止めないこと、生きている端末セッションを fork に切り替えることを確かめた。clone（`~/Documents` が無い場合を含む）と、places に clone が出ないときの扱い、clone 先に別のリポジトリがあるときの拒否も入れた。CLI で手元へ持ってくる流れも通した。会話は偽の SDK で扱った。
+  - `test/teleport/api.test.ts`（15件）。2つのノードを同じプロセスで立てた。move で移動元を止め、移動先は遅延起動の子にすること、fork、running の移動元を断ること、汚れた移動先は下見で止めて移動元を止めないこと、生きている端末セッションを fork に切り替えることを確かめた。clone（`~/Documents` が無い場合を含む）と、places に clone が出ないときの扱い、clone 先に別のリポジトリがあるときの拒否も入れた。CLI で手元へ持ってくる流れも通した。ほかに、ノードの子が自分自身を move するとき running でも止めて運ぶこと、別のセッションからの move は断ること、busy を下見（clone）の前に断ること、取り込みの返事に再開の手順が付くこと、手元で同じ id が動いていれば手元への move を断ることを入れた。会話は偽の SDK で扱った。
   - `test/engine/node-driver.test.ts` に1件足した。resume と defer で、1通目まで claude を起動しないことを確かめた。
   - `test/mcp/mcp.test.ts` のツール一覧に `teleport_session` を足した。
 
@@ -86,10 +86,28 @@ fork のあとの手元の `~/Documents/ccn-teleport-test`（変更が3つある
 - vm のセッションは `state: idle` のままだった（止まっていない）。
 - 手元の作業ツリーは変わらなかった。
 
+### 自分自身を移す（手元の試験ノードの子 → vm）
+
+2つ目の試験リポジトリ（`~/.cache/ccn-tp/src2`、作業ツリーはきれい）で、試験ノードの子（`konaito-pro/76117a5f-…`、bypassPermissions）を立てた。子は合言葉「もも55」を覚えたあと、自分の Bash で `ccn teleport` を実行した。対象を省いたので、`CLAUDE_CODE_SESSION_ID` の自分が対象になった。子の `which ccn` は枝の `bin/ccn`、`CCN_CONFIG` は試験ノードの設定だった。
+
+- fork（`ccn teleport --to vm --fork`）。返事は `vm/fbe28003-…`、`cwd: /home/konaito/Documents/ccn-teleport-test2（clone した）` だった。vm でその子に送ると、合言葉「もも55」を答え、pwd は `/home/konaito/Documents/ccn-teleport-test2` だった。運んだ会話は、teleport を呼んだ Bash の途中で終わっている。
+- move（`ccn teleport --to vm`）。子は running のまま自分を移した。移動元の `ccn show` は `state: exited` になった。vm の一覧には `vm/76117a5f  node  idle  /home/konaito/Documents/ccn-teleport-test2` が出た。vm で送ると、合言葉「もも55」を答えた。返事には「直前は Mac で `ccn teleport --to vm` を1回実行した。会話の記録ではそのコマンドの結果が中断扱いで残っていない」とあった。
+
+### ccn teleport が端末で claude --resume を開く
+
+expect の端末（TTY）で `ccn teleport vm/76117a5f --fork --cwd /Users/konaito/.cache/ccn-tp/pull2` を実行した。`pull2` は2つ目の試験リポジトリのきれいな clone である。
+
+- 出力は `手元/9eeeb828-…` と `mode: fork` で、CLI はそのまま `claude --resume` を起動した。
+- 信頼の確認が出たので「Yes」を選ぶと、画面に「もも55」が出た。
+- vm の移動元は idle のまま残った。手元の `pull2` の `git status --short` は空だった。
+- この操作でも、信頼の記録が1件増えた。
+
 ## 確かめていないこと
 
 - 手元の本番ノード（4323、トンネル経由で受ける側）が teleport を受けること。手元は試験ノードで、本番は変えていない。vm から手元への `--to konaito-pro`（vm のノードが手元の本番ノードの `/api/teleport` を呼ぶ道）は試していない。
 - 生きている端末セッションの move（fork に切り替える）は bun test だけで確かめた。実機では試していない。
+- 手元へ持ってくるときに、同じ id が手元で動いていれば断ること。bun test だけで確かめた。
+- GitHub の remote。実機の試験の remote は、Mac と vm の両方から同じパス（`/Users/konaito/.cache/ccn-tp/…`）で見えるローカルの bare リポジトリだった。ssh と https の形の正規化は bun test だけで確かめた。認証つきの clone と fetch は試していない。vm と incertotech には gh が無い。
 - サブエージェントの会話を含むセッションの実機の移動。SDK での読み書きは bun test で確かめた。
 - 大きな会話（数 MB 以上）を運ぶときの時間と、Cloudflare の打ち切り（約100秒）。
 - MCP の `teleport_session` を実機の MCP クライアントから呼ぶこと。試験は一覧に出ることだけを見た。
