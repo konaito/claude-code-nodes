@@ -58,7 +58,9 @@ function ptyFields(b: { name?: unknown; cols?: unknown; rows?: unknown }): { nam
 // 取り直しを待たせると、Claude Town の2秒ごとの一覧がほぼ毎回 listSessions と claude の起動を待ち、
 // 機械が混んでいると1秒を超えた（2026-11-12 の 23:06、konaito-pro。jsonl 8024 個で listSessions は1回 CPU 約300ms）
 const AGENTS_MS = 2000;   // 端末のセッション（claude agents --json）。生きているものなので短く
-const HISTORY_MS = 15000; // 終わったセッション（SDK の listSessions）。重いので長く
+// 終わったセッション（SDK の listSessions）。重いので長く。15秒だと Claude Town の一覧だけでノードの CPU が約2%になった（#23）。
+// 端末のセッションが agents から消えたときは、待たずに取り直す（閉じた端末のセッションを、終わったものとしてすぐ出すため）
+const HISTORY_MS = 60_000;
 
 type CacheEntry = { at: number; value: Promise<unknown>; refreshing: boolean };
 
@@ -93,7 +95,17 @@ export class Sessions {
     }
     return hit.value as Promise<T>;
   }
-  private agents() { return this.cached("agents", AGENTS_MS, () => this.d.agents()); }
+  private agents() { return this.cached("agents", AGENTS_MS, () => this.d.agents().then((a) => { this.noteAgents(a); return a; })); }
+  private agentIds?: Set<string>;
+  // 前に見えていた端末のセッションが消えたら、終わったセッションの一覧を次の要求で取り直す
+  private noteAgents(a: AgentInfo[]) {
+    const ids = new Set(a.map((x) => x.sessionId).filter((x): x is string => !!x));
+    if (this.agentIds && [...this.agentIds].some((id) => !ids.has(id))) {
+      const h = this.cache.get("history");
+      if (h && !h.refreshing) h.at = 0;
+    }
+    this.agentIds = ids;
+  }
   private past() { return this.cached("history", HISTORY_MS, () => this.d.history.list()); }
 
   async host() {
