@@ -9,6 +9,8 @@ import { pageHtml } from "../web/page";
 import { mcpHandler, type ApiCall } from "../mcp/server";
 import { skillMd } from "../mcp/skill-md";
 import { isPtyHook, ptyHook, terminalInput, terminalResize, terminalStream } from "./terminal";
+import { etagOf } from "./list-watch";
+import type { State } from "../sessions/types";
 export type { Deps, HostInfo } from "./sessions";
 
 // ブラウザからの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る。
@@ -99,6 +101,28 @@ const after = (url: URL) => Number(url.searchParams.get("after") ?? 0) || 0;
 // EventSource の再接続は Last-Event-ID を付けてくるので、あれば after より優先する
 const cursor = (req: Request, url: URL) => Number(req.headers.get("last-event-id") ?? "") || after(url);
 
+// ?state= の絞り込み。live は exited 以外。カンマで複数の状態を並べられる。無ければ絞らない
+const STATES: State[] = ["running", "waiting_permission", "idle", "exited"];
+function statesOf(url: URL): Set<State> | null {
+  const v = url.searchParams.get("state");
+  if (v === null || v === "") return null;
+  const out = new Set<State>();
+  for (const w of v.split(",").map((x) => x.trim()).filter(Boolean)) {
+    if (w === "live") { for (const st of STATES) if (st !== "exited") out.add(st); }
+    else if ((STATES as string[]).includes(w)) out.add(w as State);
+    else throw new HttpError(400, { error: `unknown state: ${w}`, states: ["live", ...STATES] });
+  }
+  return out;
+}
+// 一覧の応答。本文の ETag を付け、If-None-Match が同じなら 304 で本文を返さない
+function listResponse(req: Request, list: unknown): Response {
+  const body = JSON.stringify(list);
+  const etag = etagOf(body);
+  const inm = req.headers.get("if-none-match");
+  if (inm && inm.split(",").some((t) => t.trim().replace(/^W\//, "") === etag)) return new Response(null, { status: 304, headers: { etag, "cache-control": "no-cache" } });
+  return new Response(body, { headers: { "content-type": "application/json; charset=utf-8", etag, "cache-control": "no-cache" } });
+}
+
 async function route(req: Request, s: Sessions, caller: Caller, store: Deps["store"]): Promise<Response> {
   const url = new URL(req.url);
   const parts = url.pathname.split("/").filter(Boolean);
@@ -121,8 +145,12 @@ async function route(req: Request, s: Sessions, caller: Caller, store: Deps["sto
     }
     if (parts[1] === "sessions") {
       const [, , id, sub, rid] = parts;
+      // 一覧の変化を流す SSE（#24）。セッションの id は UUID なので stream とは重ならない
+      if (id === "stream" && parts.length === 3 && m === "GET") {
+        return s.stream({ parent: url.searchParams.get("parent"), states: statesOf(url) }, req.headers.get("last-event-id"));
+      }
       if (!id) {
-        if (m === "GET") return json(await s.list(url.searchParams.get("parent")));
+        if (m === "GET") return listResponse(req, await s.list(url.searchParams.get("parent"), statesOf(url)));
         if (m === "POST") return json(await s.create(req, caller), 201);
       } else if (!sub) {
         if (m === "GET") return json(await s.detail(id));

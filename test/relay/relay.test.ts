@@ -87,3 +87,13 @@ test("sends both the new and the legacy caller headers while nodes migrate", asy
   const h = calls[0]!.headers;
   expect([h.get("x-ccn-from"), h.get("x-ccn-via"), h.get("x-cc-from"), h.get("x-cc-via")]).toEqual(["ceo@fybe.jp", "vm", "ceo@fybe.jp", "vm"]);
 });
+
+// 一覧の ETag（#24）。If-None-Match を相手に渡し、ETag と 304 をそのまま返す
+test("carries If-None-Match to the peer and ETag and 304 back", async () => {
+  const { fetchFn, calls } = fakeFetch(() => new Response(null, { status: 304, headers: { etag: '"abc"' } }));
+  const relay = new Relay({ registry, nodeName: "vm", serviceToken: token, fetchFn });
+  const res = await relay.forward("pro", "api/sessions", new Request("https://vm.cc.fybe.jp/n/pro/api/sessions?state=live", { headers: { "if-none-match": '"abc"' } }), { id: "ceo@fybe.jp" });
+  expect(calls[0]!.headers.get("if-none-match")).toBe('"abc"');
+  expect(res.status).toBe(304);
+  expect(res.headers.get("etag")).toBe('"abc"');
+});

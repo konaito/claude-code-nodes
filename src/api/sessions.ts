@@ -19,6 +19,8 @@ import { lobbySettingsFor, secretBases } from "../lobby/lobby";
 import { PlacesScanner, selectPlaces, usageOf } from "../lobby/places";
 import { sse } from "./sse";
 import { DEPTH_HINT, DEPTH_HOPS, DEPTH_REFUSAL, DepthTracer, MAX_DEPTH, type SessionDepth } from "./depth";
+import { ListWatch, type ListFilter } from "./list-watch";
+import type { State } from "../sessions/types";
 
 export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: unknown; load: number[] };
 export type Deps = {
@@ -40,6 +42,7 @@ export type Deps = {
   configFile?: string; // 読んでいる設定ファイル。places はこのファイルと隣の tunnel.token も読まない
   mcp?: McpOptions; // MCP の待ちの時計と間隔（試験で差し替える）。無ければ実時間
   places?: PlacesScanner; // places の走査（試験で止まる fs に差し替える）。無ければ本物の fs
+  listWatch?: { tickMs?: number; debounceMs?: number }; // 一覧の変化を流す間隔（試験で短くする）
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
@@ -127,7 +130,14 @@ export class Sessions {
     }
     return hit.value as Promise<T>;
   }
-  private agents() { return this.cached("agents", AGENTS_MS, () => this.d.agents().then((a) => { this.noteAgents(a); return a; })); }
+  // 見張り（一覧の SSE）が動いている間は、見張りが tick ごとに取り直すので、要求の側からは取り直さない
+  private agents() { return this.cached("agents", this.watch?.size ? Number.POSITIVE_INFINITY : AGENTS_MS, () => this.fetchAgents()); }
+  // claude agents --json の起動は、同時に1本だけにする。見張りの取り直しと要求の側の取り直しが重なっても2本にしない
+  private agentsInflight?: Promise<AgentInfo[]>;
+  private fetchAgents(): Promise<AgentInfo[]> {
+    this.agentsInflight ??= this.d.agents().then((a) => { this.noteAgents(a); return a; }).finally(() => { this.agentsInflight = undefined; });
+    return this.agentsInflight;
+  }
   private agentIds?: Set<string>;
   // 前に見えていた端末のセッションが消えたら、終わったセッションの一覧を次の要求で取り直す
   private noteAgents(a: AgentInfo[]) {
@@ -164,16 +174,34 @@ export class Sessions {
     const partial = res.partial ? { partial: true, unreadable: res.unreadable, note: `some folders did not answer in time and were skipped${res.unreadable.length ? `: ${res.unreadable.slice(0, 10).join(", ")}` : ""}` } : { partial: false };
     return { name: this.d.nodeName, lobby: host, roots: this.d.roots, ...r, ...partial };
   }
-  async list(parent: string | null): Promise<SessionSummary[]> {
+  // states を渡すと、その状態のものだけを返す。exited を含まなければ、終わったセッションの一覧（listSessions）を読まない
+  async list(parent: string | null, states: Set<State> | null = null): Promise<SessionSummary[]> {
     const live = this.d.store.list().map((s) => (this.depths.has(s.id) ? { ...s, depth: this.depths.get(s.id) } : s));
     const seen = new Set(live.map((s) => s.id));
     // PTY の子は `claude agents --json` にも出る。id で除き、端末で /clear して id が変わっても pid で除く
     const ptyPids = new Set(live.filter((s) => s.kind === "pty" && s.state !== "exited" && s.pid).map((s) => s.pid));
     const terms = (await this.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId) && !(a.pid && ptyPids.has(a.pid))).map((a) => this.d.terminalFor(a).summary());
     for (const t of terms) seen.add(t.id);
-    const past = (await this.past()).filter((h) => !seen.has(h.id));
+    const past = !states || states.has("exited") ? (await this.past()).filter((h) => !seen.has(h.id)) : [];
     const all = [...live, ...terms, ...past];
-    return parent ? all.filter((s) => s.parent === parent) : all;
+    return all.filter((s) => (!parent || s.parent === parent) && (!states || states.has(s.state)));
+  }
+  // 一覧の変化を流す SSE。購読がある間だけ、端末のセッションを LIST_TICK_MS ごとに取り直して比べる
+  private watch?: ListWatch;
+  stream(filter: ListFilter, lastId: string | null): Response {
+    this.watch ??= new ListWatch({
+      list: (f) => this.list(f.parent, f.states),
+      refresh: () => this.refreshAgents(),
+      changes: () => this.d.store.subscribeAll(),
+      ...this.d.listWatch,
+    });
+    return sse(this.watch.subscribe(filter, lastId ?? undefined));
+  }
+  // 端末のセッションを今すぐ取り直す。取れたら一覧の材料のキャッシュも差し替える
+  private async refreshAgents() {
+    const value = this.fetchAgents();
+    await value;
+    this.cache.set("agents", { at: Date.now(), value, refreshing: false });
   }
   // cwd を省くと受け口に立てる。prompt も resume も無ければ id だけ先に決め、1通目（send）が来るまで claude を起動しない（state は idle）
   async create(req: Request, caller: Caller) {

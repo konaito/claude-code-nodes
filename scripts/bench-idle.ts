@@ -1,7 +1,7 @@
 // 待機中のノードの CPU を測る（#23）。試験用のノードを別の設定と別のポートで立て、呼び手なしと Claude Town と同じ呼び方を分けて測る。
 // 使い方: bun run scripts/bench-idle.ts <設定ファイル> <port> <none|town> <秒> [セッションID] [--prof <dir>]
 // - none: 何も呼ばない
-// - town: 下の3つを同時に。list、messages、detail はそれぞれ1つだけ
+// - town: 下の3つを同時に。list、messages、detail はそれぞれ1つだけ。stream は一覧を SSE に替えたもの
 // - town: GET /api/sessions を2秒ごと、GET /api/sessions/<id>/messages?after=<next> を2.5秒ごと、GET /api/sessions/<id> を2秒ごと
 //   （Claude Town の POLL_MS、CONV_POLL_MS、Approval の間隔と同じ）
 // ノード自身の CPU 時間は ps の time、子プロセス（claude agents --json など）の起動回数は ps で数える
@@ -10,7 +10,7 @@ const pi = argv.indexOf("--prof");
 const profDir = pi >= 0 ? argv[pi + 1] : undefined;
 if (pi >= 0) argv.splice(pi, 2);
 const [cfgPath, portS, mode, secsS, sid] = argv;
-const MODES = ["none", "town", "list", "messages", "detail"];
+const MODES = ["none", "town", "list", "messages", "detail", "stream"];
 if (!cfgPath || !portS || !MODES.includes(mode ?? "") || !secsS) {
   console.error(`usage: bench-idle.ts <config> <port> <${MODES.join("|")}> <secs> [sessionId] [--prof <dir>]`);
   process.exit(2);
@@ -65,7 +65,19 @@ await Bun.sleep(3000);
 
 const seenChildren = new Set<number>();
 const timers: ReturnType<typeof setInterval>[] = [];
-const on = (k: string) => mode === "town" || mode === k;
+// stream: 一覧は GET /api/sessions/stream?state=live を1本つなぐだけにし、messages と detail は town と同じに呼ぶ（#24 の後の Claude Town）
+const on = (k: string) => mode === "town" || mode === k || (mode === "stream" && k !== "list");
+let streamEvents = 0;
+const streamCtl = new AbortController();
+if (mode === "stream") {
+  void (async () => {
+    try {
+      const r = await fetch(`${base}/api/sessions/stream?state=live`, { signal: streamCtl.signal });
+      const dec = new TextDecoder();
+      for await (const c of r.body!) streamEvents += (dec.decode(c).match(/^event: sessions$/gm) ?? []).length;
+    } catch { /* 止めたとき */ }
+  })();
+}
 {
   if (on("list")) timers.push(setInterval(() => void call("list", "/api/sessions"), 2000));
   if (sid && on("messages")) {
@@ -84,13 +96,14 @@ await Bun.sleep(secs * 1000);
 const c1 = await cpuSecs(node.pid);
 const wall = (performance.now() - t0) / 1000;
 for (const t of timers) clearInterval(t);
+streamCtl.abort();
 clearInterval(watch);
 
 const med = (a: number[]) => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)]!.toFixed(1) : "-"; };
 const max = (a: number[]) => (a.length ? Math.max(...a).toFixed(1) : "-");
 console.log(JSON.stringify({
   mode, secs: Number(wall.toFixed(1)), cpuSecs: Number((c1 - c0).toFixed(2)), cpuPct: Number((((c1 - c0) / wall) * 100).toFixed(2)),
-  childSpawnsSeen: seenChildren.size, failed,
+  childSpawnsSeen: seenChildren.size, failed, ...(mode === "stream" ? { streamEvents } : {}),
   calls: Object.fromEntries(Object.entries(lat).map(([k, v]) => [k, { n: v.length, medMs: med(v), maxMs: max(v) }])),
 }));
 node.kill("SIGTERM");
