@@ -425,3 +425,92 @@ test("create_session terminal=true locally starts a pty session and returns its 
   expect(r.note).toBeUndefined();
   expect(calls[0]).toMatchObject({ prompt: "from local via vm\n\ntask" });
 });
+
+// pty を resume で付け直したセッション（ノードの再起動の後に Claude Town が付け直すもの）。
+// 付ける前の会話は jsonl から履歴の位置で返し、付けた後は台帳の seq で返す。番号は会話の件数から続く
+const PTY = "77777777-aaaa-bbbb-cccc-dddddddddddd";
+function ptyHarness(historyLen: number) {
+  const past = Array.from({ length: historyLen }, (_, i) => i === historyLen - 1
+    ? { type: "assistant", uuid: `h${i}`, message: { role: "assistant", content: [{ type: "text", text: "old reply" }] } }
+    : { type: "user", uuid: `h${i}`, message: { role: "user", content: `old ${i}` } });
+  const pty = new FakeDriver({ id: PTY, capabilities: { ...caps(true), terminal: true }, kind: "pty" });
+  pty.state = "idle";
+  pty.cwd = realpathSync(tmpdir());
+  const counted: string[] = [];
+  const h = harness({
+    startPty: (async () => pty) as unknown as Deps["startPty"],
+    history: {
+      list: async () => [],
+      get: async () => undefined,
+      count: async (id: string) => { counted.push(id); return id === PTY ? past.length : 0; },
+      messages: async (id: string, after = 0, limit = 200) => {
+        const m = id === PTY ? past.slice(after, after + limit) : [];
+        return { messages: m, next: m.length ? after + m.length : undefined };
+      },
+    } as unknown as Deps["history"],
+  });
+  return { ...h, pty, past, counted };
+}
+const get = async (app: { fetch: (r: Request) => Promise<Response> }, path: string) => (await app.fetch(new Request(`http://127.0.0.1${path}`))).json() as Promise<any>;
+
+test("a resumed pty session returns the earlier conversation from history, then the live events, with seq after the history count", async () => {
+  const { app, pty, counted } = ptyHarness(250);
+  const res = await app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: pty.cwd, terminal: true, resume: PTY }) }));
+  const created = await res.json() as { cursor: number; kind: string };
+  expect(created).toMatchObject({ kind: "pty", cursor: 250 });
+  expect(counted).toEqual([PTY]);
+  pty.push({ type: "user", data: { type: "user", message: { role: "user", content: "new" } } });
+  pty.push({ type: "assistant", data: { type: "assistant", message: { content: [{ type: "text", text: "new reply" }] } } });
+  await settle();
+  const p1 = await get(app, `/api/sessions/${PTY}/messages?after=0`);
+  expect(p1.messages.length).toBe(200);
+  expect(p1.messages[0]).toMatchObject({ uuid: "h0" });
+  expect(p1.messages.every((m: { seq?: number }) => m.seq === undefined)).toBe(true);
+  expect(p1.next).toBe(200);
+  // 履歴の残りを読み切ったページには、続けて台帳のイベントが入る
+  const p2 = await get(app, `/api/sessions/${PTY}/messages?after=200`);
+  expect(p2.messages.length).toBe(52);
+  expect(p2.messages[49]).toMatchObject({ uuid: "h249" });
+  expect(p2.messages.slice(50).map((m: { seq: number }) => m.seq)).toEqual([251, 252]);
+  expect(p2.next).toBe(252);
+  expect(await get(app, `/api/sessions/${PTY}/messages?after=252`)).toEqual({ messages: [] });
+  expect((await get(app, `/api/sessions/${PTY}`)).cursor).toBe(252);
+});
+
+test("a new pty session (no resume) does not read the history and counts from 0 as before", async () => {
+  const { app, pty, counted } = ptyHarness(3);
+  const res = await app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: pty.cwd, terminal: true }) }));
+  expect(await res.json()).toMatchObject({ kind: "pty", cursor: 0 });
+  expect(counted).toEqual([]);
+  pty.push({ type: "assistant", data: { type: "assistant", message: { content: [{ type: "text", text: "hi" }] } } });
+  await settle();
+  const p = await get(app, `/api/sessions/${PTY}/messages?after=0`);
+  expect(p.messages.map((m: { seq: number }) => m.seq)).toEqual([1]);
+});
+
+test("create_session resume on a pty returns the history count as cursor, and send_message then read_messages picks up only the new reply", async () => {
+  const { app, pty } = ptyHarness(3);
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "create_session", arguments: { cwd: pty.cwd, terminal: true, resume: PTY } }));
+  expect(r).toMatchObject({ id: PTY, kind: "pty", cursor: 3 });
+  // cursor から読むと、前の会話の返事を今の返事として拾わない
+  const idle = text(await c.callTool({ name: "read_messages", arguments: { session: PTY, after: r.cursor, wait_seconds: 2 } }));
+  expect(idle).not.toContain("old reply");
+  expect(idle).toMatch(/stop=timeout state=idle pending=0 cursor=3 /);
+  const sent = json(await c.callTool({ name: "send_message", arguments: { session: PTY, text: "go" } }));
+  expect(sent.cursor).toBe(3);
+  expect(pty.sent).toEqual(["from local via vm\n\ngo"]);
+  pty.push({ type: "user", data: { type: "user", message: { role: "user", content: "from local via vm\n\ngo" } } });
+  pty.push({ type: "assistant", data: { type: "assistant", message: { content: [{ type: "text", text: "new reply" }] } } });
+  pty.push({ type: "result", data: { type: "result", subtype: "success", result: "new reply" } });
+  await settle();
+  const out = text(await c.callTool({ name: "read_messages", arguments: { session: PTY, after: sent.cursor, wait_seconds: 5 } }));
+  expect(out).toContain("new reply");
+  expect(out).not.toContain("old reply");
+  expect(out).toMatch(/stop=result .* cursor=6 /);
+  // after=0 からは前の会話も読める
+  const all = text(await c.callTool({ name: "read_messages", arguments: { session: PTY, after: 0, wait_seconds: 2 } }));
+  expect(all).toContain("old reply");
+  expect(all).toContain("new reply");
+  expect(all).toMatch(/stop=result .* cursor=6 /);
+});

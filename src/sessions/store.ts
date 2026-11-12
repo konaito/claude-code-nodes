@@ -13,6 +13,7 @@ type Entry = {
   driver: Driver;
   events: DriverEvent[];
   seq: number;        // この id で最後に振った番号。同じ id を入れ直しても引き継ぐ
+  historyBase: number; // これより前の番号は台帳に無く、会話の履歴（jsonl）の位置で数える。付けた時点の履歴の件数（pty の resume）。無ければ 0
   trimmedTo: number;  // 上限超えで捨てた最後の seq。これ以前のカーソルは欠落がある
   ended: boolean;
   endedAt?: number;
@@ -38,11 +39,14 @@ export class SessionStore {
     this.now = opts.now ?? Date.now;
   }
 
-  add(d: Driver) {
+  // historyBase を渡すと、番号をそこから振る（入れ直しで前の番号のほうが大きければ前の番号から）。
+  // historyBase より前の位置は履歴の件数で数える（api/sessions.ts の messages が jsonl から返す）
+  add(d: Driver, opts: { historyBase?: number } = {}) {
     this.sweep();
     const old = this.entries.get(d.id);
     if (old) { for (const s of old.subs) s.close(); old.subs.clear(); }
-    const e: Entry = { driver: d, events: [], seq: old?.seq ?? 0, trimmedTo: old?.trimmedTo ?? 0, ended: false, subs: new Set(), lastState: d.summary().state };
+    const historyBase = Math.max(0, opts.historyBase ?? 0);
+    const e: Entry = { driver: d, events: [], seq: Math.max(old?.seq ?? 0, historyBase), historyBase, trimmedTo: old?.trimmedTo ?? 0, ended: false, subs: new Set(), lastState: d.summary().state };
     this.entries.set(d.id, e);
     this.emitChange(d);
     void this.pump(e);
@@ -51,6 +55,8 @@ export class SessionStore {
   list(): SessionSummary[] { this.sweep(); return [...this.entries.values()].map((e) => e.driver.summary()); }
   // この id で最後に振った seq（stream_event を含む）。送る前の末尾として CLI に返す
   lastSeq(id: string): number | undefined { return this.entries.get(id)?.seq; }
+  // add で渡した historyBase。これより前の after は履歴の位置
+  historyBase(id: string): number { return this.entries.get(id)?.historyBase ?? 0; }
   remove(id: string) {
     const e = this.entries.get(id);
     if (!e) return;

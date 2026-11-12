@@ -6,7 +6,7 @@ import type { Driver } from "../engine/driver";
 import type { AgentInfo } from "../engine/agents";
 import type { StartOptions } from "../engine/node-driver";
 import type { PtyDriver, PtyStartOptions } from "../engine/pty-driver";
-import type { History } from "../engine/history";
+import { PAGE as HISTORY_PAGE, type History } from "../engine/history";
 import type { SessionStore } from "../sessions/store";
 import type { PermissionAnswer, SessionSummary } from "../sessions/types";
 import type { Identity, Caller } from "../identity/identity";
@@ -231,10 +231,15 @@ export class Sessions {
       const settings = await lobbySettingsFor(cwd, this.d.lobby);
       const prompt = body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined;
       const depth = await this.stampDepth(tracer, child.depth, body.resume);
+      // resume のときは、claude を起動する前に会話の件数を数える。起動した後は付け直した後の行も jsonl に書かれ、台帳の行と二重になる。
+      // 台帳の番号はこの件数から振り、それより前は messages が jsonl から返す（ノードの再起動で付け直しても前の会話が見える）。
+      // fork は新しい id の jsonl がまだ無いので 0（今までどおり、付けた後の分だけ）
+      const historyBase = body.resume && !body.fork ? await this.d.history.count(body.resume).catch(() => 0) : 0;
       const driver = await this.d.startPty({ cwd, prompt, permissionMode: body.permissionMode, model: body.model, resume: body.resume, fork: body.fork, settings, ...pty }, caller);
       this.setDepth(driver.id, depth);
-      this.d.store.add(driver);
-      return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth };
+      this.d.store.add(driver, { historyBase });
+      // cursor は read_messages の after に渡す値。0 だと resume した前の会話の返事を、今の返事として読んでしまう
+      return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth, cursor: historyBase };
     }
     // sessionId は呼び手から受けない（既にある jsonl と重ねないため）。新規でプロンプトが無いときだけノードが決める
     const sessionId = !body.prompt && !body.resume ? crypto.randomUUID() : undefined;
@@ -274,11 +279,21 @@ export class Sessions {
     // cursor は無くても詳細は返す（古い CLI は messages をたどって数える）
     return Promise.resolve().then(() => this.d.history.count(id)).catch(() => undefined);
   }
+  // 生きているものは台帳のイベント（seq）を返す。台帳に付けた時点より前（after が historyBase より前）は、jsonl の会話を履歴の位置で返す。
+  // 履歴の分を読み切ったページには、続けて台帳のイベントを入れる（空のページを返すと、読み手が境界の手前で止まる）
   async messages(id: string, after: number) {
     const liveOne = this.d.store.get(id);
     if (liveOne && liveOne.summary().state !== "exited") {
+      const base = this.d.store.historyBase(id);
+      let past: unknown[] = [];
+      if (after < base) {
+        const limit = Math.min(HISTORY_PAGE, base - after);
+        past = (await this.d.history.messages(id, after, limit).catch(() => ({ messages: [] }))).messages.slice(0, limit);
+        if (past.length === limit && after + limit < base) return { messages: past, next: after + limit };
+      }
       const events = this.d.store.eventsSince(id, after);
-      return { messages: events, next: events.length ? events[events.length - 1]!.seq : undefined };
+      const next = events.length ? events[events.length - 1]!.seq : past.length ? after + past.length : undefined;
+      return { messages: [...past, ...events], next };
     }
     return this.d.history.messages(id, after);
   }

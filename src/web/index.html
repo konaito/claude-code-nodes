@@ -376,14 +376,16 @@ async function openChat(id, keep) {
   try {
     const r = await api(cur.peer, `/sessions/${id}/messages?after=0`);
     items = r.messages || [];
-    lastSeq = items.length && items[items.length - 1].seq != null ? items[items.length - 1].seq : 0;
-    // 履歴はページ単位なので、続きがあれば読み切る
+    // 履歴はページ単位なので、続きがあれば読み切る。PTY のセッションは前半が履歴、後半が台帳のイベント（seq あり）になる
     let next = r.next;
     while (next != null && items.length && items[items.length - 1].seq == null && items.length < 4000) {
       const more = await api(cur.peer, `/sessions/${id}/messages?after=${next}`);
       if (!more.messages || !more.messages.length) break;
       items = items.concat(more.messages); next = more.next;
     }
+    // SSE は読み切った後の最後の seq から続ける
+    const lastLive = [...items].reverse().find((m) => m.seq != null);
+    lastSeq = lastLive ? lastLive.seq : 0;
   } catch (e) { $("feed").innerHTML = `<div class="empty">読めない: ${esc(e.message)}</div>`; return; }
   $("feed").innerHTML = items.map(itemHtml).filter(Boolean).join("") || `<div class="empty">${detail.awaitingFirst ? (isLobby(cur.peer, detail.cwd) ? "受け口。やりたいことを書いて送ると、行き先のディレクトリに子を立てて、その子を返す" : "まだ動いていない。1通目を送ると動き出す") : "まだ何も無い"}</div>`;
   renderPending();

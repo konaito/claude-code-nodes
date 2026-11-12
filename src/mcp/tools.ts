@@ -196,8 +196,8 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       if (a.model) body.model = a.model;
       if (a.resume) body.resume = a.resume;
       if (a.fork) body.fork = true;
-      let r: { id: string; cwd?: string; state?: string; kind?: string; depth?: number };
-      try { r = await call<{ id: string; cwd?: string; state?: string; kind?: string; depth?: number }>(ctx, "POST", a.peer, "/api/sessions", body); }
+      let r: { id: string; cwd?: string; state?: string; kind?: string; depth?: number; cursor?: number };
+      try { r = await call<{ id: string; cwd?: string; state?: string; kind?: string; depth?: number; cursor?: number }>(ctx, "POST", a.peer, "/api/sessions", body); }
       catch (e) {
         // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
         if (e instanceof ToolError && (!a.cwd || !a.prompt) && !a.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
@@ -207,7 +207,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       }
       // terminal を知らない古い版のノードは、黙って SDK の子を立てる
       const notes = [note, a.terminal && r.kind !== "pty" ? `${a.peer || base.nodeName} runs an older ccn without terminal sessions; it started a ${r.kind ?? "node"} session instead` : undefined].filter(Boolean);
-      return { peer: a.peer || base.nodeName, id: r.id, kind: r.kind, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, ...(r.depth !== undefined ? { depth: r.depth } : {}), cursor: 0, ...(notes.length ? { note: notes.join("; ") } : {}) };
+      return { peer: a.peer || base.nodeName, id: r.id, kind: r.kind, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, ...(r.depth !== undefined ? { depth: r.depth } : {}), cursor: typeof r.cursor === "number" ? r.cursor : 0, ...(notes.length ? { note: notes.join("; ") } : {}) };
     })();
   });
 

@@ -156,3 +156,20 @@ test("sessions that never got a first message are stopped and swept after the tt
   expect(a.stopped).toBe(1);
   expect(b.stopped).toBe(0);
 });
+
+// pty を resume で付け直すときは、番号を会話の件数（historyBase）から振る。それより前は jsonl の位置で数える
+test("add with historyBase numbers events after it, and a bigger old seq wins on re-add", async () => {
+  const store = new SessionStore();
+  const d = new FakeDriver({ id: "p1", capabilities: all, kind: "pty" });
+  store.add(d, { historyBase: 40 });
+  expect(store.lastSeq("p1")).toBe(40);
+  expect(store.historyBase("p1")).toBe(40);
+  d.push({ type: "user", data: 1 });
+  await settle();
+  expect(store.eventsSince("p1", 0).map((e) => e.seq)).toEqual([41]);
+  const again = new FakeDriver({ id: "p1", capabilities: all, kind: "pty" });
+  store.add(again, { historyBase: 10 });
+  expect(store.lastSeq("p1")).toBe(41);
+  expect(store.historyBase("p1")).toBe(10);
+  expect(store.historyBase("unknown")).toBe(0);
+});
