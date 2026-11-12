@@ -165,6 +165,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       "Start a new Claude Code session (a child) on a node.",
       "Omit cwd to start in that node's lobby: a session whose job is to pick the right directory for a request, start a child there, and reply with a line `子: <peer>/<sessionId>` naming it. Usual flow: create_session with no cwd and no prompt, send_message with the request, read_messages until stop=result, then talk to the named child directly with send_message and read_messages.",
       "Omit prompt to create an idle session that waits for its first message: the id is fixed at once, and claude starts when send_message delivers the first message. With a prompt it starts working right away. A session that never gets a message is cleaned up after 30 minutes.",
+      "Set terminal=true to run the child as an interactive claude in a pseudo-terminal owned by the node (kind pty): a person can watch and type in it through the node's terminal endpoints, and you still drive it with send_message, read_messages, answer_permission, interrupt_session and stop_session. A pty session starts claude at once even without a prompt. name sets its display title.",
       "Every message arrives with a from line naming you. Returns the session id, its cwd, the parent name it records, and cursor 0 for read_messages. Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does. The lobby gives its child the lobby's own mode.",
     ].join(" "),
     inputSchema: {
@@ -175,6 +176,10 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       model: z.string().optional(),
       resume: z.string().optional().describe("Session id to continue instead of starting fresh"),
       fork: z.boolean().optional().describe("With resume, branch into a new session id"),
+      terminal: z.boolean().optional().describe("Run as an interactive claude in a pseudo-terminal on the node (kind pty), so a person can also see and type in it"),
+      name: z.string().min(1).max(200).optional().describe("Display title (claude --name). With terminal only"),
+      cols: z.number().int().min(10).max(1000).optional().describe("Initial terminal width. With terminal only. Default 120"),
+      rows: z.number().int().min(10).max(1000).optional().describe("Initial terminal height. With terminal only. Default 40"),
       as: asArg,
       as_session: asSessionArg,
     },
@@ -183,14 +188,15 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     const { ctx, note } = callerWith(base, a.as, a.as_session);
     return run(async () => {
       const body: Record<string, unknown> = {};
+      if (a.terminal) { body.terminal = true; if (a.name) body.name = a.name; if (a.cols) body.cols = a.cols; if (a.rows) body.rows = a.rows; }
       if (a.cwd) body.cwd = a.cwd;
       if (a.prompt) body.prompt = a.prompt;
       if (a.permission_mode) body.permissionMode = a.permission_mode;
       if (a.model) body.model = a.model;
       if (a.resume) body.resume = a.resume;
       if (a.fork) body.fork = true;
-      let r: { id: string; cwd?: string; state?: string };
-      try { r = await call<{ id: string; cwd?: string; state?: string }>(ctx, "POST", a.peer, "/api/sessions", body); }
+      let r: { id: string; cwd?: string; state?: string; kind?: string };
+      try { r = await call<{ id: string; cwd?: string; state?: string; kind?: string }>(ctx, "POST", a.peer, "/api/sessions", body); }
       catch (e) {
         // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
         if (e instanceof ToolError && (!a.cwd || !a.prompt) && !a.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
@@ -198,13 +204,15 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
         }
         throw e;
       }
-      return { peer: a.peer || base.nodeName, id: r.id, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, cursor: 0, ...(note ? { note } : {}) };
+      // terminal を知らない古い版のノードは、黙って SDK の子を立てる
+      const notes = [note, a.terminal && r.kind !== "pty" ? `${a.peer || base.nodeName} runs an older ccn without terminal sessions; it started a ${r.kind ?? "node"} session instead` : undefined].filter(Boolean);
+      return { peer: a.peer || base.nodeName, id: r.id, kind: r.kind, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, cursor: 0, ...(notes.length ? { note: notes.join("; ") } : {}) };
     })();
   });
 
   server.registerTool("send_message", {
     title: "Send message",
-    description: "Send one message to a session. Node children receive it as the next user turn; terminal sessions (started by a person) receive it as a message from another session. Returns cursor: the seq before this message. Pass it as `after` to read_messages to get the reply. Send one message per turn and wait for the reply before sending more.",
+    description: "Send one message to a session. Node children receive it as the next user turn; pty sessions get it pasted into their terminal and submitted (refused while a permission request is pending: answer it first); terminal sessions (started by a person) receive it as a message from another session. Returns cursor: the seq before this message. Pass it as `after` to read_messages to get the reply. Send one message per turn and wait for the reply before sending more.",
     inputSchema: { peer: peerArg, session: sessionArg, text: z.string().min(1), as: asArg, as_session: asSessionArg },
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   }, async (a) => {
@@ -237,7 +245,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
 
   server.registerTool("answer_permission", {
     title: "Answer permission",
-    description: "Allow or deny a pending tool permission request of a node child (state waiting_permission). request_id may be omitted when exactly one is pending. Deny needs a message telling the child why. Terminal sessions cannot be answered.",
+    description: "Allow or deny a pending tool permission request of a node child or a pty session (state waiting_permission). request_id may be omitted when exactly one is pending. Deny needs a message telling the child why. Terminal sessions cannot be answered.",
     inputSchema: {
       peer: peerArg,
       session: sessionArg,
@@ -262,7 +270,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
 
   server.registerTool("interrupt_session", {
     title: "Interrupt session",
-    description: "Stop the current turn of a node child. The session stays alive and accepts the next message. Terminal sessions cannot be interrupted.",
+    description: "Stop the current turn of a node child or a pty session (pty: presses Esc). The session stays alive and accepts the next message. Terminal sessions cannot be interrupted.",
     inputSchema: { peer: peerArg, session: sessionArg },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (a) => run(async () => {
@@ -273,7 +281,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
 
   server.registerTool("stop_session", {
     title: "Stop session",
-    description: "End a node child's process. The conversation is kept and can be continued with create_session resume=<id>. Terminal sessions cannot be stopped.",
+    description: "End a node child's or a pty session's process. The conversation is kept and can be continued with create_session resume=<id>. Terminal sessions cannot be stopped.",
     inputSchema: { peer: peerArg, session: sessionArg },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (a) => run(async () => {

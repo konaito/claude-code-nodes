@@ -1,6 +1,7 @@
 // セッションの型。API は種類（kind）ではなく能力（capabilities）で振る舞いを決める
-export type Kind = "node" | "terminal";
-export type Capabilities = { send: boolean; permissions: boolean; interrupt: boolean; stop: boolean; events: boolean };
+export type Kind = "node" | "terminal" | "pty"; // pty はノードが PTY で動かす対話の claude（src/engine/pty-driver.ts）
+// terminal は端末の口（/terminal、/terminal/input、/terminal/resize）。PTY のセッションだけが持つ
+export type Capabilities = { send: boolean; permissions: boolean; interrupt: boolean; stop: boolean; events: boolean; terminal?: boolean };
 export type State = "running" | "waiting_permission" | "idle" | "exited";
 
 export type SessionSummary = {

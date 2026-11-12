@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import type { Driver } from "../engine/driver";
 import type { AgentInfo } from "../engine/agents";
 import type { StartOptions } from "../engine/node-driver";
+import type { PtyDriver, PtyStartOptions } from "../engine/pty-driver";
 import type { History } from "../engine/history";
 import type { SessionStore } from "../sessions/store";
 import type { PermissionAnswer, SessionSummary } from "../sessions/types";
@@ -27,6 +28,7 @@ export type Deps = {
   identity: Identity;
   history: History;
   startNode: (opts: StartOptions, caller: Caller) => Promise<Driver>;
+  startPty?: (opts: PtyStartOptions, caller: Caller) => Promise<PtyDriver>; // terminal: true の作成。無いノードは 400 で断る
   agents: () => Promise<AgentInfo[]>;
   terminalFor: (a: AgentInfo) => Driver;
   host: () => Promise<HostInfo>;
@@ -40,6 +42,17 @@ export type Deps = {
 };
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
+
+// terminal: true のときの name、cols、rows。端末の大きさは常識的な範囲だけ受ける
+function ptyFields(b: { name?: unknown; cols?: unknown; rows?: unknown }): { name?: string; cols?: number; rows?: number } {
+  const dim = (v: unknown, k: string) => {
+    if (v === undefined) return undefined;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 10 || v > 1000) throw new HttpError(400, { error: `${k} must be an integer from 10 to 1000` });
+    return v;
+  };
+  if (b.name !== undefined && (typeof b.name !== "string" || !b.name.trim() || b.name.length > 200)) throw new HttpError(400, { error: "name must be a non-empty string up to 200 chars" });
+  return { name: b.name as string | undefined, cols: dim(b.cols, "cols"), rows: dim(b.rows, "rows") };
+}
 
 const CACHE_MS = 2000; // 一覧のたびに claude を起動しないための短いメモリキャッシュ
 
@@ -97,7 +110,8 @@ export class Sessions {
   }
   // cwd を省くと受け口に立てる。prompt も resume も無ければ id だけ先に決め、1通目（send）が来るまで claude を起動しない（state は idle）
   async create(req: Request, caller: Caller) {
-    const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown };
+    const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown; terminal?: unknown; name?: unknown; cols?: unknown; rows?: unknown };
+    const pty = body.terminal === true ? ptyFields(body) : undefined;
     if (body.cwd !== undefined && (typeof body.cwd !== "string" || !body.cwd)) throw new HttpError(400, { error: "cwd must be a non-empty string or omitted (omit for the lobby)" });
     const asked = typeof body.cwd === "string" ? body.cwd : this.d.lobby;
     // symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
@@ -111,6 +125,14 @@ export class Sessions {
       const liveOne = this.d.store.get(body.resume);
       if (liveOne && liveOne.summary().state !== "exited") throw new HttpError(409, { error: "session is still running", hint: "delete first" });
     }
+    if (pty) {
+      if (!this.d.startPty) throw new HttpError(400, { error: "terminal sessions are not supported on this node" });
+      const settings = await lobbySettingsFor(cwd, this.d.lobby);
+      const prompt = body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined;
+      const driver = await this.d.startPty({ cwd, prompt, permissionMode: body.permissionMode, model: body.model, resume: body.resume, fork: body.fork, settings, ...pty }, caller);
+      this.d.store.add(driver);
+      return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind };
+    }
     // sessionId は呼び手から受けない（既にある jsonl と重ねないため）。新規でプロンプトが無いときだけノードが決める
     const sessionId = !body.prompt && !body.resume ? crypto.randomUUID() : undefined;
     // settings は呼び手から受けない。受け口（resume を含む）のときだけ、ノードが書いた受け口の許可を渡す
@@ -118,7 +140,7 @@ export class Sessions {
     const opts: StartOptions = { ...body, cwd, sessionId, settings, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
     const driver = await this.d.startNode(opts, caller);
     this.d.store.add(driver);
-    return { id: driver.id, cwd, state: driver.summary().state };
+    return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind };
   }
   // cursor は送る前の末尾。CLI の send が控え、read の after にする
   async detail(id: string) {

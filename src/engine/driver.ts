@@ -1,4 +1,4 @@
-// エンジンの境界。1つのセッションを動かす Driver の契約。実装は NodeDriver（SDK）と TerminalDriver（受信ソケット）
+// エンジンの境界。1つのセッションを動かす Driver の契約。実装は NodeDriver（SDK）、TerminalDriver（受信ソケット）、PtyDriver（PTY の対話 claude）
 import type { Capabilities, Kind, PendingPermission, PermissionAnswer, SessionSummary } from "../sessions/types";
 
 // Driver が出す生のイベント。seq は台帳（SessionStore）が振る
@@ -10,7 +10,7 @@ export interface Driver {
   readonly capabilities: Capabilities;
   readonly id: string; // Claude Code の session id
   summary(): SessionSummary;
-  send(text: string): Promise<{ delivered: "stdin" | "socket" }>;
+  send(text: string): Promise<{ delivered: "stdin" | "socket" | "pty" }>;
   events(): AsyncIterable<RawEvent>; // 生きている間、順に出す。消費者は台帳（SessionStore）1つだけの前提
   pending(): PendingPermission[];
   answer(requestId: string, a: PermissionAnswer): Promise<void>; // capabilities.permissions が false なら throw
@@ -27,6 +27,8 @@ export class CapabilityError extends Error {
 }
 // 境界の例外。api/errors.ts はここだけを見て状態コードに変える
 export class ExitedError extends Error { constructor(reason?: string) { super(`session exited${reason ? `: ${reason}` : ""}`); this.name = "ExitedError"; } }
+// 今は受けられない（PTY のセッションが承認画面を出している間の send など）。409
+export class BusyError extends Error { constructor(msg: string) { super(msg); this.name = "BusyError"; } }
 export class NotFoundError extends Error { constructor(msg: string) { super(msg); this.name = "NotFoundError"; } }
 export class SocketGoneError extends Error {
   constructor(paths: string[]) { super(`no inbox socket: ${paths.join(", ") || "(no pid)"}`); this.name = "SocketGoneError"; }

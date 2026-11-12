@@ -10,6 +10,7 @@ import { AccessIdentity } from "./identity/access";
 import { History } from "./engine/history";
 import { NodeDriver } from "./engine/node-driver";
 import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
+import { PtyDriver, bunPtySpawn } from "./engine/pty-driver";
 import { listAgents, bunRunner } from "./engine/agents";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
@@ -27,6 +28,11 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     identity: identityFor(cfg),
     history: new History({ listSessions, getSessionMessages, getSessionInfo }),
     startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined }),
+    // PTY の子。hooks はノード自身（127.0.0.1）に送らせる。状態の照らし合わせは `claude agents --json` の pid で引く
+    startPty: (opts, caller) => PtyDriver.start(opts, {
+      spawn: bunPtySpawn, hookBase: `http://127.0.0.1:${cfg.port}`, caller: caller.id, claudePath: Bun.which("claude") ?? undefined,
+      agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
+    }),
     agents: () => listAgents(bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),
     host: async () => ({ claudeVersion: (await bunRunner(["claude", "--version"])).stdout.trim(), account: await account(), load: loadavg() }),

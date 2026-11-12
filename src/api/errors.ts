@@ -1,5 +1,5 @@
 // API のエラーを HTTP の応答に統一する。境界の例外（能力なし、終了済み、ソケット無し、見つからない）をここで状態コードに変える
-import { CapabilityError, ExitedError, NotFoundError, SocketGoneError } from "../engine/driver";
+import { BusyError, CapabilityError, ExitedError, NotFoundError, SocketGoneError } from "../engine/driver";
 import { AccessDenied } from "../identity/identity";
 import { RegistryError } from "../registry/registry";
 import { PeerUnreachableError, RelayNotConfiguredError, UnknownPeerError } from "../relay/relay";
@@ -21,6 +21,7 @@ export function toResponse(e: unknown): Response {
   if (e instanceof ExitedError) return json({ error: e.message, hint: "resume" }, 409);
   if (e instanceof SocketGoneError) return json({ error: e.message }, 410);
   if (e instanceof NotFoundError) return json({ error: e.message }, 404);
+  if (e instanceof BusyError) return json({ error: e.message }, 409);
   console.error(e);
   return json({ error: e instanceof Error ? e.message : String(e) }, 500);
 }

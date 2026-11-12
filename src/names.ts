@@ -60,6 +60,9 @@ export const LEGACY_SERVICE_TOKEN = "cc-node";
 export const ENTRY_DOMAIN = "ccn.fybe.jp";         // 入口の既定のホスト名
 
 // MCP の口と、公開する説明書。/skill.md の正本は <appRoot>/skills/<PUBLIC_SKILL_NAME>/SKILL.md（束に入り、利用者の機械にはリンクしない）
+// PTY のセッションの hooks（http）の宛先。<PTY_HOOK_PATH>/<sessionId> に claude が POST する。認証は Access ではなくセッションごとの token
+export const PTY_HOOK_PATH = "/hooks/pty";
+export const PTY_HOOK_TOKEN_HEADER = "x-ccn-hook-token";
 export const MCP_PATH = "/mcp";
 export const MCP_SERVER_NAME = "ccn";              // serverInfo の名前。/skill.md の claude mcp add の例もこの名前にそろえる
 export const SKILL_MD_PATH = "/skill.md";
