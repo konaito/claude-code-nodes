@@ -588,3 +588,40 @@ test("resuming the same session again in the same node also changes the epoch; a
   expect(h.epoch).toBe("history");
   expect(h.messages.length).toBe(3);
 });
+
+// node（SDK）のセッションを resume したときも、pty と同じく前の会話を jsonl から返す。SDK の resume は前の会話を流し直さないので、
+// 数えないと after=0 が付け直した後の分しか返さず、epoch が変わって 0 から読み直す読み手から前の会話が消える
+test("a resumed node session also returns the earlier conversation from history, and create returns the history count as cursor", async () => {
+  const NODE = "88888888-aaaa-bbbb-cccc-dddddddddddd";
+  const past = [
+    { type: "user", uuid: "n0", message: { role: "user", content: "NODE1" } },
+    { type: "assistant", uuid: "n1", message: { role: "assistant", content: [{ type: "text", text: "NODE1" }] } },
+  ];
+  const d = new FakeDriver({ id: NODE, capabilities: caps(true) });
+  d.state = "idle";
+  const counted: string[] = [];
+  const { app } = harness({
+    startNode: async (opts) => { d.cwd = opts.cwd; return d; },
+    history: {
+      list: async () => [],
+      get: async () => undefined,
+      count: async (id: string) => { counted.push(id); return id === NODE ? past.length : 0; },
+      messages: async (id: string, after = 0, limit = 200) => {
+        const m = id === NODE ? past.slice(after, after + limit) : [];
+        return { messages: m, next: m.length ? after + m.length : undefined };
+      },
+    } as unknown as Deps["history"],
+  });
+  const res = await app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: realpathSync(tmpdir()), resume: NODE, prompt: "NODE2" }) }));
+  expect(await res.json()).toMatchObject({ id: NODE, kind: "node", cursor: 2 });
+  expect(counted).toEqual([NODE]);
+  d.push({ type: "assistant", data: { type: "assistant", message: { content: [{ type: "text", text: "NODE2" }] } } });
+  await settle();
+  const all = await get(app, `/api/sessions/${NODE}/messages?after=0`);
+  expect(all.messages.map((m: { uuid?: string; seq?: number }) => m.seq ?? m.uuid)).toEqual(["n0", "n1", 3]);
+  // 新しく立てる node（resume 無し）は数えず、0 から
+  counted.length = 0;
+  const fresh = await app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: realpathSync(tmpdir()), prompt: "hi" }) }));
+  expect(await fresh.json()).toMatchObject({ cursor: 0 });
+  expect(counted).toEqual([]);
+});

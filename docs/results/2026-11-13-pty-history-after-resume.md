@@ -86,3 +86,24 @@ messages の応答に `epoch` を入れた。
 3. 読み手を再開すると、epoch の違いに気づいて0から読み直し、4件（PONG1 と PONG2 の user と assistant）に置き換えた。
 4. 読み手を動かしたままノードを起動し直した。付け直す前は jsonl から返る（epoch `history`）ので読み直して4件、付け直した後（`"cursor":4`、epoch `mwdup1gw.1`）も読み直して4件だった。
 5. PONG3 を送ると、user と assistant の2件が差分で足された。
+
+### node（SDK）のセッションの resume にも件数を入れた
+
+node のセッションを resume したときは、台帳の番号を 0 から振っていた。
+SDK の resume は前の会話を流し直さない。
+試験用のノードで node を1体立てて NODE1 を受け、止めて resume で NODE2 を送ると、`after=0` は NODE2 の assistant だけだった。
+このままだと、epoch が変わって0から読み直す読み手の画面から、前の会話が消える。
+
+pty と同じく、resume（fork 以外）では起動する前に `History.count` で件数を数え、台帳の番号をそこから振るようにした。
+作成の応答にも `cursor`（件数）を入れた。
+MCP の `create_session` はこの値を返すので、resume した直後の `read_messages` が前の返事を今の返事として読まない。
+
+試験用のノードで、node のセッション（dfc886be）を Claude Town の `conversation` で読み続けた。
+
+1. 終わった状態（epoch `history`）で4件（NODE1 と NODE2 の user と assistant）。
+2. resume で NODE3 を送った（`"cursor":4`）。新しい epoch で読み直して4件、そのあと NODE3 の assistant が差分で足された。
+3. 読み続けている間にノードを起動し直した。jsonl から6件を読み直し、resume で NODE4 を送ると（`"cursor":6`）、新しい epoch で6件を読み直し、NODE4 が差分で足された。
+4. 最後に、画面の7件、`after=0` の7件、保存分の7件が同じ並びだった。
+
+生きている node のセッションの台帳には、SDK に渡した文（user）が入らない。
+NODE4 の user の行は、セッションが終わって jsonl から読むまで出ない。これは直す前と同じ。

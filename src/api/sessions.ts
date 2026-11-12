@@ -250,10 +250,13 @@ export class Sessions {
     const settings = await lobbySettingsFor(cwd, this.d.lobby);
     const opts: StartOptions = { ...body, cwd, sessionId, settings, prompt: body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined } as StartOptions;
     const depth = await this.stampDepth(tracer, child.depth, body.resume);
+    // pty と同じく、resume では起動する前に会話の件数を数え、台帳の番号をそこから振る。SDK の resume は前の会話を流し直さないので、
+    // 数えないと after=0 が付け直した後の分しか返さず、0 から読み直す読み手（epoch が変わったときの Claude Town）から前の会話が消える
+    const historyBase = body.resume && !body.fork ? await Promise.resolve().then(() => this.d.history.count(body.resume!)).catch(() => 0) : 0;
     const driver = await this.d.startNode(opts, caller);
     this.setDepth(driver.id, depth);
-    this.d.store.add(driver);
-    return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth };
+    this.d.store.add(driver, { historyBase });
+    return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth, cursor: historyBase };
   }
   // resume（転出の取り込みも同じ）では呼び手が新しい親になる。元の親（刻んだ値か最初の文の from 行）の深さと比べて大きいほうを刻む。
   // 人が孫を resume しても深さ0に戻さない
