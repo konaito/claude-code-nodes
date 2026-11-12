@@ -1,6 +1,6 @@
 # PTY の Driver の版を本番の3台に配った記録（2026-11-12）
 
-PR #19（d5bd37f）の版を、konaito-pro、incertotech、vm の3台に配った。作業は konaito-pro の Specter のペイン（ccn-rollout-2）から行った。このペインはノードが立てたセッションではなく、端末のセッションである。本人は同日に、ccn 経由と親 meta-fc の端末の2回、3台の更新を承認した。
+PR #19（d5bd37f）の版を、konaito-pro、incertotech、vm の3台に配った。作業は konaito-pro の Specter のペイン（ccn-rollout-2）から行った。このペインはノードが立てたセッションではなく、端末のセッションである。親 meta-fc によると、本人は同日に ccn 経由と親の端末の2回、3台の更新を承認した。
 
 ## 結果のまとめ
 
@@ -42,7 +42,7 @@ PR #19（d5bd37f）の版を、konaito-pro、incertotech、vm の3台に配っ�
 
 ## 更新
 
-前回と同じ順番で、3台を `ccn update --from` で更新した。入口は incertotech である。
+前回と同じ順番で、3台を `ccn update --from` で更新した。入口（ccn.fybe.jp）は、前回の記録によると incertotech である。今回は確かめていない。
 
 | 台 | 時刻 | 入れた元 | 束の値の確認 |
 | --- | --- | --- | --- |
@@ -59,7 +59,7 @@ PR #19（d5bd37f）の版を、konaito-pro、incertotech、vm の3台に配っ�
 
 更新の直後に次を確かめた。
 
-- konaito-pro: ノードの pid は 42693 から 65083 に変わった。`/api/host` は2秒以内に返った。
+- konaito-pro: ノードの pid は 42693 から 65083 に変わった。`/api/host` は、更新の直後のポーリング（1秒おき、最大10回）の間に返った。
 - incertotech: 旧の pid 1199 は無くなり、新しい pid は 23382 だった。止まったスレッドを抱えた旧のノードは、再起動で終わった。
 - vm: 旧の pid 17244 は無くなり、新しい pid は 21021 だった。
 
@@ -95,7 +95,7 @@ konaito-pro から `bun /tmp/ccn-pty-rollout/check.ts <台>` を実行した。�
 | DELETE の4秒後 | GET は 404、一覧に同じ id は無い | 同左 | 同左 |
 | プロセス | `pgrep -f <id>` が空、`claude agents --json` に無い | 同左（ssh で確認） | 同左（orb で確認） |
 
-konaito-pro では、待たずに SSE を読む版も1回試した（`cbaf06e0-a95f-4953-a121-b006d4f1bcff`）。`size`、`replay`（10バイト）、`data` の順に届いた。止めた後も同じく、GET は 404 で、プロセスも無かった。
+konaito-pro では、待たずに SSE を読む版も1回試した（`cbaf06e0-a95f-4953-a121-b006d4f1bcff`）。`size`、`replay`、`data` の順に届いた。replay は空だった。起動の直後で、画面がまだ無かったためと見ている。止めた後も同じく、GET は 404 で、プロセスも無かった。
 
 この確認で、LaunchAgent（macOS）と systemd --user（vm）の常駐から PTY の claude を起動できた。また、Cloudflare の先の中継（`/n/incertotech/`、`/n/vm/`）でも端末の SSE が返った。どちらも PTY の Driver の記録では確かめていなかった項目である。
 
@@ -132,8 +132,9 @@ places を2回呼んだ後、新しいノード（pid 23382）を `sample` で2�
 
 runbook（`docs/runbooks/2026-11-11-mcp-skill-md.md` の「戻す」）のとおり、前の版の checkout から `ccn update --from <checkout>` を実行する。`ccn update` は `app.old` を消すので、各台に前の版は残っていない。
 
-- konaito-pro: `ccn update --from /tmp/ccn-pty-rollout/a-5a1b160`。中身は 5a1b160 の `git archive` で、値は `0ff8d8397e95` である。
-- incertotech と vm: 同じディレクトリを scp か orb で送り、`ccn update --from <送った先>` を実行する。
+- 5a1b160 を `git archive` で空のディレクトリに取り出す。取り出した後の値が `0ff8d8397e95` であることを確かめる。
+- konaito-pro では、そのディレクトリを `ccn update --from` に渡す。
+- incertotech と vm には、そのディレクトリを scp か orb で送り、`ccn update --from <送った先>` を実行する。
 
 今回は戻していない。
 
