@@ -246,6 +246,37 @@ test("a different repository at the clone target is refused", async () => {
   expect(d.summary().state).toBe("idle");
 });
 
+test("a running node child may move itself (the running turn is its own teleport call)", async () => {
+  const { src, dst } = pair();
+  const d = liveSrc(src, "running");
+  const r = await src.app.fetch(new Request(`http://127.0.0.1/api/sessions/${ID}/teleport`, { method: "POST", headers: { "content-type": "application/json", "x-ccn-from": `agent:src/${ID.slice(0, 8)}/self` }, body: JSON.stringify({ to: "dst" }) }));
+  expect(r.status).toBe(200);
+  expect(d.summary().state).toBe("exited");
+  expect(dst.starts[0]!.resume).toBe(ID);
+  // 別のセッションからは断る
+  const { src: src2 } = pair();
+  liveSrc(src2, "running");
+  const r2 = await src2.app.fetch(new Request(`http://127.0.0.1/api/sessions/${ID}/teleport`, { method: "POST", headers: { "content-type": "application/json", "x-ccn-from": "agent:src/bbbbbbbb/other" }, body: JSON.stringify({ to: "dst" }) }));
+  expect(r2.status).toBe(409);
+});
+
+test("a busy source is refused before the check, so nothing is cloned at the destination", async () => {
+  const { src } = pair({ places: () => [] });
+  liveSrc(src, "running");
+  const { rmSync } = await import("node:fs");
+  rmSync(join(dstHome, "Documents"), { recursive: true, force: true });
+  const r = await src.app.fetch(post(`/api/sessions/${ID}/teleport`, { to: "dst" }));
+  expect(r.status).toBe(409);
+  expect(existsSync(join(dstHome, "Documents"))).toBe(false);
+});
+
+test("the import result tells how to resume after the idle child is swept", async () => {
+  const { src } = pair();
+  liveSrc(src);
+  const body = (await (await src.app.fetch(post(`/api/sessions/${ID}/teleport`, { to: "dst" }))).json()) as { resume: string };
+  expect(body.resume).toBe(`ccn new ${dstRepo} --peer dst --resume ${ID}`);
+});
+
 test("teleporting to the node itself or to an old peer is refused with a clear message", async () => {
   const { src } = pair();
   liveSrc(src);
@@ -267,6 +298,7 @@ test("ccn teleport without --to brings the session into this machine and prints 
       teleport: { fns: fileFns(dstConfig), git: bunGit, configDir: dstConfig },
       place: { git: bunGit, home: dstHome, roots: [dstHome], lobby: join(dstHome, "lobby"), places: async () => local.places() },
       interactive: false, open: async () => { throw new Error("must not open"); },
+      localLive: async () => false,
     }),
   });
   expect(out.join("\n")).toContain(`開く: cd ${dstRepo} && claude --resume ${ID}`);
@@ -274,4 +306,23 @@ test("ccn teleport without --to brings the session into this machine and prints 
   expect(readFileSync(join(dstRepo, "a.txt"), "utf8")).toBe("pulled\n");
   expect(existsSync(join(dstConfig, "projects", projectDirName(dstRepo), `${ID}.jsonl`))).toBe(true);
   expect(src.store.get(ID)).toBeUndefined();
+});
+
+test("ccn teleport refuses to move into this machine when the same id is running here", async () => {
+  const { src } = pair();
+  liveSrc(src);
+  const errs: string[] = [];
+  const fetchFn = (async (url: string, init: RequestInit) => src.app.fetch(new Request(String(url).replace("https://ccn-src.fybe.jp", "http://127.0.0.1"), init))) as unknown as typeof fetch;
+  const code = await cli(["teleport", `src/${ID}`], {
+    cfg: { name: "here", port: 1, roots: [dstHome], zone: "fybe.jp", serviceToken: { clientId: "i", clientSecret: "s" } }, env: {}, out: () => {}, err: (s) => errs.push(s), fetchFn, stdin: async () => "",
+    sendsPath: join(base, "sends.json"),
+    pullDeps: async () => ({
+      teleport: { fns: fileFns(dstConfig), git: bunGit, configDir: dstConfig },
+      place: { git: bunGit, home: dstHome, roots: [dstHome], lobby: join(dstHome, "lobby"), places: async () => [{ path: dstRepo, remote }] },
+      interactive: false, open: async () => 0, localLive: async () => true,
+    }),
+  });
+  expect(code).toBe(1);
+  expect(errs.join("\n")).toContain("手元で動いている");
+  expect(src.store.get(ID)!.summary().state).toBe("idle");
 });

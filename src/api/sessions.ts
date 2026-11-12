@@ -13,6 +13,7 @@ import type { Identity, Caller } from "../identity/identity";
 import type { Registry } from "../registry/registry";
 import type { Relay } from "../relay/relay";
 import { withFromLine } from "../identity/from-line";
+import { parseAgent } from "../identity/agent-name";
 import type { McpOptions } from "../mcp/server";
 import { HttpError } from "./errors";
 import { lobbySettingsFor, secretBases } from "../lobby/lobby";
@@ -415,15 +416,14 @@ export class Sessions {
   }
   // 書き出す。fork でなければ move で、止められるもの（ノードの子）は止めてから書き出す。動いている途中なら断る。
   // 止められない端末セッションは、同じ id が2か所で続かないよう fork に切り替えて警告する
-  async exportPack(id: string, fork: boolean): Promise<Pack> {
+  async exportPack(id: string, fork: boolean, caller: Caller): Promise<Pack> {
     const td = this.td();
     const info = await this.teleportInfo(id);
-    if (info.awaitingFirst) throw new HttpError(409, { error: "the session has no conversation yet", code: "empty" });
+    this.refuseBusy(id, info, fork, caller);
     const warnings: string[] = [];
     if (!fork && info.live) {
       const live = this.d.store.get(id);
       if (live && live.capabilities.stop) {
-        if (info.state === "running" || info.state === "waiting_permission") throw new HttpError(409, { error: `session is ${info.state}; wait for it or interrupt it, then retry (or use fork)`, code: "busy" });
         await live.stop();
         this.d.store.remove(id);
       } else {
@@ -435,9 +435,22 @@ export class Sessions {
     }
     return exportPack(td, { node: this.d.nodeName, id, cwd: info.from.cwd, lobby: info.from.lobby, fork, title: info.title, permissionMode: info.permissionMode, warnings });
   }
-  async exportResponse(id: string, req: Request): Promise<Response> {
+  // 呼び手がそのセッション自身か（agent:<このノード>/<id の先頭8文字>/...）。ノードの子が自分を移すとき、走っているターンは teleport を呼んだ自分のものなので止めてよい
+  private isSelf(id: string, caller: Caller): boolean {
+    const a = parseAgent(caller.id);
+    return !!a && a.node === this.d.nodeName && !!a.sid && id.startsWith(a.sid);
+  }
+  // 運ぶ会話が無いもの、move で動いている途中のものを断る。下見（clone を含む）より前に見る
+  private refuseBusy(id: string, info: { awaitingFirst: boolean; live: boolean; state: string }, fork: boolean, caller: Caller) {
+    if (info.awaitingFirst) throw new HttpError(409, { error: "the session has no conversation yet", code: "empty" });
+    const live = this.d.store.get(id);
+    if (!fork && info.live && live?.capabilities.stop && (info.state === "running" || info.state === "waiting_permission") && !this.isSelf(id, caller)) {
+      throw new HttpError(409, { error: `session is ${info.state}; wait for it or interrupt it, then retry (or use fork)`, code: "busy" });
+    }
+  }
+  async exportResponse(id: string, req: Request, caller: Caller): Promise<Response> {
     const body = (await req.json().catch(() => ({}))) as { fork?: unknown };
-    const pack = await this.exportPack(id, body.fork === true);
+    const pack = await this.exportPack(id, body.fork === true, caller);
     return new Response(encodePack(pack), { headers: { "content-type": PACK_CONTENT_TYPE, "cache-control": "no-store" } });
   }
   // 移動先の下見。移動先のディレクトリを決め（clone を含む）、作業ツリーがきれいかを見る
@@ -458,7 +471,9 @@ export class Sessions {
     const settings = await lobbySettingsFor(r.cwd, this.d.lobby);
     const driver = await this.d.startNode({ cwd: r.cwd, resume: r.id, defer: true, permissionMode: pack.permissionMode as StartOptions["permissionMode"], settings }, caller);
     this.d.store.add(driver);
-    return { node: this.d.nodeName, sourceNode: pack.from.node, sourceId: pack.sourceId, fork: pack.fork, ...r };
+    // 1通も届かないまま30分たつと台帳から消える（store.ts）。会話と作業ツリーは残るので、そのときの再開の手順も返す
+    const resume = `ccn new ${r.cwd} --peer ${this.d.nodeName} --resume ${r.id}`;
+    return { node: this.d.nodeName, sourceNode: pack.from.node, sourceId: pack.sourceId, fork: pack.fork, resume, ...r };
   }
   // 移動元のノードが進める teleport。下見、（move なら）止める、書き出す、取り込むの順。CLI の接続が切れても最後まで進む
   async teleport(id: string, req: Request, caller: Caller) {
@@ -469,10 +484,11 @@ export class Sessions {
     const to = body.to;
     const fork = body.fork === true;
     const info = await this.teleportInfo(id);
+    this.refuseBusy(id, info, fork, caller);
     const check = await this.peerCall(to, "api/teleport/check", JSON.stringify({ id, fork, from: info.from, git: info.git, cwd: body.cwd }), "application/json", caller);
-    if (check.status === 404 && !(check.body as { code?: string })?.code) throw new HttpError(502, { error: `${to} does not know teleport (old version?). Run ccn update on ${to}`, stage: "check" });
+    if (check.status === 404 && (check.body as { error?: string })?.error === "not found") throw new HttpError(502, { error: `${to} does not know teleport (old version?). Run ccn update on ${to}`, stage: "check" });
     if (check.status >= 300) throw new HttpError(check.status, { ...(check.body as object), at: to, stage: "check" });
-    const pack = await this.exportPack(id, fork);
+    const pack = await this.exportPack(id, fork, caller);
     // 取り込みでは探し直さず、下見で決まった場所（リポジトリの最上位か、git でなければ cwd）を渡す。下見の clone が places の覚えに載っていないことがあるため
     const checked = check.body as { top?: string | null; cwd?: string };
     const at = typeof body.cwd === "string" ? body.cwd : checked.top ?? checked.cwd;

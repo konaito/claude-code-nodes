@@ -60,6 +60,12 @@ async function pullDeps(cfg: Config, home: string): Promise<PullDeps> {
     place: { git: bunGit, home, roots: cfg.roots, lobby: lobbyOf(cfg, home), places: localPlaces(local, fetch) },
     interactive: !!process.stdin.isTTY && !!process.stdout.isTTY,
     open: async (cwd, id) => Bun.spawn(["claude", "--resume", id], { cwd, stdio: ["inherit", "inherit", "inherit"] }).exited,
+    localLive: async (id) => {
+      const r = await fetch(`${local.base}/api/sessions/${id}`, { headers: local.headers }).catch(() => undefined);
+      if (!r || !r.ok) return false;
+      const d = (await r.json().catch(() => ({}))) as { state?: string };
+      return !!d.state && d.state !== "exited";
+    },
   };
 }
 

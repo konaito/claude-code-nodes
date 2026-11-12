@@ -7,7 +7,13 @@ import { resolveDest, type CheckInput, type PlaceDeps } from "../teleport/place"
 import { importPack, type ImportResult, type TeleportDeps } from "../teleport/teleport";
 import { CLI_NAME } from "../names";
 
-export type PullDeps = { teleport: TeleportDeps; place: PlaceDeps; open: (cwd: string, id: string) => Promise<number>; interactive: boolean };
+export type PullDeps = {
+  teleport: TeleportDeps; place: PlaceDeps; open: (cwd: string, id: string) => Promise<number>; interactive: boolean;
+  // 手元で同じ id が動いているか（手元のノードの台帳と端末）。動いていれば取り込まない
+  localLive?: (id: string) => Promise<boolean>;
+};
+// 古い版のノードは道が無く、本文が {"error":"not found"} の 404 を返す。unknown session や unknown peer とは分ける
+const isOldVersion = async (r: Response) => r.status === 404 && /"error":"not found"/.test(await r.clone().text());
 type Info = CheckInput & { id: string; kind: string; state: string; live: boolean; awaitingFirst: boolean };
 type Out = (s: string) => void;
 
@@ -26,14 +32,11 @@ function report(out: Out, peer: string, r: { id: string; cwd: string; cloned?: b
 export async function push(c: Client, id: string, to: string, flags: Parsed["flags"], out: Out, fetchFn: typeof fetch): Promise<{ id: string }> {
   const body = { to, fork: flags.fork === true, ...(str(flags.cwd) ? { cwd: str(flags.cwd) } : {}) };
   const r = await request(c, "POST", `/api/sessions/${id}/teleport`, body, fetchFn);
-  if (r.status === 404) {
-    const text = await r.text();
-    if (!/unknown session/.test(text)) throw new CliError(1, `${c.peer} のノードは teleport に対応していない古い版。${c.peer} で ${CLI_NAME} update する`);
-    throw new CliError(1, `${c.peer} に ${id} が無い`);
-  }
-  const res = await readJson<{ id: string; cwd: string; cloned: boolean; fork: boolean; git: ImportResult["git"]; warnings: string[] }>(c, "POST", `/api/sessions/${id}/teleport`, r);
+  if (await isOldVersion(r)) throw new CliError(1, `${c.peer} のノードは teleport に対応していない古い版。${c.peer} で ${CLI_NAME} update する`);
+  const res = await readJson<{ id: string; cwd: string; cloned: boolean; fork: boolean; git: ImportResult["git"]; warnings: string[]; resume?: string }>(c, "POST", `/api/sessions/${id}/teleport`, r);
   report(out, to, res);
   out(`続ける: ${CLI_NAME} send ${to}/${res.id} <文>`);
+  if (res.resume) out(`30分 send しないと ${to} の台帳から消える。そのあとは: ${res.resume}`);
   return res;
 }
 
@@ -41,9 +44,10 @@ export async function push(c: Client, id: string, to: string, flags: Parsed["fla
 export async function pull(c: Client, id: string, flags: Parsed["flags"], out: Out, fetchFn: typeof fetch, deps: PullDeps): Promise<number> {
   const fork = flags.fork === true;
   const ir = await request(c, "GET", `/api/sessions/${id}/teleport`, undefined, fetchFn);
-  if (ir.status === 404 && !/unknown session/.test(await ir.clone().text())) throw new CliError(1, `${c.peer} のノードは teleport に対応していない古い版。${c.peer} で ${CLI_NAME} update する`);
+  if (await isOldVersion(ir)) throw new CliError(1, `${c.peer} のノードは teleport に対応していない古い版。${c.peer} で ${CLI_NAME} update する`);
   const info = await readJson<Info>(c, "GET", `/api/sessions/${id}/teleport`, ir);
   if (info.awaitingFirst) throw new CliError(1, "まだ1通も届いていないセッションなので、運ぶ会話が無い");
+  if (!fork && (await deps.localLive?.(id))) throw new CliError(1, `${id} は手元で動いている。止めてからやり直すか、--fork で別の id にする`);
   const dest = await resolveDest({ id, fork, from: info.from, git: info.git }, str(flags.cwd), deps.place).catch((e) => { throw new CliError(1, `移動先を決められない: ${e instanceof Error ? e.message : String(e)}`); });
   const er = await request(c, "POST", `/api/sessions/${id}/export`, { fork }, fetchFn);
   if (!er.ok) await readJson(c, "POST", `/api/sessions/${id}/export`, er);

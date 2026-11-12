@@ -179,7 +179,7 @@ async function route(req: Request, s: Sessions, caller: Caller, store: Deps["sto
         if (m === "GET") return json(await s.teleportInfo(id));
         if (m === "POST") return json(await s.teleport(id, req, caller));
       } else if (sub === "export" && !rid && m === "POST") {
-        return await s.exportResponse(id, req);
+        return await s.exportResponse(id, req, caller);
       }
     }
   }
