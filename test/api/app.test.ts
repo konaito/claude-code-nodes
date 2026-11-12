@@ -277,6 +277,51 @@ test("GET /api/sessions answers with the stale list while claude agents is re-re
   } finally { setSystemTime(); }
 });
 
+// 終わったセッションの一覧は60秒ごとに取り直す。端末のセッションが agents から消えたら、次の要求で待たずに取り直す（#23）
+test("the history list is re-read when a terminal session disappears from claude agents, not on every agents refresh", async () => {
+  let hist = 0;
+  let agents: AgentInfo[] = [term];
+  const base = harness().deps.history;
+  const { app } = harness({ agents: async () => agents, history: { ...base, list: async () => { hist++; return base.list(); } } as unknown as Deps["history"] });
+  const t0 = Date.now();
+  try {
+    await app.fetch(req("/api/sessions"));
+    expect(hist).toBe(1);
+    // agents は2秒で古くなるが、変わらなければ終わったセッションの一覧は取り直さない
+    setSystemTime(new Date(t0 + 3000));
+    await app.fetch(req("/api/sessions"));
+    await settle();
+    await app.fetch(req("/api/sessions"));
+    await settle();
+    expect(hist).toBe(1);
+    // 端末のセッションが消えた
+    agents = [];
+    setSystemTime(new Date(t0 + 6000));
+    await app.fetch(req("/api/sessions")); // agents の取り直しが始まる
+    await settle();
+    await app.fetch(req("/api/sessions")); // 消えたのを見て、終わったセッションの一覧を取り直す
+    await settle();
+    expect(hist).toBe(2);
+    // 60秒たてば、変化が無くても取り直す
+    setSystemTime(new Date(t0 + 70_000));
+    await app.fetch(req("/api/sessions"));
+    await settle();
+    expect(hist).toBe(3);
+  } finally { setSystemTime(); }
+});
+
+test("DELETE makes the next list re-read the history so a just-stopped session stays listed", async () => {
+  let hist = 0;
+  const base = harness().deps.history;
+  const { app } = harness({ history: { ...base, list: async () => { hist++; return base.list(); } } as unknown as Deps["history"] });
+  await app.fetch(req("/api/sessions"));
+  expect(hist).toBe(1);
+  expect((await app.fetch(req("/api/sessions/live1", { method: "DELETE" }))).status).toBe(204);
+  await app.fetch(req("/api/sessions"));
+  await settle();
+  expect(hist).toBe(2);
+});
+
 test("a failed first read of the history is not remembered; the next GET reads again", async () => {
   let calls = 0;
   const base = harness().deps.history;
