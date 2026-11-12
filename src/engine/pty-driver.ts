@@ -414,10 +414,14 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return u;
 }
 
-// 本物の PTY。Bun 1.3 の Bun.Terminal
+// 本物の PTY。Bun 1.3 の Bun.Terminal。
+// terminal には作った Terminal ではなく options を渡す。作った Terminal を渡すと、子は setsid されず PTY を制御端末に持たないので、
+// resize しても SIGWINCH が届かず、claude が古い桁数のまま描く。options なら子は自分のセッションの頭になり、PTY が制御端末になる。
+// SIGWINCH はカーネルが前面のプロセスグループ（claude と、claude が前面で動かす子）に送る。
+// この違いは公式の説明に無く、Bun 1.3.11 と 1.3.14（macOS）、1.4.4（Linux）で実測した。test/engine/pty-spawn.test.ts が確かめる
 export const bunPtySpawn: PtySpawn = (argv, o) => {
-  const term = new Bun.Terminal({ cols: o.cols, rows: o.rows, data: (_t, d) => o.onData(d) });
-  const p = Bun.spawn(argv, { terminal: term, cwd: o.cwd, env: o.env });
+  const p = Bun.spawn(argv, { terminal: { cols: o.cols, rows: o.rows, data: (_t, d) => o.onData(d) }, cwd: o.cwd, env: o.env });
+  const term = p.terminal!;
   return {
     pid: p.pid,
     write: (d) => { term.write(d); },
