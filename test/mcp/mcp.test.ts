@@ -514,3 +514,18 @@ test("create_session resume on a pty returns the history count as cursor, and se
   expect(all).toContain("new reply");
   expect(all).toMatch(/stop=result .* cursor=6 /);
 });
+
+test("a resumed pty still stops read_messages at a permission request from the ledger", async () => {
+  const { app, pty } = ptyHarness(3);
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "create_session", arguments: { cwd: pty.cwd, terminal: true, resume: PTY } }));
+  const input = { command: "rm -rf /tmp/x", description: "Remove x" };
+  pty.state = "waiting_permission";
+  pty.pendingList = [{ requestId: "r1", toolName: "Bash", input, description: "Remove x", createdAt: 0 }];
+  pty.push({ type: "permission_request", data: { requestId: "r1", toolName: "Bash", input, description: "Remove x" } });
+  await settle();
+  const out = text(await c.callTool({ name: "read_messages", arguments: { session: PTY, after: r.cursor, wait_seconds: 2 } }));
+  expect(out).not.toContain("old reply");
+  expect(out).toContain("[permission] Bash");
+  expect(out).toMatch(/stop=permission state=waiting_permission pending=1 cursor=4 /);
+});
