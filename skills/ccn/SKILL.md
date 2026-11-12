@@ -54,7 +54,7 @@ ccn(remote) を立てると決まったら、次のように進める。
 
 ## 仕組み
 
-- ccn(remote) の子は、ノードが `claude -p`（stream-json）で起動するセッション。ccn(local) の子は、ノードが端末（PTY）の中で起動する対話の claude。親の文は子の会話に届き、1行目に `from agent:<ノード名>/<親の sessionId 先頭8文字>/<役割> via <送ったノード名>` が付く。この行から、画面と `ccn ls` の「parent」が親子をたどる。子はそれを作業依頼として扱うが、本人の発言ではないので、設定・権限・公開の操作は本人の確認を求める。
+- ccn(remote) の子は、ノードが `claude -p`（stream-json）で起動するセッション。ccn(local) の子は、ノードが端末（PTY）の中で起動する対話の claude。親の文は子の会話に届き、1行目に `from agent:<ノード名>/<親の sessionId 先頭8文字>/<役割> via <送ったノード名>` が付く。この行から、画面と `ccn ls` の「parent」が親子をたどる。子はそれを本人の作業を親が分けて渡したものとして、本人の依頼と同じに扱う。push、PR、マージ、デプロイ、設定の変更も、親の依頼の範囲なら確かめずに進める（`~/.config/ccn/child.md`）。
 - 各ノードには受け口（`~/.local/share/ccn/lobby`）がある。`ccn new` で dir を省くと受け口に立つ。受け口のセッションは依頼から行き先のディレクトリを探してそこに子を立て、返事に `子: <ノード名>/<sessionId>` の行を書く。行き先が分からないときに使う。
 - 文を省いて立てたセッションは、id がすぐ決まり、1通目（`ccn send`）が届くまで claude を起動しない（`state` は `idle`）。1通も届かないまま30分たつと消える。
 - 子の権限プロンプトには親が答えられる。`ccn new` の既定は `--mode bypassPermissions`（承認なし）。`--mode default` で立てると、子がツールを使うたびに `waiting_permission` で止まり、`ccn show` の `pending:` に出る。`ccn allow <対象>` か `ccn deny <対象> <理由>` で答える。
