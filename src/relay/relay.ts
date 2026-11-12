@@ -17,8 +17,8 @@ export class PeerUnreachableError extends Error {
 }
 export class RelayNotConfiguredError extends Error { constructor() { super("relay needs a service token"); this.name = "RelayNotConfiguredError"; } }
 
-const COPY_REQ = ["content-type", "accept", "last-event-id"];
-const COPY_RES = ["content-type", "cache-control"];
+const COPY_REQ = ["content-type", "accept", "last-event-id", "if-none-match"];
+const COPY_RES = ["content-type", "cache-control", "etag"];
 
 export class Relay {
   private fetchFn: typeof fetch;
