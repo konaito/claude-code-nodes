@@ -185,3 +185,40 @@ test("claude agents is not run while nobody watches, and stops after the last wa
 test("an unknown state on the stream is 400", async () => {
   expect((await harness().app.fetch(req("/api/sessions/stream?state=nope"))).status).toBe(400);
 });
+
+test("while the stream is watched, list and detail requests do not run claude agents on their own", async () => {
+  const h = harness({ tickMs: 60_000 });
+  const f = frames(await h.app.fetch(req("/api/sessions/stream?state=live")));
+  try {
+    await f.next();
+    const base = h.agentCalls();
+    await Bun.sleep(30); // 要求の側の2秒のキャッシュが切れたことにする代わりに、何度も呼ぶ
+    for (let i = 0; i < 5; i++) {
+      await h.app.fetch(req("/api/sessions?state=live"));
+      await h.app.fetch(req("/api/sessions/term1"));
+    }
+    expect(h.agentCalls()).toBe(base);
+  } finally { await f.close(); }
+});
+
+test("leaving and coming back while a slow refresh is running does not start a second tick chain", async () => {
+  let release: (() => void) | undefined;
+  let slow = false;
+  const h = harness({ agents: async () => { if (slow) await new Promise<void>((r) => { release = r; }); return [term]; } });
+  const a = frames(await h.app.fetch(req("/api/sessions/stream?state=live")));
+  await a.next();
+  slow = true;
+  await Bun.sleep(60); // tick（30ms）が始まり、遅い refresh で止まる
+  await a.close();
+  await Bun.sleep(10);
+  slow = false;
+  const b = frames(await h.app.fetch(req("/api/sessions/stream?state=live")));
+  try {
+    await b.next();
+    release?.();
+    const t0 = h.agentCalls();
+    await Bun.sleep(300);
+    // tick 30ms で 300ms なら1本の連鎖で約10回。2本なら約20回になる
+    expect(h.agentCalls() - t0).toBeLessThan(14);
+  } finally { await b.close(); }
+});

@@ -58,6 +58,17 @@ terminal に届いた文は「別のセッションからのメッセージ」�
 | `POST /api/sessions/<id>/terminal/input` | `{"data":"<base64>"}` か `{"text":"..."}` をそのままキー入力として書く |
 | `POST /api/sessions/<id>/terminal/resize` | `{"cols":n,"rows":n}`。最後に呼んだ画面に合わせ、付いている画面全部に `size` を流す |
 
+## 一覧を見張る（HTTP）
+
+一覧を何度も取る画面は、次の2つを使う。どちらも `/n/<peer>/api/...` で中継できる。
+
+| 口 | すること |
+| --- | --- |
+| `GET /api/sessions?state=live` | 状態で絞った一覧。`state` は `live`（exited 以外）か、`running`、`waiting_permission`、`idle`、`exited` をカンマで並べたもの。応答に `ETag` が付き、`If-None-Match` が同じなら 304 で本文を返さない |
+| `GET /api/sessions/stream?state=live` | SSE。最初に今の一覧を `event: sessions` で流し、以後は一覧が変わったときだけ、絞った一覧の全体を流す。`id` は一覧の ETag で、Last-Event-ID が今の ETag と同じなら最初の1回を省く。15秒ごとにコメント行が来る |
+
+古い版のノードは、`/api/sessions/stream` に 404 を返し、`state` を無視して全部を返す。
+
 ## 呼び手と from 行
 
 ノードは要求ごとに呼び手を決める。

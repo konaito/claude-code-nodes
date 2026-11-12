@@ -14,7 +14,7 @@ export type ListWatchDeps = {
   debounceMs?: number;
 };
 // 端末のセッションを取り直す間隔。claude agents --json は1回 CPU 約0.27秒なので、Claude Town が一覧を2秒ごとに呼んで
-// いたときの起動回数（約4秒に1回、2026-11-13 の実測）を超えないようにした
+// いたときの起動回数（約4秒に1回、2026-11-13 の実測）と同じにした
 export const LIST_TICK_MS = 4000;
 const DEBOUNCE_MS = 200;
 
@@ -30,6 +30,7 @@ export class ListWatch {
   private changeIt?: AsyncIterator<unknown>;
   private running = false;
   private again = false;
+  private gen = 0; // tick の連鎖の世代。止めて始め直したとき、古い連鎖が続かないように
   constructor(private d: ListWatchDeps) {}
 
   get size() { return this.subs.size; }
@@ -46,6 +47,7 @@ export class ListWatch {
   }
 
   private start() {
+    const g = ++this.gen;
     const it = this.d.changes()[Symbol.asyncIterator]();
     this.changeIt = it;
     void (async () => {
@@ -56,21 +58,23 @@ export class ListWatch {
         this.debounce = setTimeout(() => void this.emit(), this.d.debounceMs ?? DEBOUNCE_MS);
       }
     })();
-    this.schedule();
+    this.schedule(g);
   }
   private stop() {
+    this.gen++;
     clearTimeout(this.timer);
     clearTimeout(this.debounce);
     this.timer = this.debounce = undefined;
     void this.changeIt?.return?.();
     this.changeIt = undefined;
   }
-  private schedule() {
+  private schedule(g: number) {
     this.timer = setTimeout(async () => {
-      if (!this.subs.size) return;
+      if (g !== this.gen) return;
       await this.d.refresh().catch(() => {});
+      if (g !== this.gen) return;
       await this.emit();
-      if (this.subs.size) this.schedule();
+      if (g === this.gen) this.schedule(g);
     }, this.d.tickMs ?? LIST_TICK_MS);
   }
 

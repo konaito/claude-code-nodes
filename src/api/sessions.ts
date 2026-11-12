@@ -130,7 +130,14 @@ export class Sessions {
     }
     return hit.value as Promise<T>;
   }
-  private agents() { return this.cached("agents", AGENTS_MS, () => this.d.agents().then((a) => { this.noteAgents(a); return a; })); }
+  // 見張り（一覧の SSE）が動いている間は、見張りが tick ごとに取り直すので、要求の側からは取り直さない
+  private agents() { return this.cached("agents", this.watch?.size ? Number.POSITIVE_INFINITY : AGENTS_MS, () => this.fetchAgents()); }
+  // claude agents --json の起動は、同時に1本だけにする。見張りの取り直しと要求の側の取り直しが重なっても2本にしない
+  private agentsInflight?: Promise<AgentInfo[]>;
+  private fetchAgents(): Promise<AgentInfo[]> {
+    this.agentsInflight ??= this.d.agents().then((a) => { this.noteAgents(a); return a; }).finally(() => { this.agentsInflight = undefined; });
+    return this.agentsInflight;
+  }
   private agentIds?: Set<string>;
   // 前に見えていた端末のセッションが消えたら、終わったセッションの一覧を次の要求で取り直す
   private noteAgents(a: AgentInfo[]) {
@@ -192,7 +199,7 @@ export class Sessions {
   }
   // 端末のセッションを今すぐ取り直す。取れたら一覧の材料のキャッシュも差し替える
   private async refreshAgents() {
-    const value = this.d.agents().then((a) => { this.noteAgents(a); return a; });
+    const value = this.fetchAgents();
     await value;
     this.cache.set("agents", { at: Date.now(), value, refreshing: false });
   }

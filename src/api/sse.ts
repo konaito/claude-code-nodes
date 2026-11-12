@@ -8,7 +8,7 @@ export function sse(frames: AsyncIterable<Frame>, keepAliveMs = 15000): Response
   let timer: ReturnType<typeof setInterval> | undefined;
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      timer = setInterval(() => { try { controller.enqueue(enc.encode(": keep-alive\n\n")); } catch { clearInterval(timer); } }, keepAliveMs);
+      timer = setInterval(() => { try { controller.enqueue(enc.encode(": keep-alive\n\n")); } catch { clearInterval(timer); void it.return?.(); } }, keepAliveMs);
     },
     async pull(controller) {
       const r = await it.next();
