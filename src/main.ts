@@ -70,10 +70,27 @@ export function start(cfg: Config, configPath = defaultPath()) {
   const lb = prepareLobby({ dir: lobbyOf(cfg), appRoot: join(import.meta.dir, ".."), nodeName: cfg.name, roots: cfg.roots, home: homedir(), configFile: configPath });
   if ("error" in lb) console.error(`lobby ${lb.dir}: ${lb.error}`);
   const lobby = "error" in lb ? undefined : lb.dir;
-  const app = createApp(buildDeps(cfg, configPath));
+  const deps = buildDeps(cfg, configPath);
+  const app = createApp(deps);
   const server = Bun.serve({ hostname: "127.0.0.1", port: cfg.port, fetch: app.fetch, idleTimeout: 0 });
+  stopPtysOnExit(deps.store);
   console.log(`node on http://127.0.0.1:${cfg.port} (${cfg.name}, roots: ${cfg.roots.join(", ")}, lobby: ${lobby ?? "none"}, ${cfg.teamDomain && cfg.aud ? "access" : "no access"})`);
   return server;
+}
+
+// ノードが止まるとき（launchd と systemd は SIGTERM を送る）、PTY の子の claude も止める。
+// PTY を閉じても claude は終わらず、親を失って残った（2026-11-12 に試験ノードで確認）。SIGKILL で落ちたときは止められない
+export function stopPtysOnExit(store: SessionStore, exit: (code: number) => void = (c) => process.exit(c), listen = true) {
+  let stopping = false;
+  const onSignal = async () => {
+    if (stopping) return;
+    stopping = true;
+    const live = store.list().filter((s) => s.kind === "pty" && s.state !== "exited").map((s) => store.get(s.id)).filter((d) => d !== undefined);
+    await Promise.race([Promise.allSettled(live.map((d) => d.stop())), Bun.sleep(5000)]);
+    exit(0);
+  };
+  if (listen) for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => void onSignal());
+  return onSignal;
 }
 
 if (import.meta.main) start(loadConfig());

@@ -47,14 +47,14 @@ terminal に届いた文は「別のセッションからのメッセージ」�
 - 承認の中身はノードが hooks で受けるので、`ccn:get_session` の `pending` と `ccn:answer_permission` が node の子と同じに使える。人が端末の承認画面で答えてもよい。
 - 返事は、ターンの終わりの文と使った道具の名前だけが `ccn:read_messages` に出る。途中の文は端末の画面にしか出ない。
 - `ccn:interrupt_session` は端末に Esc を送る。
-- ノードを再起動すると、pty のセッションは全部終わる。会話は残るので、`resume` と `terminal: true` で続けられる。
+- ノードを止めるか再起動すると、ノードは pty の claude を止める。会話は残るので、`resume` と `terminal: true` で続けられる。
 - 初めて使うディレクトリでは、`claude` が端末に信頼の確認を出す。人が端末で答えるまで、承認も返事も届かない。
 
 端末の口は HTTP にある（MCP のツールには無い）。どれも `/n/<peer>/api/...` で中継できる。
 
 | 口 | すること |
 | --- | --- |
-| `GET /api/sessions/<id>/terminal` | SSE。最初に `size`（cols、rows）、次に `replay`（覚えている末尾の最大2MB、base64 の `b64`）、以後 `data`（`b64`）、終われば `exit`（code、reason）。各フレームの `id` はバイト位置で、`Last-Event-ID` か `?after=<位置>` で続きから読める |
+| `GET /api/sessions/<id>/terminal` | SSE。最初に `size`（cols、rows）、次に `replay`（ノードが持つヘッドレスの端末の今の画面。文字、代替画面、カーソル、モードを再現する文字列を base64 にした `b64`。受け側は端末を reset してから書く）、以後 `data`（`b64`）、終われば `exit`（code、reason）。各フレームの `id` はバイト位置で、`Last-Event-ID` か `?after=<位置>` で続きから読める |
 | `POST /api/sessions/<id>/terminal/input` | `{"data":"<base64>"}` か `{"text":"..."}` をそのままキー入力として書く |
 | `POST /api/sessions/<id>/terminal/resize` | `{"cols":n,"rows":n}`。最後に呼んだ画面に合わせ、付いている画面全部に `size` を流す |
 

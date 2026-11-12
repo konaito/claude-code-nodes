@@ -103,23 +103,30 @@ test("attach with after inside the buffer sends only the rest as data; after out
   const resumed = await take(d.attach(12), 2);
   expect(resumed[1]).toMatchObject({ type: "data", offset: 15 });
   expect(dec(resumed[1]!)).toBe("mno");
+  // 範囲の外なら、捨てた分も含めた今の画面を replay で1回流す
   const old = await take(d.attach(2), 2);
-  expect(old[1]!.type).toBe("replay");
-  expect(dec(old[1]!)).toBe("fghijklmno");
+  expect(old[1]).toMatchObject({ type: "replay", offset: 15 });
+  expect(dec(old[1]!)).toBe("abcdefghijklmno");
 });
 
-test("replay is split into 64KB frames", async () => {
-  const { d, p } = await start();
-  p.emit(new Uint8Array(150 * 1024).fill(65));
-  const frames = await take(d.attach(), 4);
-  expect(frames.slice(1).map((f) => f.type)).toEqual(["replay", "replay", "replay"]);
-  expect(frames.slice(1).map((f) => (f as { offset: number }).offset)).toEqual([65536, 131072, 153600]);
+test("replay restores the alternate screen, the cells drawn before the tail and the cursor", async () => {
+  const { d, p } = await start({ cols: 20, rows: 5 });
+  // 代替画面に入って枠を描き、その後は1か所だけを書き換える（claude の描き方）
+  const frame = "\x1b[?1049h\x1b[H+--------+\r\n|        |\r\n+--------+";
+  const moves = "\x1b[5;1H".repeat(800); // 画面を変えない出力。末尾のバイト列だけでは枠が入らない長さにする
+  p.emit(frame); p.emit(moves); p.emit("\x1b[2;3Hhi");
+  const [, replay] = await take(d.attach(), 2);
+  expect(replay).toMatchObject({ type: "replay", offset: frame.length + moves.length + 8 });
+  const text = dec(replay!);
+  expect(text.startsWith("\x1b[?1049h")).toBe(true);
+  expect(text).toContain("+--------+");
+  expect(text).toContain("hi");
 });
 
 test("resize is last-writer-wins and is broadcast to attached screens", async () => {
   const { d, p } = await start();
   const it = d.attach();
-  await take(it, 1);
+  await take(it, 2);
   d.resize(80, 24);
   expect(p.resizes).toEqual([[80, 24]]);
   expect(await take(it, 1)).toEqual([{ type: "size", cols: 80, rows: 24 }]);
@@ -199,6 +206,12 @@ test("interrupt writes Esc and, when claude agents says idle, ends the turn", as
   let info: AgentInfo = { pid: 4242, cwd: "/w", kind: "interactive", startedAt: 0, status: "idle" };
   const { d, p } = await start({ prompt: "x" }, { agentInfo: async () => info });
   const evs = collect(d);
+  // 引数の文の UserPromptSubmit が届く前は、agents が idle でもターンを終わらせない
+  await d.interrupt();
+  await new Promise((r) => setTimeout(r, 30));
+  expect(d.summary().state).toBe("running");
+  p.writes.length = 0;
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "x" });
   await d.interrupt();
   expect(p.writes).toEqual(["\x1b"]);
   await new Promise((r) => setTimeout(r, 30));
@@ -225,7 +238,7 @@ test("exit: pending hooks are released, screens get exit, events end with exited
   const file = p.argv[p.argv.indexOf("--settings") + 1]!;
   const evs = collect(d);
   const it = d.attach();
-  await take(it, 1);
+  await take(it, 2);
   const out = d.hook({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: {} });
   await tick();
   p.exit(1);
@@ -242,6 +255,7 @@ test("exit: pending hooks are released, screens get exit, events end with exited
   p.emit("late");
   const after = await take(d.attach(), 5);
   expect(after.map((f) => f.type)).toEqual(["size", "replay", "exit"]);
+  expect(dec(after[1]!)).toContain("late");
 });
 
 test("stop sends SIGTERM and waits for the exit", async () => {
@@ -249,4 +263,17 @@ test("stop sends SIGTERM and waits for the exit", async () => {
   await d.stop();
   expect(p.kills).toEqual(["SIGTERM"]);
   expect(d.summary().state).toBe("exited");
+});
+
+test("stopPtysOnExit stops the live PTY children before the node exits", async () => {
+  const { stopPtysOnExit } = await import("../../src/main");
+  const { SessionStore } = await import("../../src/sessions/store");
+  const store = new SessionStore();
+  const { d, p } = await start();
+  store.add(d);
+  const codes: number[] = [];
+  const onSignal = stopPtysOnExit(store, (c) => { codes.push(c); }, false);
+  await onSignal();
+  expect(p.kills).toEqual(["SIGTERM"]);
+  expect(codes).toEqual([0]);
 });

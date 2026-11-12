@@ -1,5 +1,5 @@
 // PTY で対話モードの claude を動かす PtyDriver。人が画面（xterm.js など）で同じ端末を見て打てるセッション。
-// 出力の末尾（既定 2MB）を覚えて、繋いだ画面に再生する。承認、ターンの終わり、状態は、--settings で注入した hooks（http）から受ける。
+// 出力をヘッドレスの端末（src/engine/screen.ts）に流し、繋いだ画面に今の画面を replay で渡す。続きから読むために、出力の末尾（既定 2MB）も覚える。承認、ターンの終わり、状態は、--settings で注入した hooks（http）から受ける。
 // 画面の文字は読まない。hooks が届かない操作（端末での Esc など）は `claude agents --json` の状態で照らし合わせる
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,6 +9,7 @@ import { BusyError, ExitedError, NotFoundError } from "./driver";
 import type { AgentInfo } from "./agents";
 import type { Capabilities, PendingPermission, PermissionAnswer, SessionSummary, State } from "../sessions/types";
 import { AsyncQueue } from "../sessions/async-queue";
+import { Screen } from "./screen";
 import { PTY_HOOK_PATH, PTY_HOOK_TOKEN_HEADER } from "../names";
 
 // 端末の口の枠。offset はそのフレームの末尾のバイト位置（0 からの通し番号）。SSE の id にする
@@ -44,7 +45,7 @@ export type PtyDeps = {
   reconcileDelayMs?: number;
   tmp?: string;             // 設定ファイルを置く場所。既定は OS の tmp
   pasteDelayMs?: number;
-  readyTimeoutMs?: number;  // send が claude の起動（SessionStart）を待つ上限。既定 20 秒
+  readyTimeoutMs?: number;  // send が claude の起動（SessionStart）を待つ上限。既定 10 秒（中継の応答待ち15秒より短くする）
 };
 
 const MAX_BUFFER = 2 * 1024 * 1024;
@@ -123,16 +124,20 @@ export class PtyDriver implements Driver {
   private exitReason?: string;
   private exitCode: number | null = null;
   private dir?: string;
+  private screen: Screen;
   private reconcileTimer?: ReturnType<typeof setTimeout>;
   private exitedP?: Promise<void>;
   // claude の画面が入力を受けられるようになった（SessionStart が届いた）。それより前に貼り付けると文が落ちる（2026-11-12 に実機で確認）
   private readyResolve!: () => void;
   private ready = new Promise<void>((r) => { this.readyResolve = r; });
+  // 今のターンの UserPromptSubmit を見た。見る前（起動の引数の文がまだ届いていない間）に agents が idle と言っても、ターンは終わっていない
+  private turnSeen = false;
 
   private constructor(private opts: PtyStartOptions, private deps: PtyDeps) {
     this.cols = opts.cols ?? 120;
     this.rows = opts.rows ?? 40;
     this.permissionMode = opts.permissionMode;
+    this.screen = new Screen(this.cols, this.rows);
   }
 
   static async start(opts: PtyStartOptions, deps: PtyDeps): Promise<PtyDriver> {
@@ -171,7 +176,7 @@ export class PtyDriver implements Driver {
   async send(text: string) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const ok = await Promise.race([this.ready.then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 20_000); })]);
+    const ok = await Promise.race([this.ready.then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 10_000); })]);
     clearTimeout(timer);
     if ((this.state as State) === "exited") throw new ExitedError(this.exitReason);
     if (!ok) throw new BusyError("claude has not started yet; if the terminal shows a trust prompt, answer it there first");
@@ -225,17 +230,42 @@ export class PtyDriver implements Driver {
     if (cols === this.cols && rows === this.rows) return;
     this.cols = cols; this.rows = rows;
     this.proc!.resize(cols, rows);
+    this.screen.resize(cols, rows);
     this.broadcast({ type: "size", cols, rows });
   }
-  // after がまだ覚えている範囲なら続きだけ、そうでなければ末尾全部を replay で流す。終わったセッションは replay と exit だけ
+  // after がまだ覚えている範囲なら続きのバイト列だけを data で流す。そうでなければ、ヘッドレスの端末の今の画面を replay で1回流す。
+  // replay の offset はスナップショットを取った時点のバイト位置で、それより後の出力は data で続く。終わったセッションは replay と exit だけ
   attach(after?: number): AsyncIterable<TermFrame> {
     const q = new AsyncQueue<TermFrame>();
     const sub: Sub = { q, bytes: 0 };
-    q.push({ type: "size", cols: this.cols, rows: this.rows });
+    const size: TermFrame = { type: "size", cols: this.cols, rows: this.rows };
     const resume = after !== undefined && after >= this.bufStart && after <= this.end;
-    const from = resume ? after! : this.bufStart;
+    const at = this.end;
+    // スナップショットの依頼と購読を同じ同期の区間で行う。at までの出力はスナップショットに入り、後の出力は q に来る
+    const snap = resume ? undefined : this.screen.snapshot().catch(() => undefined);
+    const head: TermFrame[] = resume ? this.tail(after!).map((u, i, a) => ({ type: "data" as const, b64: b64(u), offset: after! + a.slice(0, i + 1).reduce((n, x) => n + x.length, 0) })) : [];
+    const exited = this.state === "exited";
+    const ending: TermFrame | undefined = exited ? { type: "exit", code: this.exitCode, reason: this.exitReason ?? "" } : undefined;
+    if (exited) q.close();
+    else { this.subs.add(sub); q.onClose = () => this.subs.delete(sub); }
+    const rawReplay = () => this.tail(this.bufStart).map((u, i, a) => ({ type: "replay" as const, b64: b64(u), offset: this.bufStart + a.slice(0, i + 1).reduce((n, x) => n + x.length, 0) }));
+    return (async function* () {
+      yield size;
+      if (snap) {
+        const text = await snap;
+        // スナップショットが取れなければ、覚えている末尾のバイト列で代える
+        if (text !== undefined) yield { type: "replay", b64: Buffer.from(text, "utf8").toString("base64"), offset: at } as TermFrame;
+        else yield* rawReplay();
+      }
+      yield* head;
+      // 読み出した分だけ溜めた量を戻す。読まない画面は SUB_LIMIT で切る
+      for await (const f of q) { if (f.type === "data") sub.bytes -= f.b64.length; yield f; }
+      if (ending) yield ending;
+    })();
+  }
+  // 覚えている範囲を from から切り出し、64KB ごとに分ける
+  private tail(from: number): Uint8Array[] {
     let pos = this.bufStart;
-    // 覚えている範囲を from から切り出し、64KB ごとに流す
     const parts: Uint8Array[] = [];
     for (const c of this.chunks) {
       const s = pos, e = pos + c.length;
@@ -244,17 +274,9 @@ export class PtyDriver implements Driver {
       parts.push(s < from ? c.subarray(from - s) : c);
     }
     const kept = concat(parts);
-    for (let i = 0; i < kept.length; i += REPLAY_CHUNK) {
-      const piece = kept.subarray(i, i + REPLAY_CHUNK);
-      q.push({ type: resume ? "data" : "replay", b64: b64(piece), offset: from + i + piece.length });
-    }
-    if (this.state === "exited") { q.push({ type: "exit", code: this.exitCode, reason: this.exitReason ?? "" }); q.close(); return q; }
-    this.subs.add(sub);
-    q.onClose = () => this.subs.delete(sub);
-    // 読み出した分だけ溜めた量を戻す。読まない画面は SUB_LIMIT で切る
-    return (async function* () {
-      for await (const f of q) { if (f.type === "data") sub.bytes -= f.b64.length; yield f; }
-    })();
+    const out: Uint8Array[] = [];
+    for (let i = 0; i < kept.length; i += REPLAY_CHUNK) out.push(kept.subarray(i, i + REPLAY_CHUNK));
+    return out;
   }
 
   // --- hooks の受け口。api が token を確かめてから呼ぶ。返り値は hook の応答の JSON（無ければ空の 200） ---
@@ -271,6 +293,7 @@ export class PtyDriver implements Driver {
         // 新しい文が入った。前のターンの承認待ちは残っていても答えようがない
         this.dropPending("superseded");
         this.state = "running";
+        this.turnSeen = true;
         this.push("user", { type: "user", message: { role: "user", content: String(body.prompt ?? "") } });
         return undefined;
       case "PermissionRequest": return await this.onPermission(body);
@@ -286,6 +309,7 @@ export class PtyDriver implements Driver {
       case "StopFailure": {
         this.dropPending("turn ended");
         this.state = "idle";
+        this.turnSeen = false;
         const text = typeof body.last_assistant_message === "string" ? body.last_assistant_message : "";
         if (text) this.push("assistant", { type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
         this.push("result", { type: "result", subtype: body.hook_event_name === "Stop" ? "success" : "error_during_execution", is_error: body.hook_event_name !== "Stop", result: text });
@@ -332,8 +356,9 @@ export class PtyDriver implements Driver {
       this.dropPending("answered in terminal");
       this.state = a.status === "busy" ? "running" : "idle";
     }
-    if (this.state === "running" && a.status === "idle") {
+    if (this.state === "running" && this.turnSeen && a.status === "idle") {
       this.state = "idle";
+      this.turnSeen = false;
       this.push("result", { type: "result", subtype: "interrupted", is_error: true, result: "" });
     }
   }
@@ -342,6 +367,7 @@ export class PtyDriver implements Driver {
     const c = new Uint8Array(u); // 呼び出し元のバッファを使い回されても壊れないように写す
     this.chunks.push(c);
     this.end += c.length;
+    this.screen.write(c);
     let size = this.end - this.bufStart;
     const max = this.deps.maxBuffer ?? MAX_BUFFER;
     while (size > max && this.chunks.length > 1) { const x = this.chunks.shift()!; this.bufStart += x.length; size -= x.length; }

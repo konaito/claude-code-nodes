@@ -24,7 +24,7 @@
 - 最初の文は引数で渡す。起動直後の画面と貼り付けが競合しないため。
 - 承認待ちの間の send は 409 で断る。Enter が承認画面の選択になるため。
 - 端末で答えた承認は、同じ道具と入力の PostToolUse（PostToolUseFailure）、Stop、UserPromptSubmit で片付ける。hooks が来ない操作（端末への Esc、数字、Enter と API の interrupt）の後は、1.5秒後に `claude agents --json` の `status` と `waitingFor` で照らし合わせる。
-- send は SessionStart の hook が届くまで待つ（最大20秒、過ぎたら 409）。prompt 無しで作った直後に貼り付けると文が落ちた（次の節の追加の確認）。SessionStart は command の hook しか使えないので curl で送る。SessionStart が届いた直後（0.74秒）に貼り付けた文は通った。
+- send は SessionStart の hook が届くまで待つ（最大10秒、過ぎたら 409。中継の応答待ち15秒より短くした）。prompt 無しで作った直後に貼り付けると文が落ちた（次の節の追加の確認）。SessionStart は command の hook しか使えないので curl で送る。SessionStart が届いた直後（0.74秒）に貼り付けた文は通った。
 - hooks の宛先は `http://127.0.0.1:<port>/hooks/pty/<id>` にする。Access の呼び手ではなく、同じ機械（loopback で `cf-connecting-ip` が無い）とセッションごとの token で受ける。token を引数に出さないため、設定は 0600 のファイルで渡す。
 
 ## 試験ノードでの確認
@@ -60,7 +60,17 @@
 | resume | DELETE した後に `terminal:true` と `resume:<id>` で作ると同じ id で起動した。前の会話で書いた語を聞くと `keep` と答えた |
 | allow の入力 | allow で `updatedInput` が無ければ元の入力を返すようにした（NodeDriver と同じ。AskUserQuestion と ExitPlanMode は updatedInput が要る）。直した後も live.ts の承認が通った |
 
-`bun test` は 305 件が通り（1件は CC_LIVE の skip）、`bunx tsc --noEmit -p .` はエラー無し。
+### replay と、ノードを止めたとき
+
+Claude Town 側の測定（family-computing の `docs/research/pty-measure.md`）で、末尾のバイト列を流す replay では40行中4〜5行が欠けると分かった。claude は代替画面で変わったセルだけを描くため。そこで、ノードが出力をヘッドレスの端末（`@xterm/headless` 6.0.0、`@xterm/addon-serialize` 0.14.0、どちらも MIT）に流し続け、replay では serialize の文字列を渡すようにした。
+
+| 項目 | 結果 |
+| --- | --- |
+| replay の一致 | 1から60まで数えさせた後（100x30）、最初から付いていた画面 A と、後から replay だけを受けた画面 B を、replay の位置（5966バイト目）で比べた。表示中の30行が全部一致し、どちらも代替画面で、カーソルは両方 (2, 26)。replay は 1127 バイト |
+| ノードを止めたとき（直す前） | 試験ノードに SIGTERM を送ると、PTY の claude は親が 1 になって残った |
+| ノードを止めたとき（直した後） | SIGTERM を送ると、4秒以内に claude も終わった |
+
+`bun test` は 306 件が通り（1件は CC_LIVE の skip）、`bunx tsc --noEmit -p .` はエラー無し。
 
 ## 確かめていないこと
 
@@ -70,13 +80,12 @@
 - 端末で `/clear` した後に、ノードの台帳の id と会話の id がずれること。hooks の `session_id` は変わる可能性があるが、ノードは最初の id のまま扱う。
 - 未信頼のディレクトリで、信頼の確認が端末に出る様子。
 - 30本を同時に持ったときの CPU とメモリ。Claude Town 側の子 family-computing が測る。
-- 末尾の再生で画面がどこまで戻るか。Claude Town 側で xterm.js に流して確かめる。
 - 承認待ちのまま claude が hook を待つ上限。hook の timeout は7日にしてある。
 
 ## 制約
 
-- ノードを再起動すると PTY のセッションは全部終わる。会話は残り、`terminal:true` と `resume` で続けられる。
+- ノードを SIGTERM、SIGINT、SIGHUP で止めると、ノードは PTY の claude を止めてから終わる（最大5秒）。SIGKILL で落ちたときは、claude が親を失って残る。会話は残り、`terminal:true` と `resume` で続けられる。
 - 人が端末で最初の文を打ったセッションは、終わって台帳から消えた後（30分後）に履歴から parent を引けない。履歴の parent は最初の文の from 行から作るため。
 - `read_messages` に出るのは、ターンの終わりの文（Stop の `last_assistant_message`）と使った道具の名前だけ。途中の文は端末の画面にしか出ない。
 - 停止した後の一覧の行は履歴から作るので、`kind` は `node` になる。
-- SessionStart が届かない（信頼の確認が出ている、curl が無い）と、send は20秒待って 409 を返す。
+- SessionStart が届かない（信頼の確認が出ている、curl が無い）と、send は10秒待って 409 を返す。
