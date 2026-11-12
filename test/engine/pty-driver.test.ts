@@ -11,7 +11,7 @@ import { fakeSpawn } from "../helpers/fake-pty";
 const tmp = () => mkdtempSync(join(tmpdir(), "ccn-pty-test-"));
 async function start(over: Partial<Parameters<typeof PtyDriver.start>[0]> = {}, deps: Partial<Parameters<typeof PtyDriver.start>[1]> = {}) {
   const f = fakeSpawn();
-  const d = await PtyDriver.start({ cwd: "/w", ...over }, { spawn: f.spawn, hookBase: "http://127.0.0.1:9", caller: "agent:vm/abcd1234/town", claudePath: "claude", env: { PATH: "/bin", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "x" }, tmp: tmp(), pasteDelayMs: 0, reconcileDelayMs: 5, ...deps });
+  const d = await PtyDriver.start({ cwd: "/w", ...over }, { spawn: f.spawn, hookBase: "http://127.0.0.1:9", caller: "agent:vm/abcd1234/town", claudePath: "claude", env: { PATH: "/bin", CLAUDECODE: "1", CLAUDE_CODE_SESSION_ID: "x" }, tmp: tmp(), pasteDelayMs: 0, reconcileDelayMs: 5, inputTimeoutMs: 0, ...deps });
   return { d, p: f.procs[0]!, f };
 }
 async function take<T>(it: AsyncIterable<T>, n: number): Promise<T[]> {
@@ -145,6 +145,53 @@ test("send waits for SessionStart before pasting, and gives up with BusyError", 
   await d.hook({ hook_event_name: "SessionStart", source: "startup" });
   await sending;
   expect(p.writes).toEqual(["\x1b[200~y\x1b[201~", "\r"]);
+});
+
+// #26: SessionStart の hook は、claude が入力を読み始める（ESC[?2004h）より先に来る。その間に貼ると Enter が捨てられる
+test("send waits for claude to start reading input (ESC[?2004h) after SessionStart", async () => {
+  const { d, p } = await start({}, { inputTimeoutMs: 60_000 });
+  const sending = d.send("hi");
+  await d.hook({ hook_event_name: "SessionStart", source: "startup" });
+  await tick();
+  expect(p.writes).toEqual([]);
+  p.emit("\x1b[?20"); // 列が出力の切れ目をまたいでも見つける
+  await tick();
+  expect(p.writes).toEqual([]);
+  p.emit("04h\x1b[?1004h");
+  await sending;
+  expect(p.writes).toEqual(["\x1b[200~hi\x1b[201~", "\r"]);
+});
+
+test("send does not paste on the trust prompt: input is on but SessionStart has not come", async () => {
+  const { d, p } = await start({}, { inputTimeoutMs: 60_000, readyTimeoutMs: 30 });
+  p.emit("\x1b[?2004h");
+  await expect(d.send("x")).rejects.toBeInstanceOf(BusyError);
+  expect(p.writes).toEqual([]);
+  // 画面のキー入力（信頼の確認への答え）は通る
+  d.write(new TextEncoder().encode("1"));
+  expect(p.writes).toEqual(["1"]);
+});
+
+test("keys typed before claude reads input are held and written in order once it does", async () => {
+  const { d, p } = await start({}, { inputTimeoutMs: 60_000 });
+  d.write(new TextEncoder().encode("hello"));
+  d.write(new TextEncoder().encode("\r"));
+  expect(p.writes).toEqual([]);
+  p.emit("\x1b[?2004h");
+  expect(p.writes).toEqual(["hello", "\r"]);
+  d.write(new TextEncoder().encode("x"));
+  expect(p.writes).toEqual(["hello", "\r", "x"]);
+});
+
+test("held keys are written anyway when ESC[?2004h does not come in time", async () => {
+  const { d, p } = await start({}, { inputTimeoutMs: 20 });
+  d.write(new TextEncoder().encode("a"));
+  expect(p.writes).toEqual([]);
+  await Bun.sleep(40);
+  expect(p.writes).toEqual(["a"]);
+  await d.hook({ hook_event_name: "SessionStart" });
+  await d.send("b");
+  expect(p.writes).toEqual(["a", "\x1b[200~b\x1b[201~", "\r"]);
 });
 
 test("send pastes the text with bracketed paste and presses Enter", async () => {

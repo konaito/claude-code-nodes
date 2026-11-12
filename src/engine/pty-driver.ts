@@ -45,10 +45,13 @@ export type PtyDeps = {
   reconcileDelayMs?: number;
   tmp?: string;             // 設定ファイルを置く場所。既定は OS の tmp
   pasteDelayMs?: number;
-  readyTimeoutMs?: number;  // send が claude の起動（SessionStart）を待つ上限。既定 10 秒（中継の応答待ち15秒より短くする）
+  readyTimeoutMs?: number;  // send が claude の起動（SessionStart と入力の受け付け）を待つ上限。既定 10 秒（中継の応答待ち15秒より短くする）
+  inputTimeoutMs?: number;  // 起動から入力の受け付け（ESC[?2004h）を待つ上限。過ぎたら溜めた入力を流す。既定 10 秒
 };
 
 const MAX_BUFFER = 2 * 1024 * 1024;
+// claude が入力を読み始めると出す、bracketed paste を有効にする列
+const INPUT_ON = "\x1b[?2004h";
 const REPLAY_CHUNK = 64 * 1024;
 const SUB_LIMIT = 8 * 1024 * 1024; // 1つの画面に溜めてよいバイト数。超えたら切り、画面は after で繋ぎ直す
 const HOOK_EVENTS = ["UserPromptSubmit", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "Notification"] as const;
@@ -130,6 +133,15 @@ export class PtyDriver implements Driver {
   // claude の画面が入力を受けられるようになった（SessionStart が届いた）。それより前に貼り付けると文が落ちる（2026-11-12 に実機で確認）
   private readyResolve!: () => void;
   private ready = new Promise<void>((r) => { this.readyResolve = r; });
+  // claude が入力を読み始めた（ESC[?2004h が出た）。SessionStart の hook はこれより 0.3〜1.4 秒前に来るので、
+  // SessionStart だけを待って貼ると、貼った文は入力欄に入るが Enter が捨てられる（#26、2026-11-12 に4並列で実測）。
+  // 信頼の確認の画面でも出る。それまでの画面のキー入力は溜めておき、出たら流す
+  private inputOn = false;
+  private inputOnResolve!: () => void;
+  private inputReady = new Promise<void>((r) => { this.inputOnResolve = r; });
+  private inputTimer?: ReturnType<typeof setTimeout>;
+  private early: Uint8Array[] = [];
+  private scanTail = "";
   // 今のターンの UserPromptSubmit を見た。見る前（起動の引数の文がまだ届いていない間）に agents が idle と言っても、ターンは終わっていない
   private turnSeen = false;
 
@@ -159,6 +171,8 @@ export class PtyDriver implements Driver {
       await rm(d.dir, { recursive: true, force: true }).catch(() => {});
       throw e;
     }
+    // 版が変わって ESC[?2004h が出なくなっても止まらないよう、上限を過ぎたら受け付けたものとして流す
+    d.inputTimer = setTimeout(() => d.markInputOn(), deps.inputTimeoutMs ?? 10_000);
     d.exitedP = d.proc.exited.then((code) => d.finish(code, code === 0 || code === null ? "ended" : `exit ${code}`), (e) => d.finish(null, String(e)));
     return d;
   }
@@ -172,11 +186,12 @@ export class PtyDriver implements Driver {
   }
 
   // 文は貼り付け（bracketed paste）で入れて Enter を押す。改行を含んでも1つの文になる（2026-11-12 に実機で確認）。
-  // 承認画面が出ている間に Enter を押すと選択肢を選んでしまうので断る。起動の直後は SessionStart を待つ
+  // 承認画面が出ている間に Enter を押すと選択肢を選んでしまうので断る。起動の直後は SessionStart と入力の受け付けの両方を待つ。
+  // SessionStart も待つのは、信頼の確認の画面（入力は受け付けるが hooks は止まっている）で Enter を押して信頼に答えないため
   async send(text: string) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const ok = await Promise.race([this.ready.then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 10_000); })]);
+    const ok = await Promise.race([Promise.all([this.ready, this.inputReady]).then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 10_000); })]);
     clearTimeout(timer);
     if ((this.state as State) === "exited") throw new ExitedError(this.exitReason);
     if (!ok) throw new BusyError("claude has not started yet; if the terminal shows a trust prompt, answer it there first");
@@ -219,10 +234,12 @@ export class PtyDriver implements Driver {
   get size() { return { cols: this.cols, rows: this.rows }; }
   // このプロセスの印。バイト位置はプロセスごとに0から数える
   readonly epoch = Date.now();
-  // 画面のキー入力。そのまま書く。Esc や数字や Enter は端末の承認画面への答えかもしれないので、後で照らし合わせる
+  // 画面のキー入力。そのまま書く。Esc や数字や Enter は端末の承認画面への答えかもしれないので、後で照らし合わせる。
+  // claude が入力を読み始める前の分は溜めておき、読み始めたら順に流す（起動の直後に打った Enter が捨てられないように）
   write(data: Uint8Array) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
-    this.proc!.write(data);
+    if (this.inputOn) this.proc!.write(data);
+    else this.early.push(new Uint8Array(data));
     this.lastActivityAt = Date.now();
     if (this.waiting.size || this.state === "running") this.scheduleReconcile();
   }
@@ -369,8 +386,24 @@ export class PtyDriver implements Driver {
     }
   }
 
+  private markInputOn() {
+    if (this.inputOn) return;
+    this.inputOn = true;
+    clearTimeout(this.inputTimer);
+    this.inputOnResolve();
+    const early = this.early;
+    this.early = [];
+    if (this.state !== "exited") for (const u of early) this.proc!.write(u);
+  }
+
   private onData(u: Uint8Array) {
     const c = new Uint8Array(u); // 呼び出し元のバッファを使い回されても壊れないように写す
+    if (!this.inputOn) {
+      // 列が出力の切れ目をまたいでも見つけられるよう、前の出力の末尾を足して探す
+      const t = this.scanTail + Buffer.from(c.buffer, c.byteOffset, c.byteLength).toString("latin1");
+      if (t.includes(INPUT_ON)) this.markInputOn();
+      else this.scanTail = t.slice(-(INPUT_ON.length - 1));
+    }
     this.chunks.push(c);
     this.end += c.length;
     this.screen.write(c);
@@ -392,7 +425,10 @@ export class PtyDriver implements Driver {
   private finish(code: number | null, reason: string) {
     if (this.state === "exited") return;
     clearTimeout(this.reconcileTimer);
+    clearTimeout(this.inputTimer);
+    this.early = [];
     this.readyResolve();
+    this.inputOnResolve();
     this.dropPending(reason);
     this.state = "exited";
     this.exitCode = code;
