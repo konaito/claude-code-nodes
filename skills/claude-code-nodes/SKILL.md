@@ -33,9 +33,30 @@ Claude Code Nodes は、Claude Code がログイン済みの機械ごとに1つ�
 | 種類 | 何か | できること |
 | --- | --- | --- |
 | node | ノードが起動した子（`claude -p` と同じ形） | 文を送る、返事を読む、権限に答える、中断、停止、再開 |
+| pty | ノードが端末（PTY）の中で起動した対話の `claude` | node と同じ操作に加え、人が端末の画面を見て打てる |
 | terminal | 人が端末の `claude` で起動したセッション | 文を送る、返事を読む（記録を読み直す） |
 
 terminal に届いた文は「別のセッションからのメッセージ」として扱われる。権限の応答、中断、停止はできず、ツールは状態 409 の理由を返す。
+
+## 端末のセッション（pty）
+
+`ccn:create_session` に `terminal: true` を渡すと、ノードが PTY の中で対話の `claude` を起動する。人は画面（xterm.js など）でその端末を見て打ち、エージェントは node の子と同じツールで動かす。
+
+- `prompt` を省いても、`claude` はすぐ起動して1通目を待つ。`name` は一覧の `title` になる。`cols` と `rows` は端末の大きさの初期値（既定 120 と 40）。
+- 文は端末に貼り付けて Enter を押す形で届く。承認待ちの間は Enter が承認画面の選択になるので、`ccn:send_message` は 409 で断る。先に `ccn:answer_permission` で答える。
+- 承認の中身はノードが hooks で受けるので、`ccn:get_session` の `pending` と `ccn:answer_permission` が node の子と同じに使える。人が端末の承認画面で答えてもよい。
+- 返事は、ターンの終わりの文と使った道具の名前だけが `ccn:read_messages` に出る。途中の文は端末の画面にしか出ない。
+- `ccn:interrupt_session` は端末に Esc を送る。
+- ノードを止めるか再起動すると、ノードは pty の claude を止める。会話は残るので、`resume` と `terminal: true` で続けられる。
+- 初めて使うディレクトリでは、`claude` が端末に信頼の確認を出す。人が端末で答えるまで、承認も返事も届かない。
+
+端末の口は HTTP にある（MCP のツールには無い）。どれも `/n/<peer>/api/...` で中継できる。
+
+| 口 | すること |
+| --- | --- |
+| `GET /api/sessions/<id>/terminal` | SSE。最初に `size`（cols、rows、epoch）、次に `replay`（ノードが持つヘッドレスの端末の今の画面。文字、代替画面、カーソル、モードを再現する文字列を base64 にした `b64`。受け側は端末を reset してから書く）、以後 `data`（`b64`）、終われば `exit`（code、reason）。各フレームの `id` はバイト位置で、`?after=<位置>&epoch=<size の epoch>` で続きから読める。位置は claude のプロセスごとに0から数えるので、epoch が違えば replay からやり直す |
+| `POST /api/sessions/<id>/terminal/input` | `{"data":"<base64>"}` か `{"text":"..."}` をそのままキー入力として書く |
+| `POST /api/sessions/<id>/terminal/resize` | `{"cols":n,"rows":n}`。最後に呼んだ画面に合わせ、付いている画面全部に `size` を流す |
 
 ## 呼び手と from 行
 
@@ -92,10 +113,10 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | `ccn:list_sessions` | 1つのノードのセッション一覧。既定は終わっていないものだけ | `peer`、`parent`、`include_exited`、`limit` |
 | `ccn:get_session` | 1つの詳細、保留中の承認、`cursor` | `peer`、`session` |
 | `ccn:list_places` | 受け口、許された根、最近使われた場所、行き先の候補（`places`） | `peer`、`limit`、`query`、`places_limit` |
-| `ccn:create_session` | 子を立てる。`cwd` を省くと受け口、`prompt` を省くと1通目を待つ | `peer`、`cwd`、`prompt`、`permission_mode`、`model`、`resume`、`fork`、`as`、`as_session` |
+| `ccn:create_session` | 子を立てる。`cwd` を省くと受け口、`prompt` を省くと1通目を待つ。`terminal` で端末のセッション | `peer`、`cwd`、`prompt`、`permission_mode`、`model`、`resume`、`fork`、`terminal`、`name`、`cols`、`rows`、`as`、`as_session` |
 | `ccn:send_message` | 文を1つ送り、送る前の `cursor` を返す | `peer`、`session`、`text`、`as`、`as_session` |
 | `ccn:read_messages` | `after` より後を読み、ターンの終わりまで最大50秒待つ | `peer`、`session`、`after`、`wait_seconds`、`max_chars` |
-| `ccn:answer_permission` | 子の権限プロンプトに allow か deny で答える | `peer`、`session`、`behavior`、`request_id`、`message` |
+| `ccn:answer_permission` | 子（node、pty）の権限プロンプトに allow か deny で答える | `peer`、`session`、`behavior`、`request_id`、`message` |
 | `ccn:interrupt_session` | 子の今のターンを止める。子は生きたまま | `peer`、`session` |
 | `ccn:stop_session` | 子のプロセスを止める。会話は残り、`resume` で続けられる | `peer`、`session` |
 
@@ -152,6 +173,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 - terminal のセッションの権限応答、中断、停止。
 - ノードの外の機械や、登録されていない機械の操作。
 - 許された根（ノードの設定の `roots`）の外の `cwd` での起動。
+- 古い版のノードでの端末のセッション。`terminal` を知らないノードは node の子を立て、`ccn:create_session` の `note` がそのことを伝える。
 - 古い版のノードでの、受け口とプロンプト無しの作成。古い版は `cwd is required` か `prompt or resume is required` で断るので、`cwd` と `prompt` を両方渡す。
 
 ## CLI（ccn）がある機械

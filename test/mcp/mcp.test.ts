@@ -403,3 +403,25 @@ test("list_places and /api/places return partial places with a note when a folde
   expect(scanner.scans).toBe(2);
   expect(readdirs).toBe(1); // 2回目の走査では止まったディレクトリを開かない
 });
+
+test("create_session terminal=true asks the node for a pty session with name and size", async () => {
+  const { app, sent } = harness();
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "create_session", arguments: { peer: "pro", cwd: "/r", terminal: true, name: "town-1", cols: 100, rows: 30, as: "town", as_session: "abcd1234-0000" } }));
+  const post = sent.find((s) => s.method === "POST")!;
+  expect(JSON.parse(post.body)).toEqual({ cwd: "/r", terminal: true, name: "town-1", cols: 100, rows: 30 });
+  expect(post.headers.get("x-ccn-from")).toBe("agent:vm/abcd1234/town");
+  // 偽の相手は kind を返さない（terminal を知らない古い版）ので、その旨を伝える
+  expect(r.note).toContain("older ccn without terminal sessions");
+});
+
+test("create_session terminal=true locally starts a pty session and returns its kind", async () => {
+  const pty = new FakeDriver({ id: "pty1", capabilities: { ...caps(true), terminal: true }, kind: "pty" });
+  const calls: unknown[] = [];
+  const { app } = harness({ startPty: (async (opts: unknown) => { calls.push(opts); return pty; }) as unknown as Deps["startPty"] });
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "create_session", arguments: { cwd: realpathSync(tmpdir()), prompt: "task", terminal: true } }));
+  expect(r).toMatchObject({ id: "pty1", kind: "pty", parent: "local" });
+  expect(r.note).toBeUndefined();
+  expect(calls[0]).toMatchObject({ prompt: "from local via vm\n\ntask" });
+});

@@ -8,6 +8,7 @@ import { BUNDLE_PATH, CLI_NAME, LEGACY_BUNDLE_PATH, MCP_PATH, SKILL_MD_PATH } fr
 import { pageHtml } from "../web/page";
 import { mcpHandler, type ApiCall } from "../mcp/server";
 import { skillMd } from "../mcp/skill-md";
+import { isPtyHook, ptyHook, terminalInput, terminalResize, terminalStream } from "./terminal";
 export type { Deps, HostInfo } from "./sessions";
 
 // ブラウザからの変更は、同じオリジンのページからだけ受ける。別サイトの form や fetch を断る。
@@ -54,6 +55,7 @@ const isPublic = (path: string) => path === "/install" || path.startsWith("/inst
 
 export function createApp(deps: Deps) {
   const s = new Sessions(deps);
+  const store = deps.store;
   // 呼び手が決まった要求を処理する。/n/<peer>/api/... は中継で、相手が自分なら手元で処理する
   async function dispatch(req: Request, caller: Caller): Promise<Response> {
     const url = new URL(req.url);
@@ -61,9 +63,9 @@ export function createApp(deps: Deps) {
     if (n) {
       const [, peer, rest] = n;
       if (peer !== deps.nodeName) return await deps.relay.forward(peer!, rest!, req, caller);
-      return await route(new Request(new URL(`/${rest}${url.search}`, url).toString(), req), s, caller);
+      return await route(new Request(new URL(`/${rest}${url.search}`, url).toString(), req), s, caller, store);
     }
-    return await route(req, s, caller);
+    return await route(req, s, caller, store);
   }
   // MCP のツールが使う API の呼び出し。HTTP の API と同じ道（dispatch）を、同じ呼び手で通す。相手のノードは中継を通す
   const apiAt = (base: URL): ApiCall => async (caller, method, peer, path, body) => {
@@ -82,6 +84,8 @@ export function createApp(deps: Deps) {
       try {
         const url = new URL(req.url);
         if (isPublic(url.pathname)) return await publicRoute(req, url, deps.appRoot);
+        // PTY の子の hooks。呼び手（Access）ではなく、同じ機械とセッションごとの token で確かめる
+        if (isPtyHook(url.pathname)) return await ptyHook(deps.store, req, url);
         const caller = await deps.identity.callerOf(req);
         guardCsrf(req, url, caller);
         if (url.pathname === MCP_PATH) return await mcp(req, caller, apiAt(url));
@@ -95,7 +99,7 @@ const after = (url: URL) => Number(url.searchParams.get("after") ?? 0) || 0;
 // EventSource の再接続は Last-Event-ID を付けてくるので、あれば after より優先する
 const cursor = (req: Request, url: URL) => Number(req.headers.get("last-event-id") ?? "") || after(url);
 
-async function route(req: Request, s: Sessions, caller: Caller): Promise<Response> {
+async function route(req: Request, s: Sessions, caller: Caller, store: Deps["store"]): Promise<Response> {
   const url = new URL(req.url);
   const parts = url.pathname.split("/").filter(Boolean);
   const m = req.method;
@@ -128,6 +132,11 @@ async function route(req: Request, s: Sessions, caller: Caller): Promise<Respons
         return json(await s.answer(id, rid, req));
       } else if (sub === "interrupt" && !rid && m === "POST") {
         return json(await s.interrupt(id));
+      } else if (sub === "terminal") {
+        // 端末の口（PTY のセッションだけ）。rid は input か resize
+        if (!rid && m === "GET") return terminalStream(store, id, req, url);
+        if (rid === "input" && parts.length === 5 && m === "POST") return json(await terminalInput(store, id, req));
+        if (rid === "resize" && parts.length === 5 && m === "POST") return json(await terminalResize(store, id, req));
       }
     }
   }

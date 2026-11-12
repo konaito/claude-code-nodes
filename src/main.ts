@@ -10,6 +10,7 @@ import { AccessIdentity } from "./identity/access";
 import { History } from "./engine/history";
 import { NodeDriver } from "./engine/node-driver";
 import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
+import { PtyDriver, bunPtySpawn } from "./engine/pty-driver";
 import { listAgents, bunRunner } from "./engine/agents";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
@@ -27,6 +28,11 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     identity: identityFor(cfg),
     history: new History({ listSessions, getSessionMessages, getSessionInfo }),
     startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined }),
+    // PTY の子。hooks はノード自身（127.0.0.1）に送らせる。状態の照らし合わせは `claude agents --json` の pid で引く
+    startPty: (opts, caller) => PtyDriver.start(opts, {
+      spawn: bunPtySpawn, hookBase: `http://127.0.0.1:${cfg.port}`, caller: caller.id, claudePath: Bun.which("claude") ?? undefined,
+      agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
+    }),
     agents: () => listAgents(bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),
     host: async () => ({ claudeVersion: (await bunRunner(["claude", "--version"])).stdout.trim(), account: await account(), load: loadavg() }),
@@ -64,10 +70,27 @@ export function start(cfg: Config, configPath = defaultPath()) {
   const lb = prepareLobby({ dir: lobbyOf(cfg), appRoot: join(import.meta.dir, ".."), nodeName: cfg.name, roots: cfg.roots, home: homedir(), configFile: configPath });
   if ("error" in lb) console.error(`lobby ${lb.dir}: ${lb.error}`);
   const lobby = "error" in lb ? undefined : lb.dir;
-  const app = createApp(buildDeps(cfg, configPath));
+  const deps = buildDeps(cfg, configPath);
+  const app = createApp(deps);
   const server = Bun.serve({ hostname: "127.0.0.1", port: cfg.port, fetch: app.fetch, idleTimeout: 0 });
+  stopPtysOnExit(deps.store);
   console.log(`node on http://127.0.0.1:${cfg.port} (${cfg.name}, roots: ${cfg.roots.join(", ")}, lobby: ${lobby ?? "none"}, ${cfg.teamDomain && cfg.aud ? "access" : "no access"})`);
   return server;
+}
+
+// ノードが止まるとき（launchd と systemd は SIGTERM を送る）、PTY の子の claude も止める。
+// PTY を閉じても claude は終わらず、親を失って残った（2026-11-12 に試験ノードで確認）。SIGKILL で落ちたときは止められない
+export function stopPtysOnExit(store: SessionStore, exit: (code: number) => void = (c) => process.exit(c), listen = true) {
+  let stopping = false;
+  const onSignal = async () => {
+    if (stopping) return;
+    stopping = true;
+    const live = store.list().filter((s) => s.kind === "pty" && s.state !== "exited").map((s) => store.get(s.id)).filter((d) => d !== undefined);
+    await Promise.race([Promise.allSettled(live.map((d) => d.stop())), Bun.sleep(5000)]);
+    exit(0);
+  };
+  if (listen) for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => void onSignal());
+  return onSignal;
 }
 
 if (import.meta.main) start(loadConfig());
