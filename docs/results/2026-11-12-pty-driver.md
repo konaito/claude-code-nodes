@@ -29,7 +29,7 @@
 
 ## 試験ノードでの確認
 
-`/tmp/ccn-pty-node/live.ts`、`live2.ts`、`live3.ts`、`mcp-live.ts` で HTTP と MCP から叩いた。
+`/tmp/ccn-pty-node/live.ts`、`live2.ts`、`live3.ts`、`mcp-live.ts` で HTTP と MCP から叩いた。最初は 12f768e で測り、replay、epoch、send の待ちを変えた後の 159999e でも4本とも通し直して同じ結果を得た。表の「再生と中継」の行は 12f768e のもので、replay がまだ末尾のバイト列だった頃の結果になる。159999e では replay の中身が画面のスナップショット（代替画面に入る `ESC[?1049h` から始まる）になっていた。
 
 | 項目 | 結果 |
 | --- | --- |
@@ -82,10 +82,17 @@ Claude Town 側の測定（family-computing の `docs/research/pty-measure.md`�
 - 30本を同時に持ったときの CPU とメモリ。Claude Town 側の子 family-computing が測る。
 - 承認待ちのまま claude が hook を待つ上限。hook の timeout は7日にしてある。
 
+- Linux（vm）での PTY と `curl -H @<file>`。手元の macOS だけで動かした。
+
+## 依存
+
+- `@xterm/headless` 6.0.0 と `@xterm/addon-serialize` 0.14.0（どちらも MIT）を足した。どちらも README が「実験的」と書いている。スナップショットが取れないときは、覚えている末尾のバイト列を replay で流す。
+
 ## 制約
 
 - ノードを SIGTERM、SIGINT、SIGHUP で止めると、ノードは PTY の claude を止めてから終わる（最大5秒）。SIGKILL で落ちたときは、claude が親を失って残る。会話は残り、`terminal:true` と `resume` で続けられる。
 - 人が端末で最初の文を打ったセッションは、終わって台帳から消えた後（30分後）に履歴から parent を引けない。履歴の parent は最初の文の from 行から作るため。
 - `read_messages` に出るのは、ターンの終わりの文（Stop の `last_assistant_message`）と使った道具の名前だけ。途中の文は端末の画面にしか出ない。
 - 停止した後の一覧の行は履歴から作るので、`kind` は `node` になる。
+- バイト位置は claude のプロセスごとに0から数える。`size` の `epoch` がそのプロセスの印で、`?after=` は同じ `epoch` を添えたときだけ続きとして受ける。epoch を添えないと、resume した別のプロセスの位置と混ざり得る。
 - SessionStart が届かない（信頼の確認が出ている、curl が無い）と、send は10秒待って 409 を返す。
