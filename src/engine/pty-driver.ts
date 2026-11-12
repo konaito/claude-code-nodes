@@ -14,7 +14,7 @@ import { PTY_HOOK_PATH, PTY_HOOK_TOKEN_HEADER } from "../names";
 
 // 端末の口の枠。offset はそのフレームの末尾のバイト位置（0 からの通し番号）。SSE の id にする
 export type TermFrame =
-  | { type: "size"; cols: number; rows: number }
+  | { type: "size"; cols: number; rows: number; epoch: number }
   | { type: "replay" | "data"; b64: string; offset: number }
   | { type: "exit"; code: number | null; reason: string };
 
@@ -217,6 +217,8 @@ export class PtyDriver implements Driver {
 
   // --- 端末の口 ---
   get size() { return { cols: this.cols, rows: this.rows }; }
+  // このプロセスの印。バイト位置はプロセスごとに0から数える
+  readonly epoch = Date.now();
   // 画面のキー入力。そのまま書く。Esc や数字や Enter は端末の承認画面への答えかもしれないので、後で照らし合わせる
   write(data: Uint8Array) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
@@ -231,15 +233,16 @@ export class PtyDriver implements Driver {
     this.cols = cols; this.rows = rows;
     this.proc!.resize(cols, rows);
     this.screen.resize(cols, rows);
-    this.broadcast({ type: "size", cols, rows });
+    this.broadcast({ type: "size", cols, rows, epoch: this.epoch });
   }
   // after がまだ覚えている範囲なら続きのバイト列だけを data で流す。そうでなければ、ヘッドレスの端末の今の画面を replay で1回流す。
   // replay の offset はスナップショットを取った時点のバイト位置で、それより後の出力は data で続く。終わったセッションは replay と exit だけ
-  attach(after?: number): AsyncIterable<TermFrame> {
+  // バイト位置はプロセスごとに0から数えるので、同じ id を resume した後の位置と混ざらないよう、epoch（このプロセスの印）が合うときだけ after を受ける
+  attach(after?: number, epoch?: number): AsyncIterable<TermFrame> {
     const q = new AsyncQueue<TermFrame>();
     const sub: Sub = { q, bytes: 0 };
-    const size: TermFrame = { type: "size", cols: this.cols, rows: this.rows };
-    const resume = after !== undefined && after >= this.bufStart && after <= this.end;
+    const size: TermFrame = { type: "size", cols: this.cols, rows: this.rows, epoch: this.epoch };
+    const resume = after !== undefined && (epoch === undefined || epoch === this.epoch) && after >= this.bufStart && after <= this.end;
     const at = this.end;
     // スナップショットの依頼と購読を同じ同期の区間で行う。at までの出力はスナップショットに入り、後の出力は q に来る
     const snap = resume ? undefined : this.screen.snapshot().catch(() => undefined);
@@ -250,6 +253,7 @@ export class PtyDriver implements Driver {
     else { this.subs.add(sub); q.onClose = () => this.subs.delete(sub); }
     const rawReplay = () => this.tail(this.bufStart).map((u, i, a) => ({ type: "replay" as const, b64: b64(u), offset: this.bufStart + a.slice(0, i + 1).reduce((n, x) => n + x.length, 0) }));
     return (async function* () {
+      try {
       yield size;
       if (snap) {
         const text = await snap;
@@ -261,6 +265,7 @@ export class PtyDriver implements Driver {
       // 読み出した分だけ溜めた量を戻す。読まない画面は SUB_LIMIT で切る
       for await (const f of q) { if (f.type === "data") sub.bytes -= f.b64.length; yield f; }
       if (ending) yield ending;
+      } finally { q.close(); } // 途中で読むのをやめても購読を残さない
     })();
   }
   // 覚えている範囲を from から切り出し、64KB ごとに分ける
@@ -302,6 +307,7 @@ export class PtyDriver implements Driver {
         // 端末で答えた承認は hook の要求が切れないので、同じ道具と入力の実行が終わったら片付ける
         for (const [id, w] of this.waiting) if (w.p.toolName === body.tool_name && sameInput(w.p.input, body.tool_input)) this.drop(id, w, "answered in terminal");
         if (!this.waiting.size) this.state = "running";
+        this.turnSeen = true; // Stop の hook がターンを続けさせた後も、ターンの途中にいる
         this.push("assistant", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name: body.tool_name, input: body.tool_input ?? {} }] } });
         return undefined;
       }

@@ -87,7 +87,7 @@ test("attach: size, then the tail as replay, then live data; offsets are byte po
   p.emit("world");
   const it = d.attach();
   const first = await take(it, 2);
-  expect(first[0]).toEqual({ type: "size", cols: 120, rows: 40 });
+  expect(first[0]).toEqual({ type: "size", cols: 120, rows: 40, epoch: d.epoch });
   expect(first[1]!.type).toBe("replay");
   expect(dec(first[1]!)).toBe("hello world");
   expect((first[1] as { offset: number }).offset).toBe(11);
@@ -100,7 +100,9 @@ test("attach: size, then the tail as replay, then live data; offsets are byte po
 test("attach with after inside the buffer sends only the rest as data; after outside replays", async () => {
   const { d, p } = await start({}, { maxBuffer: 10 });
   p.emit("abcde"); p.emit("fghij"); p.emit("klmno"); // 先頭の5バイトは捨てられる
-  const resumed = await take(d.attach(12), 2);
+  // epoch が違う（resume した別のプロセスの位置）なら replay からやり直す
+  expect((await take(d.attach(12, d.epoch - 1), 2))[1]!.type).toBe("replay");
+  const resumed = await take(d.attach(12, d.epoch), 2);
   expect(resumed[1]).toMatchObject({ type: "data", offset: 15 });
   expect(dec(resumed[1]!)).toBe("mno");
   // 範囲の外なら、捨てた分も含めた今の画面を replay で1回流す
@@ -129,7 +131,7 @@ test("resize is last-writer-wins and is broadcast to attached screens", async ()
   await take(it, 2);
   d.resize(80, 24);
   expect(p.resizes).toEqual([[80, 24]]);
-  expect(await take(it, 1)).toEqual([{ type: "size", cols: 80, rows: 24 }]);
+  expect(await take(it, 1)).toEqual([{ type: "size", cols: 80, rows: 24, epoch: d.epoch }]);
   expect(d.size).toEqual({ cols: 80, rows: 24 });
 });
 
@@ -276,4 +278,13 @@ test("stopPtysOnExit stops the live PTY children before the node exits", async (
   await onSignal();
   expect(p.kills).toEqual(["SIGTERM"]);
   expect(codes).toEqual([0]);
+});
+
+test("a screen that stops reading before the live part does not stay subscribed", async () => {
+  const { d, p } = await start();
+  const it = d.attach()[Symbol.asyncIterator]();
+  await it.next();
+  await it.return?.();
+  p.emit("x".repeat(100));
+  expect((d as unknown as { subs: Set<unknown> }).subs.size).toBe(0);
 });

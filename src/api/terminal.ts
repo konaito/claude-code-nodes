@@ -27,10 +27,11 @@ export function terminalStream(store: SessionStore, id: string, req: Request, ur
   const raw = req.headers.get("last-event-id") ?? url.searchParams.get("after");
   const n = raw === null || raw === "" ? undefined : Number(raw);
   const after = n !== undefined && Number.isInteger(n) && n >= 0 ? n : undefined;
-  const frames = t.attach(after);
+  const e = Number(url.searchParams.get("epoch") ?? "");
+  const frames = t.attach(after, Number.isInteger(e) && e > 0 ? e : undefined);
   return sse((async function* () {
     for await (const f of frames) {
-      if (f.type === "size") yield { event: "size", data: { cols: f.cols, rows: f.rows } };
+      if (f.type === "size") yield { event: "size", data: { cols: f.cols, rows: f.rows, epoch: f.epoch } };
       else if (f.type === "exit") yield { event: "exit", data: { code: f.code, reason: f.reason } };
       else yield { id: f.offset, event: f.type, data: { b64: f.b64 } };
     }

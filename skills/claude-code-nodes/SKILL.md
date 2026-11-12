@@ -54,7 +54,7 @@ terminal に届いた文は「別のセッションからのメッセージ」�
 
 | 口 | すること |
 | --- | --- |
-| `GET /api/sessions/<id>/terminal` | SSE。最初に `size`（cols、rows）、次に `replay`（ノードが持つヘッドレスの端末の今の画面。文字、代替画面、カーソル、モードを再現する文字列を base64 にした `b64`。受け側は端末を reset してから書く）、以後 `data`（`b64`）、終われば `exit`（code、reason）。各フレームの `id` はバイト位置で、`Last-Event-ID` か `?after=<位置>` で続きから読める |
+| `GET /api/sessions/<id>/terminal` | SSE。最初に `size`（cols、rows、epoch）、次に `replay`（ノードが持つヘッドレスの端末の今の画面。文字、代替画面、カーソル、モードを再現する文字列を base64 にした `b64`。受け側は端末を reset してから書く）、以後 `data`（`b64`）、終われば `exit`（code、reason）。各フレームの `id` はバイト位置で、`?after=<位置>&epoch=<size の epoch>` で続きから読める。位置は claude のプロセスごとに0から数えるので、epoch が違えば replay からやり直す |
 | `POST /api/sessions/<id>/terminal/input` | `{"data":"<base64>"}` か `{"text":"..."}` をそのままキー入力として書く |
 | `POST /api/sessions/<id>/terminal/resize` | `{"cols":n,"rows":n}`。最後に呼んだ画面に合わせ、付いている画面全部に `size` を流す |
 

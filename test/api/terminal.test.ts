@@ -127,7 +127,7 @@ test("omitting terminal keeps the SDK child", async () => {
 });
 
 test("GET /terminal streams size, replay of the tail, then data; ids are byte offsets and after resumes", async () => {
-  const { app, procs } = harness();
+  const { app, procs, store } = harness();
   const { id } = await create(app);
   const p = procs[0]!;
   p.emit("hello");
@@ -137,10 +137,11 @@ test("GET /terminal streams size, replay of the tail, then data; ids are byte of
   await tick();
   p.emit("!");
   const fr = await pending;
-  expect(fr[0]).toEqual({ event: "size", data: { cols: 120, rows: 40 } });
+  const epoch = (store.get(id) as PtyDriver).epoch;
+  expect(fr[0]).toEqual({ event: "size", data: { cols: 120, rows: 40, epoch } });
   expect(fr[1]).toEqual({ id: 5, event: "replay", data: { b64: Buffer.from("hello").toString("base64") } });
   expect(fr[2]).toEqual({ id: 6, event: "data", data: { b64: Buffer.from("!").toString("base64") } });
-  const again = await readFrames(await app.fetch(req(`/api/sessions/${id}/terminal?after=5`)), 2);
+  const again = await readFrames(await app.fetch(req(`/api/sessions/${id}/terminal?after=5&epoch=${epoch}`)), 2);
   expect(again[1]).toEqual({ id: 6, event: "data", data: { b64: Buffer.from("!").toString("base64") } });
   const byHeader = await readFrames(await app.fetch(req(`/api/sessions/${id}/terminal`, { headers: { "last-event-id": "6" } })), 1);
   expect(byHeader[0]!.event).toBe("size");
