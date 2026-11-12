@@ -473,7 +473,12 @@ test("a resumed pty session returns the earlier conversation from history, then 
   expect(p2.messages[49]).toMatchObject({ uuid: "h249" });
   expect(p2.messages.slice(50).map((m: { seq: number }) => m.seq)).toEqual([251, 252]);
   expect(p2.next).toBe(252);
-  expect(await get(app, `/api/sessions/${PTY}/messages?after=252`)).toEqual({ messages: [] });
+  const p3 = await get(app, `/api/sessions/${PTY}/messages?after=252`);
+  expect(p3.messages).toEqual([]);
+  expect(p3.next).toBeUndefined();
+  // epoch（番号の印）は、履歴だけのページ、つなぎのページ、空のページで同じ
+  expect(typeof p1.epoch).toBe("string");
+  expect([p2.epoch, p3.epoch]).toEqual([p1.epoch, p1.epoch]);
   expect((await get(app, `/api/sessions/${PTY}`)).cursor).toBe(252);
 });
 
@@ -528,4 +533,58 @@ test("a resumed pty still stops read_messages at a permission request from the l
   expect(out).not.toContain("old reply");
   expect(out).toContain("[permission] Bash");
   expect(out).toMatch(/stop=permission state=waiting_permission pending=1 cursor=4 /);
+});
+
+// ノードの再起動をまたいで cursor を持つ読み手（Claude Town の会話）。再起動の前の末尾は seq 3（user、assistant、result）、
+// jsonl には user と assistant の2件しか無いので、付け直した後の境界は 2 になり、前の cursor 3 で読むと seq 3 が落ちる。
+// messages の epoch が変わったことで読み手が気づき、after=0 から読み直すと欠けも重なりも無い
+test("messages carries an epoch that changes across a node restart, so a reader holding an old cursor can re-read from 0 without gaps", async () => {
+  const create = (app: { fetch: (r: Request) => Promise<Response> }, cwd: string, resume?: string) =>
+    app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd, terminal: true, ...(resume ? { resume } : {}) }) }));
+  const turn = (pty: FakeDriver, n: number) => {
+    pty.push({ type: "user", data: { type: "user", message: { role: "user", content: `ping ${n}` } } });
+    pty.push({ type: "assistant", data: { type: "assistant", message: { content: [{ type: "text", text: `PONG${n}` }] } } });
+    pty.push({ type: "result", data: { type: "result", subtype: "success", result: `PONG${n}` } });
+  };
+  // 再起動の前のノード
+  const a = ptyHarness(0);
+  await create(a.app, a.pty.cwd);
+  turn(a.pty, 1);
+  await settle();
+  const before = await get(a.app, `/api/sessions/${PTY}/messages?after=0`);
+  expect(before.messages.map((m: { seq: number }) => m.seq)).toEqual([1, 2, 3]);
+  const held = { cursor: before.next as number, epoch: before.epoch as string };
+  expect(held.cursor).toBe(3);
+  // 再起動の後のノード。jsonl には PONG1 の user と assistant の2件
+  const b = ptyHarness(2);
+  expect(await (await create(b.app, b.pty.cwd, PTY)).json()).toMatchObject({ cursor: 2 });
+  turn(b.pty, 2);
+  await settle();
+  // 前の cursor のまま読むと seq 3（PONG2 を頼んだ user）が落ちる。epoch は前と違う
+  const stale = await get(b.app, `/api/sessions/${PTY}/messages?after=${held.cursor}`);
+  expect(stale.messages.map((m: { seq: number }) => m.seq)).toEqual([4, 5]);
+  expect(stale.epoch).not.toBe(held.epoch);
+  // 読み直すと、jsonl の2件と台帳の3件が重ならずにつながる
+  const again = await get(b.app, `/api/sessions/${PTY}/messages?after=0`);
+  expect(again.epoch).toBe(stale.epoch);
+  expect(again.messages.map((m: { uuid?: string; seq?: number }) => m.seq ?? m.uuid)).toEqual(["h0", "h1", 3, 4, 5]);
+  expect(again.next).toBe(5);
+});
+
+test("resuming the same session again in the same node also changes the epoch; a session read from history has the fixed history epoch", async () => {
+  const { app, pty } = ptyHarness(3);
+  const create = () => app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: pty.cwd, terminal: true, resume: PTY }) }));
+  await create();
+  const e1 = (await get(app, `/api/sessions/${PTY}/messages?after=0`)).epoch;
+  // 終わったものを同じノードで resume し直す（生きているものは 409 で断られる）
+  pty.state = "exited";
+  expect((await create()).status).toBe(201);
+  pty.state = "idle";
+  const e2 = (await get(app, `/api/sessions/${PTY}/messages?after=0`)).epoch;
+  expect(e2).not.toBe(e1);
+  // 終わったセッションは jsonl の位置で返すので、印は決まった値になる
+  pty.state = "exited";
+  const h = await get(app, `/api/sessions/${PTY}/messages?after=0`);
+  expect(h.epoch).toBe("history");
+  expect(h.messages.length).toBe(3);
 });

@@ -8,6 +8,10 @@ const KEEP_AFTER_EXIT = 50; // 終了後に残す末尾の件数。遅れて繋�
 const DEFAULT_ENDED_TTL_MS = 30 * 60_000; // 終わったセッションを台帳に残す時間。過ぎたら消す（過去の会話は履歴から読める）
 const DEFAULT_MAX_ENDED = 100;            // 終わったセッションを残す件数の上限。超えたら古いものから消す
 const DEFAULT_UNSENT_TTL_MS = 30 * 60_000; // プロンプト無しで立てて1通も届かないセッションを残す時間。終わったものと同じ30分
+// 台帳の番号の印（epoch）。ノードのプロセスごとに変わる部分と、add のたびに増える部分でできている。
+// 同じ印の間だけ seq が続いている。印が変わったら、読み手は持っている cursor を捨てて after=0 から読み直す
+const BOOT = Date.now().toString(36);
+let epochs = 0;
 type Change = { id: string; summary: SessionSummary };
 type Entry = {
   driver: Driver;
@@ -15,6 +19,7 @@ type Entry = {
   seq: number;        // この id で最後に振った番号。同じ id を入れ直しても引き継ぐ
   historyBase: number; // これより前の番号は台帳に無く、会話の履歴（jsonl）の位置で数える。付けた時点の履歴の件数（pty の resume）。無ければ 0
   trimmedTo: number;  // 上限超えで捨てた最後の seq。これ以前のカーソルは欠落がある
+  epoch: string;      // この項目の番号の印。add のたびに新しくする（入れ直すと前のイベントは消え、resume では historyBase より前が jsonl の位置になるので、前の cursor は続かない）
   ended: boolean;
   endedAt?: number;
   subs: Set<AsyncQueue<DriverEvent>>;
@@ -46,7 +51,7 @@ export class SessionStore {
     const old = this.entries.get(d.id);
     if (old) { for (const s of old.subs) s.close(); old.subs.clear(); }
     const historyBase = Math.max(0, opts.historyBase ?? 0);
-    const e: Entry = { driver: d, events: [], seq: Math.max(old?.seq ?? 0, historyBase), historyBase, trimmedTo: old?.trimmedTo ?? 0, ended: false, subs: new Set(), lastState: d.summary().state };
+    const e: Entry = { driver: d, events: [], seq: Math.max(old?.seq ?? 0, historyBase), historyBase, trimmedTo: old?.trimmedTo ?? 0, epoch: `${BOOT}.${++epochs}`, ended: false, subs: new Set(), lastState: d.summary().state };
     this.entries.set(d.id, e);
     this.emitChange(d);
     void this.pump(e);
@@ -57,6 +62,8 @@ export class SessionStore {
   lastSeq(id: string): number | undefined { return this.entries.get(id)?.seq; }
   // add で渡した historyBase。これより前の after は履歴の位置
   historyBase(id: string): number { return this.entries.get(id)?.historyBase ?? 0; }
+  // 番号の印。messages の応答に入れる
+  epoch(id: string): string | undefined { return this.entries.get(id)?.epoch; }
   remove(id: string) {
     const e = this.entries.get(id);
     if (!e) return;

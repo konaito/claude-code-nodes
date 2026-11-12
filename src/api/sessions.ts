@@ -22,6 +22,9 @@ import { DEPTH_HINT, DEPTH_HOPS, DEPTH_REFUSAL, DepthTracer, MAX_DEPTH, type Ses
 import { ListWatch, type ListFilter } from "./list-watch";
 import type { State } from "../sessions/types";
 
+// jsonl（会話の履歴）から返す messages の番号の印。jsonl の位置はノードを起動し直しても変わらないので、決まった値にする
+export const HISTORY_EPOCH = "history";
+
 export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: unknown; load: number[] };
 export type Deps = {
   nodeName: string;
@@ -280,22 +283,26 @@ export class Sessions {
     return Promise.resolve().then(() => this.d.history.count(id)).catch(() => undefined);
   }
   // 生きているものは台帳のイベント（seq）を返す。台帳に付けた時点より前（after が historyBase より前）は、jsonl の会話を履歴の位置で返す。
-  // 履歴の分を読み切ったページには、続けて台帳のイベントを入れる（空のページを返すと、読み手が境界の手前で止まる）
+  // 履歴の分を読み切ったページには、続けて台帳のイベントを入れる（空のページを返すと、読み手が境界の手前で止まる）。
+  // 応答の epoch は after と next の数え方の印。生きているものは台帳の項目ごと（store.epoch）、それ以外は HISTORY_EPOCH。
+  // 前に読んだ応答と epoch が違えば、持っている cursor は今の番号と続いていない（ノードの再起動、付け直し、終了で jsonl の位置に移った）。
+  // 読み手は after=0 から読み直す。epoch を見ない読み手（CLI、MCP）は今までどおり
   async messages(id: string, after: number) {
     const liveOne = this.d.store.get(id);
     if (liveOne && liveOne.summary().state !== "exited") {
+      const epoch = this.d.store.epoch(id);
       const base = this.d.store.historyBase(id);
       let past: unknown[] = [];
       if (after < base) {
         const limit = Math.min(HISTORY_PAGE, base - after);
         past = (await this.d.history.messages(id, after, limit).catch(() => ({ messages: [] }))).messages.slice(0, limit);
-        if (past.length === limit && after + limit < base) return { messages: past, next: after + limit };
+        if (past.length === limit && after + limit < base) return { messages: past, next: after + limit, epoch };
       }
       const events = this.d.store.eventsSince(id, after);
       const next = events.length ? events[events.length - 1]!.seq : past.length ? after + past.length : undefined;
-      return { messages: [...past, ...events], next };
+      return { messages: [...past, ...events], next, epoch };
     }
-    return this.d.history.messages(id, after);
+    return { ...(await this.d.history.messages(id, after)), epoch: HISTORY_EPOCH };
   }
   async send(id: string, req: Request, caller: Caller) {
     const driver = await this.must(id);
