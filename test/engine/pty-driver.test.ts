@@ -242,6 +242,56 @@ test("send pastes the text with bracketed paste and presses Enter", async () => 
   expect(p.writes).toEqual(["\x1b[200~from local via vm\n\nline1\nline2\x1b[201~", "\r"]);
 });
 
+// hooks は途中の文を運ばないので、会話の行（SDK の getSessionMessages）から流す（2026-11-12、Claude Town のチャットで途中の文が出なかった）
+const line = (uuid: string, type: string, content: unknown[], at = new Date(Date.now() + 1000).toISOString()) => ({ type, uuid, session_id: "s", parent_tool_use_id: null, timestamp: at, message: { role: type, content } });
+test("assistant text written before a tool call is streamed from the transcript, in order, with tool results", async () => {
+  const lines: ReturnType<typeof line>[] = [line("old", "assistant", [{ type: "text", text: "before resume" }], "2020-01-01T00:00:00Z")];
+  const { d } = await start({}, { transcript: async () => lines });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+  lines.push(line("u-prompt", "user", [{ type: "text", text: "go" }]));
+  lines.push(line("a1", "assistant", [{ type: "thinking", thinking: "" }]));
+  lines.push(line("a2", "assistant", [{ type: "text", text: "原因は特定できた。" }]));
+  lines.push(line("a3", "assistant", [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }]));
+  await d.hook({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "ls" } });
+  lines.push(line("r1", "user", [{ type: "tool_result", tool_use_id: "t1", content: "a" }]));
+  lines.push(line("a4", "assistant", [{ type: "text", text: "終わった" }]));
+  await d.hook({ hook_event_name: "Stop", last_assistant_message: "終わった" });
+  await tick();
+  expect(evs.map((e) => e.type)).toEqual(["user", "assistant", "assistant", "assistant", "user", "assistant", "result"]);
+  // 行はそのまま流す（node のセッションと同じく、1行が1つの event）。resume の前の行と、打った文の行は流さない
+  expect(evs.slice(1, 6).map((e) => (e.data as { uuid: string }).uuid)).toEqual(["a1", "a2", "a3", "r1", "a4"]);
+  expect(evs[2]!.data).toEqual(lines[3]);
+});
+
+test("when the last line is not written yet at Stop, the hook text fills in and the line is not streamed twice", async () => {
+  const lines: ReturnType<typeof line>[] = [];
+  const { d } = await start({}, { transcript: async () => lines });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+  await d.hook({ hook_event_name: "Stop", last_assistant_message: "done" });
+  lines.push(line("late", "assistant", [{ type: "text", text: "done" }]));
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "next" });
+  lines.push(line("n1", "assistant", [{ type: "text", text: "next answer" }]));
+  await d.hook({ hook_event_name: "Stop", last_assistant_message: "next answer" });
+  await tick();
+  const texts = evs.filter((e) => e.type === "assistant").map((e) => ((e.data as { message: { content: { text: string }[] } }).message.content[0]!.text));
+  expect(texts).toEqual(["done", "next answer"]);
+  expect(evs.map((e) => e.type)).toEqual(["user", "assistant", "result", "user", "assistant", "result"]);
+});
+
+test("a failing transcript read does not break the turn", async () => {
+  const { d } = await start({}, { transcript: async () => { throw new Error("no file"); } });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+  await d.hook({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {} });
+  await d.hook({ hook_event_name: "Stop", last_assistant_message: "ok" });
+  await tick();
+  // 読めないときは今までどおり hooks から組み立てる
+  expect(evs.map((e) => e.type)).toEqual(["user", "assistant", "assistant", "result"]);
+  expect(d.summary().state).toBe("idle");
+});
+
 test("permission via hooks: pending, event, allow resolves the hook with the decision", async () => {
   const { d } = await start();
   const evs = collect(d);

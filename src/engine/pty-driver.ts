@@ -47,7 +47,11 @@ export type PtyDeps = {
   pasteDelayMs?: number;
   readyTimeoutMs?: number;  // send が claude の起動（SessionStart と入力の受け付け）を待つ上限。既定 10 秒（中継の応答待ち15秒より短くする）
   inputTimeoutMs?: number;  // 起動から入力の受け付け（ESC[?2004h）を待つ上限。過ぎたら溜めた入力を流す。既定 10 秒
+  // 会話の行（SDK の getSessionMessages）。hooks は途中の文を運ばないので、hooks が届くたびにこれを読み、まだ出していない行を流す。
+  // 無ければ hooks から組み立てる（途中の文は出ない）
+  transcript?: (id: string) => Promise<TranscriptLine[]>;
 };
+export type TranscriptLine = { type: string; uuid: string; message?: unknown; timestamp?: string };
 
 const MAX_BUFFER = 2 * 1024 * 1024;
 // claude が入力を読み始めると出す、bracketed paste を有効にする列
@@ -145,6 +149,10 @@ export class PtyDriver implements Driver {
   private inputTimer?: ReturnType<typeof setTimeout>;
   private early: Uint8Array[] = [];
   private scanTail = "";
+  private seenLines = new Set<string>();     // 流した会話の行の uuid
+  private syncing: Promise<void> = Promise.resolve();
+  private fallbackTexts: string[] = [];      // 行が書かれる前に Stop の hook の文で補った分。後から同じ文の行が来たら流さない
+  private turnTexts: string[] = [];          // このターンに流した文
   private unsent: Uint8Array[] = []; // まだ画面に送っていない出力。末尾は this.end
   private flushTimer?: ReturnType<typeof setTimeout>;
   private lastFlushAt = 0;
@@ -325,16 +333,21 @@ export class PtyDriver implements Driver {
         this.dropPending("superseded");
         this.state = "running";
         this.turnSeen = true;
+        this.turnTexts = [];
         this.push("user", { type: "user", message: { role: "user", content: String(body.prompt ?? "") } });
         return undefined;
-      case "PermissionRequest": return await this.onPermission(body);
+      case "PermissionRequest":
+        // 承認を待つ間も、道具の前に書いた文が見えるように先に流す（承認の hook は待たせない）
+        void this.syncTranscript();
+        return await this.onPermission(body);
       case "PostToolUse":
       case "PostToolUseFailure": {
         // 端末で答えた承認は hook の要求が切れないので、同じ道具と入力の実行が終わったら片付ける
         for (const [id, w] of this.waiting) if (w.p.toolName === body.tool_name && sameInput(w.p.input, body.tool_input)) this.drop(id, w, "answered in terminal");
         if (!this.waiting.size) this.state = "running";
         this.turnSeen = true; // Stop の hook がターンを続けさせた後も、ターンの途中にいる
-        this.push("assistant", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name: body.tool_name, input: body.tool_input ?? {} }] } });
+        // 会話の行が読めなければ、hook の道具の名前と入力で補う
+        if (!(await this.syncTranscript())) this.push("assistant", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name: body.tool_name, input: body.tool_input ?? {} }] } });
         return undefined;
       }
       case "Stop":
@@ -343,7 +356,13 @@ export class PtyDriver implements Driver {
         this.state = "idle";
         this.turnSeen = false;
         const text = typeof body.last_assistant_message === "string" ? body.last_assistant_message : "";
-        if (text) this.push("assistant", { type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+        const synced = await this.syncTranscript();
+        // 最後の文の行がまだ書かれていなければ、hook の文で補う。後から同じ文の行が来ても流さない
+        if (text && !this.turnTexts.includes(text)) {
+          this.push("assistant", { type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] } });
+          if (synced) this.fallbackTexts.push(text);
+        }
+        this.turnTexts = [];
         this.push("result", { type: "result", subtype: body.hook_event_name === "Stop" ? "success" : "error_during_execution", is_error: body.hook_event_name !== "Stop", result: text });
         return undefined;
       }
@@ -446,6 +465,41 @@ export class PtyDriver implements Driver {
     }
   }
   private push(type: string, data: unknown) { this.out.push({ at: Date.now(), type, data }); }
+
+  // 会話の行を読み、まだ流していない行を順に流す。assistant の行は全部、user の行は道具の結果だけ（打った文は UserPromptSubmit で流す）。
+  // このプロセスの起動より前の行（resume や fork で引き継いだ会話）は流さない。同時に呼ばれても順に1回ずつ読む
+  // 読めたら true。transcript が無いか、読めなければ false（呼び手が hooks の値で補う）
+  private syncTranscript(): Promise<boolean> {
+    const read = this.deps.transcript;
+    if (!read) return Promise.resolve(false);
+    const run = this.syncing.then(async () => {
+      if (this.state === "exited") return false;
+      const lines = await read(this.id).catch(() => undefined);
+      if (!lines) return false;
+      for (const l of lines) {
+        if (!l.uuid || this.seenLines.has(l.uuid)) continue;
+        this.seenLines.add(l.uuid);
+        const at = l.timestamp ? Date.parse(l.timestamp) : NaN;
+        if (Number.isFinite(at) && at < this.startedAt) continue;
+        const content = (l.message as { content?: unknown } | undefined)?.content;
+        if (l.type === "assistant") {
+          const blocks = Array.isArray(content) ? (content as { type?: string; text?: string }[]) : [];
+          const text = blocks.length === 1 && blocks[0]!.type === "text" ? blocks[0]!.text ?? "" : undefined;
+          if (text !== undefined) {
+            const i = this.fallbackTexts.indexOf(text);
+            if (i >= 0) { this.fallbackTexts.splice(i, 1); continue; } // Stop の hook の文で補った分
+            this.turnTexts.push(text);
+          }
+          this.push("assistant", l);
+        } else if (l.type === "user" && Array.isArray(content) && (content as { type?: string }[]).some((b) => b.type === "tool_result")) {
+          this.push("user", l);
+        }
+      }
+      return true;
+    });
+    this.syncing = run.then(() => {}, () => {});
+    return run;
+  }
   private finish(code: number | null, reason: string) {
     if (this.state === "exited") return;
     this.flushOut(); // exit より前の出力を先に送る
