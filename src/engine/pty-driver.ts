@@ -53,6 +53,9 @@ const MAX_BUFFER = 2 * 1024 * 1024;
 // claude が入力を読み始めると出す、bracketed paste を有効にする列
 const INPUT_ON = "\x1b[?2004h";
 const REPLAY_CHUNK = 64 * 1024;
+// 画面に送る data の間隔の下限。間に届いた出力は1つの data にまとめる。17ms で1秒あたり60回以下になる（#25）。
+// 前の data から間が空いていれば、待たずにすぐ送る（打った文字の表示を遅らせない）
+const DATA_GAP_MS = 17;
 const SUB_LIMIT = 8 * 1024 * 1024; // 1つの画面に溜めてよいバイト数。超えたら切り、画面は after で繋ぎ直す
 const HOOK_EVENTS = ["UserPromptSubmit", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "Notification"] as const;
 const PERMISSION_HOOK_TIMEOUT_S = 7 * 24 * 3600; // 承認は人が答えるまで待つ。切れると端末の承認画面だけが残る
@@ -142,6 +145,9 @@ export class PtyDriver implements Driver {
   private inputTimer?: ReturnType<typeof setTimeout>;
   private early: Uint8Array[] = [];
   private scanTail = "";
+  private unsent: Uint8Array[] = []; // まだ画面に送っていない出力。末尾は this.end
+  private flushTimer?: ReturnType<typeof setTimeout>;
+  private lastFlushAt = 0;
   // 今のターンの UserPromptSubmit を見た。見る前（起動の引数の文がまだ届いていない間）に agents が idle と言っても、ターンは終わっていない
   private turnSeen = false;
 
@@ -247,6 +253,7 @@ export class PtyDriver implements Driver {
   resize(cols: number, rows: number) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
     if (cols === this.cols && rows === this.rows) return;
+    this.flushOut(); // size より前の出力を先に送る
     this.cols = cols; this.rows = rows;
     this.proc!.resize(cols, rows);
     this.screen.resize(cols, rows);
@@ -256,6 +263,8 @@ export class PtyDriver implements Driver {
   // replay の offset はスナップショットを取った時点のバイト位置で、それより後の出力は data で続く。終わったセッションは replay と exit だけ
   // バイト位置はプロセスごとに0から数えるので、同じ id を resume した後の位置と混ざらないよう、epoch（このプロセスの印）が合うときだけ after を受ける
   attach(after?: number, epoch?: number): AsyncIterable<TermFrame> {
+    // まだ送っていない出力を今いる画面に送ってから、新しい画面を足す。新しい画面には at までが replay か head で届く
+    this.flushOut();
     const q = new AsyncQueue<TermFrame>();
     const sub: Sub = { q, bytes: 0 };
     const size: TermFrame = { type: "size", cols: this.cols, rows: this.rows, epoch: this.epoch };
@@ -410,7 +419,22 @@ export class PtyDriver implements Driver {
     let size = this.end - this.bufStart;
     const max = this.deps.maxBuffer ?? MAX_BUFFER;
     while (size > max && this.chunks.length > 1) { const x = this.chunks.shift()!; this.bufStart += x.length; size -= x.length; }
-    this.broadcast({ type: "data", b64: b64(c), offset: this.end });
+    if (!this.subs.size) return; // 見ている画面が無ければ送るものも無い。後から繋いだ画面は replay か head で受け取る
+    this.unsent.push(c);
+    if (this.flushTimer) return;
+    const wait = this.lastFlushAt + DATA_GAP_MS - Date.now();
+    if (wait <= 0) this.flushOut();
+    else this.flushTimer = setTimeout(() => this.flushOut(), wait);
+  }
+  // まだ送っていない出力を1つの data にして、付いている画面全部に送る。offset は this.end（送る出力の末尾）
+  private flushOut() {
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    if (!this.unsent.length) return;
+    const u = concat(this.unsent);
+    this.unsent = [];
+    this.lastFlushAt = Date.now();
+    this.broadcast({ type: "data", b64: b64(u), offset: this.end });
   }
   private broadcast(f: TermFrame) {
     for (const s of this.subs) {
@@ -424,6 +448,7 @@ export class PtyDriver implements Driver {
   private push(type: string, data: unknown) { this.out.push({ at: Date.now(), type, data }); }
   private finish(code: number | null, reason: string) {
     if (this.state === "exited") return;
+    this.flushOut(); // exit より前の出力を先に送る
     clearTimeout(this.reconcileTimer);
     clearTimeout(this.inputTimer);
     this.early = [];

@@ -97,6 +97,46 @@ test("attach: size, then the tail as replay, then live data; offsets are byte po
   expect(dec(live!)).toBe("!");
 });
 
+// #25: 17ms より詰まって届いた出力は1つの data にまとめる。間が空いていれば待たずに送る
+test("output arriving within 17ms is sent as one data frame whose offset is the end", async () => {
+  const { d, p } = await start();
+  const it = d.attach();
+  await take(it, 2); // size, replay
+  p.emit("a"); // 前の data から間が空いているので、すぐ送る
+  expect(await take(it, 1)).toMatchObject([{ type: "data", offset: 1 }]);
+  p.emit("b"); p.emit("cd"); p.emit("e");
+  const [merged] = await take(it, 1);
+  expect(merged).toMatchObject({ type: "data", offset: 5 });
+  expect(dec(merged!)).toBe("bcde");
+  await Bun.sleep(25);
+  p.emit("f");
+  const [f] = await take(it, 1);
+  expect(f).toMatchObject({ type: "data", offset: 6 });
+});
+
+test("held output is sent before a size frame, before exit, and before a new screen attaches", async () => {
+  const { d, p } = await start();
+  const it = d.attach();
+  await take(it, 2);
+  p.emit("x"); p.emit("y"); // y は待たされる
+  d.resize(80, 24);
+  const [x, y, size] = await take(it, 3);
+  expect(dec(x!) + dec(y!)).toBe("xy");
+  expect(y).toMatchObject({ type: "data", offset: 2 });
+  expect(size).toMatchObject({ type: "size", cols: 80, rows: 24 });
+  p.emit("z");
+  // 待たされている z は今いる画面に送られ、新しい画面には replay に入る（重ならない）
+  const late = d.attach();
+  const [, replay] = await take(late, 2);
+  expect(replay).toMatchObject({ type: "replay", offset: 3 });
+  expect(dec((await take(it, 1))[0]!)).toBe("z");
+  p.emit("w");
+  p.exit(0);
+  const tail = await take(it, 3);
+  expect(tail.map((f) => f.type)).toEqual(["data", "exit"]);
+  expect(dec(tail[0]!)).toBe("w");
+});
+
 test("attach with after inside the buffer sends only the rest as data; after outside replays", async () => {
   const { d, p } = await start({}, { maxBuffer: 10 });
   p.emit("abcde"); p.emit("fghij"); p.emit("klmno"); // 先頭の5バイトは捨てられる
