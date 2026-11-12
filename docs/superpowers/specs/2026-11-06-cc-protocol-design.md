@@ -303,3 +303,11 @@ VMの127.0.0.1に立て、curlで作る、送る、SSEで読む、承認する�
 - MCP に `list_places`（受け口、roots、roots の内側の最近の場所）を足した。ツールは10になった。`create_session` は cwd と prompt を省ける。
 - `GET /api/places`（CLI の `ccn places`、MCP の `list_places` の `places`）は、roots の直下と `<root>/Documents` の直下のディレクトリごとに、絶対パス、README の先頭、git の remote の url、最近使った時刻を返す。ノードが読むのは README と git の設定（worktree なら `.git` の1行と `commondir`）だけで、symlink を解いた実体が roots の内側にあり、受け口の deny と同じ秘密の置き場（`src/lobby/lobby.ts` の `isSecretPath`）に当たらないものだけを読む。remote の利用者名と token は消す。走査は1000ディレクトリ、返すのは既定60件（最大300件）、JSON は16,000字までで、走査の結果は終わってから10秒覚える。macOS では、ホームの直下の保護フォルダ（Desktop、Downloads、Library、Pictures、Music、Movies、Public、Applications）と /Volumes を指す symlink に fs を当てない。fs の呼び出しは1回1秒、走査全体は3秒で打ち切り、時間切れのときは読めた分に `partial`、`unreadable`、`note` を付けて返す。1回の上限を超えたパスは、ノードが動いている間は開かない。同時の呼び出しは1つの走査を待つ（`PlacesScanner`）。
 - 古い版のノードは cwd か prompt が無いと `cwd is required` か `prompt or resume is required` の 400 で断る。画面、CLI、MCP はこの文言を見て、そのノードが古い版だと伝える。
+
+## 子の深さの上限（2026-11-13、本人が「孫までしかできないようにして欲しい」と言った）
+
+- 人が立てたセッション（呼び手が email、`local`、sessionId を名乗らない名前）を深さ0、その子を1、孫を2とする。孫からのセッションの作成は、HTTP、MCP、CLI のどれも `POST /api/sessions` の中で 409 で断る。断る文は「孫（深さ2）は子を作れない。仕事は自分でやるか、sub-agent（Agent ツール）を使う」に、呼び手と呼び手の深さを付けたもの。
+- 深さはノードが作ったときにメモリに刻む。刻んだ値の無いセッション（端末、過去、ノードの再起動の前）は、呼び手の sessionId の先頭8文字から親をたどる。親は、生きている間の呼び手と最初の文の from 行の呼び手の両方を見て、深いほうを取る。resume と fork（人の resume も）は元の深さを引き継ぐ。
+- 呼び手が別のノードのセッションなら、中継で `GET /api/depth?session=<先頭8文字>` を聞く。古い版か届かないか見つからないときは断らず、子を深さ1以上として数える。人、Specter、端末のセッションも「見つからない」側に入りうるので、断ると通常の利用が止まるため。
+- 受け口のセッションは段に数えない。受け口の子は受け口と同じ深さになる。
+- `as_session` を名乗らない呼び手は人と見分けられない。この上限は暴走を止めるためのもので、名乗りを偽る呼び手は止めない。

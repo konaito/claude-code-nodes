@@ -16,6 +16,21 @@ test("list maps SDKSessionInfo to SessionSummary", async () => {
   expect(list[0].parent).toBe("agent:lead");
 });
 
+// SDK の firstPrompt は改行が空白に潰れて届く（konaito-pro の実物の形）
+test("list reads the parent from a firstPrompt whose newlines were collapsed", async () => {
+  const fns = {
+    listSessions: async () => [
+      { sessionId: "h1", lastModified: 1, firstPrompt: "from agent:konaito-pro/29cf3311/lead via konaito-pro  親から。あなたの役割は「計測」。" },
+      { sessionId: "h2", lastModified: 1, firstPrompt: "from local via konaito-pro  /goal claudetownのissue全部拾ってください" },
+      { sessionId: "h3", lastModified: 1, firstPrompt: "from here via there we go" },
+      { sessionId: "h4", lastModified: 1, firstPrompt: "fromage via x" },
+    ],
+    getSessionMessages: async () => [],
+  } as any;
+  const list = await new History(fns).list();
+  expect(list.map((s) => s.parent)).toEqual(["agent:konaito-pro/29cf3311/lead", "local", "here", undefined]);
+});
+
 test("messages passes offset as after and returns next", async () => {
   let got: unknown;
   const fns = {
