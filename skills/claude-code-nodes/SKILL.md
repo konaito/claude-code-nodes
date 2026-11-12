@@ -138,6 +138,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | `ccn:answer_permission` | 子（node、pty）の権限プロンプトに allow か deny で答える | `peer`、`session`、`behavior`、`request_id`、`message` |
 | `ccn:interrupt_session` | 子の今のターンを止める。子は生きたまま | `peer`、`session` |
 | `ccn:stop_session` | 子のプロセスを止める。会話は残り、`resume` で続けられる | `peer`、`session` |
+| `ccn:teleport_session` | セッションを会話と git の作業ツリーごと別のノードへ移す。移動先は remote で探し、無ければ `~/Documents/<リポジトリ名>` に clone する。既定は move（移動元を止める）、`fork` で移動元を残して別の id にする。移動先の作業ツリーが汚れていれば何も変えずに止まる | `peer`、`session`、`to`、`fork`、`cwd` |
 
 `session` には、sessionId、その先頭8文字以上、`<peer>/<sessionId>` のどれでも渡せる。`peer` を省くと、MCP の口を出しているノードになる。
 
