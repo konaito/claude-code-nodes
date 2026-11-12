@@ -3,6 +3,10 @@ import { BusyError, CapabilityError, ExitedError, NotFoundError, SocketGoneError
 import { AccessDenied } from "../identity/identity";
 import { RegistryError } from "../registry/registry";
 import { PeerUnreachableError, RelayNotConfiguredError, UnknownPeerError } from "../relay/relay";
+import { GitError } from "../teleport/git";
+import { PlaceError } from "../teleport/place";
+import { IdConflictError, NoTranscriptError } from "../teleport/transcript";
+import { BadPackError, PackTooLargeError } from "../teleport/pack";
 
 export class HttpError extends Error {
   constructor(public status: number, public body: Record<string, unknown>) { super(String(body.error ?? status)); this.name = "HttpError"; }
@@ -22,6 +26,13 @@ export function toResponse(e: unknown): Response {
   if (e instanceof SocketGoneError) return json({ error: e.message }, 410);
   if (e instanceof NotFoundError) return json({ error: e.message }, 404);
   if (e instanceof BusyError) return json({ error: e.message }, 409);
+  // teleport。移動先の状態で断るもの（汚れ、分岐、同じ id）は 409、入力の誤りは 400
+  if (e instanceof GitError) return json({ error: e.message, code: e.code, detail: e.detail }, e.code === "failed" ? 500 : e.code === "not_repo" || e.code === "no_commits" ? 400 : 409);
+  if (e instanceof PlaceError) return json({ error: e.message, code: e.code, detail: e.detail, hint: "pass cwd" }, e.code === "ambiguous" || e.code === "exists" ? 409 : 400);
+  if (e instanceof IdConflictError) return json({ error: e.message, code: "id_conflict" }, 409);
+  if (e instanceof NoTranscriptError) return json({ error: e.message }, 404);
+  if (e instanceof PackTooLargeError) return json({ error: e.message }, 413);
+  if (e instanceof BadPackError) return json({ error: e.message }, 400);
   console.error(e);
   return json({ error: e instanceof Error ? e.message : String(e) }, 500);
 }

@@ -11,6 +11,7 @@ import { lastSeq, rememberSeq } from "./sends";
 import { readUntilResult } from "./read";
 import { CLI_NAME, configDirOf, SENDS_FILE } from "../names";
 import { sameParent } from "../identity/agent-name";
+import { pull, push, type PullDeps } from "./teleport";
 
 export type Ctx = {
   cfg: Config;
@@ -24,6 +25,8 @@ export type Ctx = {
   now?: () => number;
   // 参加側の命令（join-commands.ts）が使う
   join?: (words: string[], flags: Parsed["flags"], ctx: Ctx) => Promise<number | undefined>;
+  // teleport で手元へ持ってくるときの道具（SDK、git、端末で claude を開く）。SDK を読み込むのはこのときだけ
+  pullDeps?: () => Promise<PullDeps>;
 };
 type Detail = SessionSummary & { pending: Array<{ requestId: string; toolName: string; input?: Record<string, unknown>; description?: string }>; cursor?: number };
 type Peer = { name: string; url: string; status: string; self: boolean };
@@ -45,6 +48,9 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} allow <対象> [requestId]                 承認（保留が1件なら省略可）
   ${CLI_NAME} deny <対象> [requestId] <理由>           拒否
   ${CLI_NAME} interrupt <対象> / ${CLI_NAME} stop <対象>
+  ${CLI_NAME} teleport [<対象>] [--to <peer>] [--fork] [--cwd <dir>] [--no-open]
+                                                       セッションを会話と作業ツリーごと移す。--to を省くと手元の端末へ持ってきて claude --resume で開く。
+                                                       既定は move（移動元を止める）、--fork は移動元を残して別 id で分岐
   ${CLI_NAME} setup --hosts <a,b> [--name] [--port] [--cf-token-stdin]   1回だけの準備（cf のある機械で）
   ${CLI_NAME} node add <名> [--port] [--to <file>] / node token <名> [--port] [--to <file>] / node remove <名> [--legacy] / node migrate <名> [--rename]
   ${CLI_NAME} entry <名> [--host <h>] / install [--from <dir>] / update [--from <dir>] [--entry <url>] / uninstall / doctor / serve
@@ -253,6 +259,20 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       const { c, s } = await resolve(ctx, rest[0]!);
       await api(c, "DELETE", `/api/sessions/${s.id}`, undefined, ctx.fetchFn);
       return 0;
+    }
+    case "teleport": {
+      const self = ctx.env.CLAUDE_CODE_SESSION_ID;
+      if (rest[0] === undefined && !self) throw new CliError(1, "teleport には 対象 が要る（Claude Code の中では省くと自分のセッション）");
+      const { c, s } = await resolve(ctx, rest[0] ?? `${ctx.cfg.name}/${self}`);
+      const to = str(flags.to);
+      if (to) {
+        const r = await push(c, s.id, to, flags, ctx.out, ctx.fetchFn);
+        rememberSeq(`${to}/${r.id}`, 0, sendsPath(ctx));
+        return 0;
+      }
+      if (c.peer === ctx.cfg.name) throw new CliError(1, `${s.id} はもうこの機械にある。開くなら: cd ${s.cwd} && claude --resume ${s.id}（ノードの子なら先に ${CLI_NAME} stop ${s.id}）`);
+      if (!ctx.pullDeps) throw new CliError(1, "この CLI では手元への取り込みが使えない");
+      return pull(c, s.id, flags, ctx.out, ctx.fetchFn, await ctx.pullDeps());
     }
     default:
       return ctx.join ? ctx.join([cmd, ...rest], flags, ctx) : undefined;

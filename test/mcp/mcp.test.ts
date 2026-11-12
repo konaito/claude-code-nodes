@@ -89,7 +89,7 @@ test("initialize and tools/list expose the ten tools with annotations", async ()
   expect(c.getServerVersion()?.name).toBe("ccn");
   expect(c.getInstructions()).toContain("/skill.md");
   const { tools } = await c.listTools();
-  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "stop_session"]);
+  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "stop_session", "teleport_session"]);
   const by = Object.fromEntries(tools.map((t) => [t.name, t]));
   expect(by.list_sessions!.annotations?.readOnlyHint).toBe(true);
   expect(by.read_messages!.annotations?.readOnlyHint).toBe(true);

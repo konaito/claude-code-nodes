@@ -24,6 +24,11 @@ import type { State } from "../sessions/types";
 
 // jsonl（会話の履歴）から返す messages の番号の印。jsonl の位置はノードを起動し直しても変わらないので、決まった値にする
 export const HISTORY_EPOCH = "history";
+import { PLACES_MAX_LIMIT } from "../lobby/places";
+import { decodePack, encodePack, PACK_CONTENT_TYPE, type Pack } from "../teleport/pack";
+import { describeRepo } from "../teleport/git";
+import { resolveDest, type CheckInput, type PlaceDeps } from "../teleport/place";
+import { exportPack, importPack, type TeleportDeps } from "../teleport/teleport";
 
 export type HostInfo = { claudeVersion: string; account?: string; rateLimit?: unknown; load: number[] };
 export type Deps = {
@@ -48,7 +53,11 @@ export type Deps = {
   mcp?: McpOptions; // MCP の待ちの時計と間隔（試験で差し替える）。無ければ実時間
   places?: PlacesScanner; // places の走査（試験で止まる fs に差し替える）。無ければ本物の fs
   listWatch?: { tickMs?: number; debounceMs?: number }; // 一覧の変化を流す間隔（試験で短くする）
+  teleport?: TeleportDeps; // セッションを別のノードへ移す（SDK の関数、git、Claude の設定ディレクトリ）。無ければ teleport の道は 501
 };
+
+// teleport の取り込みは clone を含むので、中継の最初の応答を長く待つ。Cloudflare は応答の無いまま 100 秒前後で切るので、その手前
+const TELEPORT_PEER_MS = 95_000;
 
 const underRoot = (cwd: string, roots: string[]) => roots.some((root) => cwd === root || cwd.startsWith(root + sep));
 
@@ -371,6 +380,116 @@ export class Sessions {
   allEvents(): Response {
     const src = this.d.store.subscribeAll();
     return sse((async function* () { for await (const c of src) yield { event: "session", data: c }; })());
+  }
+
+  // ---- teleport（docs/superpowers/specs/2026-11-12-session-teleport-design.md） ----
+  private td(): TeleportDeps {
+    if (!this.d.teleport) throw new HttpError(501, { error: "teleport is not available on this node" });
+    return this.d.teleport;
+  }
+  private placeDeps(): PlaceDeps {
+    return { git: this.td().git, home: this.d.home ?? homedir(), roots: this.d.roots, lobby: this.d.lobby, places: async () => (await this.places(null, PLACES_MAX_LIMIT)).places };
+  }
+  private async isLobby(cwd: string): Promise<boolean> {
+    const [a, b] = await Promise.all([realpath(resolve(cwd)).catch(() => cwd), realpath(resolve(this.d.lobby)).catch(() => this.d.lobby)]);
+    return a === b;
+  }
+  // 生きている（台帳で終わっていない、または端末で動いている）なら取り込まない
+  private async refuseLive(id: string) {
+    const live = this.d.store.get(id);
+    if ((live && live.summary().state !== "exited") || (await this.d.agents()).some((a) => a.sessionId === id)) {
+      throw new HttpError(409, { error: `session ${id} is running on ${this.d.nodeName}`, code: "id_live" });
+    }
+  }
+  // 移動元の説明。下見に使う（bundle は作らない）
+  async teleportInfo(id: string) {
+    const td = this.td();
+    const live = this.d.store.get(id);
+    const liveOn = live && live.summary().state !== "exited";
+    const term = liveOn ? undefined : (await this.d.agents()).find((a) => a.sessionId === id);
+    const s = liveOn ? live.summary() : term ? this.d.terminalFor(term).summary() : await this.d.history.get(id);
+    if (!s) throw new HttpError(404, { error: "unknown session" });
+    const git = await describeRepo(td.git, s.cwd).catch(() => null);
+    return { id, kind: s.kind, state: s.state, capabilities: s.capabilities, title: s.title, permissionMode: s.permissionMode, awaitingFirst: s.awaitingFirst ?? false,
+      live: !!(liveOn || term), from: { node: this.d.nodeName, cwd: s.cwd, lobby: await this.isLobby(s.cwd) }, git };
+  }
+  // 書き出す。fork でなければ move で、止められるもの（ノードの子）は止めてから書き出す。動いている途中なら断る。
+  // 止められない端末セッションは、同じ id が2か所で続かないよう fork に切り替えて警告する
+  async exportPack(id: string, fork: boolean): Promise<Pack> {
+    const td = this.td();
+    const info = await this.teleportInfo(id);
+    if (info.awaitingFirst) throw new HttpError(409, { error: "the session has no conversation yet", code: "empty" });
+    const warnings: string[] = [];
+    if (!fork && info.live) {
+      const live = this.d.store.get(id);
+      if (live && live.capabilities.stop) {
+        if (info.state === "running" || info.state === "waiting_permission") throw new HttpError(409, { error: `session is ${info.state}; wait for it or interrupt it, then retry (or use fork)`, code: "busy" });
+        await live.stop();
+        this.d.store.remove(id);
+      } else {
+        fork = true;
+        warnings.push(`the ${info.kind} session cannot be stopped by ccn, so it was forked instead (new id). Close the original yourself so it does not continue in two places`);
+      }
+    } else if (!fork) {
+      warnings.push(`the source transcript stays on ${this.d.nodeName}; do not resume it there`);
+    }
+    return exportPack(td, { node: this.d.nodeName, id, cwd: info.from.cwd, lobby: info.from.lobby, fork, title: info.title, permissionMode: info.permissionMode, warnings });
+  }
+  async exportResponse(id: string, req: Request): Promise<Response> {
+    const body = (await req.json().catch(() => ({}))) as { fork?: unknown };
+    const pack = await this.exportPack(id, body.fork === true);
+    return new Response(encodePack(pack), { headers: { "content-type": PACK_CONTENT_TYPE, "cache-control": "no-store" } });
+  }
+  // 移動先の下見。移動先のディレクトリを決め（clone を含む）、作業ツリーがきれいかを見る
+  async teleportCheck(req: Request) {
+    const body = (await req.json().catch(() => ({}))) as CheckInput & { cwd?: unknown };
+    if (!body.from || typeof body.from.cwd !== "string") throw new HttpError(400, { error: "from.cwd is required" });
+    if (body.cwd !== undefined && typeof body.cwd !== "string") throw new HttpError(400, { error: "cwd must be a string" });
+    if (body.id && !body.fork) await this.refuseLive(body.id);
+    const dest = await resolveDest({ id: body.id, fork: body.fork, from: body.from, git: body.git ?? null }, body.cwd as string | undefined, this.placeDeps());
+    return { node: this.d.nodeName, ...dest };
+  }
+  // 取り込む。会話と作業ツリーを置き直し、1通目が来るまで claude を起動しないノードの子として台帳に載せる
+  async teleportImport(req: Request, url: URL, caller: Caller) {
+    const td = this.td();
+    const pack = decodePack(new Uint8Array(await req.arrayBuffer()));
+    await this.refuseLive(pack.id);
+    const r = await importPack({ ...td, place: this.placeDeps() }, pack, { cwd: url.searchParams.get("cwd") ?? undefined });
+    const settings = await lobbySettingsFor(r.cwd, this.d.lobby);
+    const driver = await this.d.startNode({ cwd: r.cwd, resume: r.id, defer: true, permissionMode: pack.permissionMode as StartOptions["permissionMode"], settings }, caller);
+    this.d.store.add(driver);
+    return { node: this.d.nodeName, sourceNode: pack.from.node, sourceId: pack.sourceId, fork: pack.fork, ...r };
+  }
+  // 移動元のノードが進める teleport。下見、（move なら）止める、書き出す、取り込むの順。CLI の接続が切れても最後まで進む
+  async teleport(id: string, req: Request, caller: Caller) {
+    const body = (await req.json().catch(() => ({}))) as { to?: unknown; fork?: unknown; cwd?: unknown };
+    if (typeof body.to !== "string" || !body.to) throw new HttpError(400, { error: "to (peer name) is required" });
+    if (body.to === this.d.nodeName) throw new HttpError(400, { error: `the session is already on ${this.d.nodeName}` });
+    if (body.cwd !== undefined && typeof body.cwd !== "string") throw new HttpError(400, { error: "cwd must be a string" });
+    const to = body.to;
+    const fork = body.fork === true;
+    const info = await this.teleportInfo(id);
+    const check = await this.peerCall(to, "api/teleport/check", JSON.stringify({ id, fork, from: info.from, git: info.git, cwd: body.cwd }), "application/json", caller);
+    if (check.status === 404 && !(check.body as { code?: string })?.code) throw new HttpError(502, { error: `${to} does not know teleport (old version?). Run ccn update on ${to}`, stage: "check" });
+    if (check.status >= 300) throw new HttpError(check.status, { ...(check.body as object), at: to, stage: "check" });
+    const pack = await this.exportPack(id, fork);
+    const qs = typeof body.cwd === "string" ? `?cwd=${encodeURIComponent(body.cwd)}` : "";
+    const r = await this.peerCall(to, `api/teleport${qs}`, encodePack(pack), PACK_CONTENT_TYPE, caller);
+    if (r.status >= 300) {
+      const hint = pack.fork ? undefined : `the source session was stopped; resume it on ${this.d.nodeName} with: ccn new ${info.from.cwd} --peer ${this.d.nodeName} --resume ${id}`;
+      throw new HttpError(r.status, { ...(r.body as object), at: to, stage: "import", ...(hint ? { hint } : {}) });
+    }
+    // clone は下見で済んでいるので、取り込みの返事では cloned にならない。下見の分を合わせる
+    return { ...(r.body as object), cloned: (check.body as { cloned?: boolean }).cloned === true || (r.body as { cloned?: boolean }).cloned === true };
+  }
+  private async peerCall(peer: string, rest: string, body: BodyInit, type: string, caller: Caller): Promise<{ status: number; body: unknown }> {
+    const [path, search = ""] = rest.split("?");
+    const req = new Request(`http://${this.d.nodeName}/${path}${search ? `?${search}` : ""}`, { method: "POST", headers: { "content-type": type }, body });
+    const res = await this.d.relay.forward(peer, path!, req, caller, TELEPORT_PEER_MS);
+    const text = await res.text();
+    let value: unknown;
+    try { value = text ? JSON.parse(text) : undefined; } catch { value = { error: text.slice(0, 200) }; }
+    return { status: res.status, body: value };
   }
 
   private async find(id: string): Promise<Driver | undefined> {

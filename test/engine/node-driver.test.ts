@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { NodeDriver } from "../../src/engine/node-driver";
+import { NodeDriver, type QueryFn } from "../../src/engine/node-driver";
 import { makeFakeQuery } from "../helpers/fake-query";
 
 const settle = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -164,4 +164,21 @@ test("start passes settings to the SDK only when given (the lobby's --settings)"
   const d2 = await NodeDriver.start({ cwd: "/tmp" }, { queryFn: fake2.queryFn, nodeName: "vm" });
   expect(fake2.lastOptions?.settings).toBeUndefined();
   await d2.stop();
+});
+
+test("resume with defer waits for the first send, then starts claude with resume (teleport's imported sessions)", async () => {
+  let started = 0;
+  const fake = makeFakeQuery();
+  const queryFn = ((p: Parameters<QueryFn>[0]) => { started++; return fake.queryFn(p); }) as QueryFn;
+  const id = "55555555-5555-4555-8555-555555555555";
+  const d = await NodeDriver.start({ cwd: "/tmp", resume: id, defer: true, permissionMode: "acceptEdits" }, { queryFn, nodeName: "vm" });
+  expect(started).toBe(0);
+  expect(d.id).toBe(id);
+  expect(d.summary()).toMatchObject({ state: "idle", awaitingFirst: true, permissionMode: "acceptEdits" });
+  await d.send("続けて");
+  expect(started).toBe(1);
+  expect(fake.lastOptions.resume).toBe(id);
+  expect(fake.lastOptions.sessionId).toBeUndefined();
+  expect(d.id).toBe(id);
+  await d.stop();
 });

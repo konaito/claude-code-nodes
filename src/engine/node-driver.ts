@@ -16,6 +16,8 @@ export type StartOptions = {
   fork?: boolean;
   // 新規のときに先に決める id（SDK の sessionId）。これがあって prompt も resume も無ければ、1通目が来るまで claude を起動しない
   sessionId?: string;
+  // resume でも1通目が来るまで claude を起動しない（teleport で取り込んだ会話を台帳に載せるとき）
+  defer?: boolean;
   settingSources?: SettingSource[];
   // 追加の設定ファイル（CLI の --settings）。受け口のセッションだけが持つ（src/lobby/lobby.ts の lobbySettingsFor）
   settings?: string;
@@ -53,8 +55,8 @@ export class NodeDriver implements Driver {
     const d = new NodeDriver(opts, deps);
     // 遅延起動。待っている claude は1体で約300MB（2026-11-11 実測）あり、画面の「新しく」は打たずに離れることがあるので、1通目まで起動しない。
     // id は sessionId で先に決まり、init と jsonl のファイル名も同じ id になる（同日に実機で確認）
-    if (opts.sessionId && !opts.prompt && !opts.resume) {
-      d.id = opts.sessionId;
+    if (!opts.prompt && ((opts.sessionId && !opts.resume) || (opts.defer && opts.resume))) {
+      d.id = opts.resume ?? opts.sessionId!;
       d.deferred = true;
       d.permissionMode = opts.permissionMode;
       d.model = opts.model;

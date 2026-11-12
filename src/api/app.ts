@@ -143,6 +143,11 @@ async function route(req: Request, s: Sessions, caller: Caller, store: Deps["sto
       const limit = Number(url.searchParams.get("limit") ?? "");
       return json(await s.places(url.searchParams.get("q"), Number.isFinite(limit) && limit > 0 ? limit : null));
     }
+    // teleport の移動先の口
+    if (parts[1] === "teleport" && m === "POST") {
+      if (parts.length === 2) return json(await s.teleportImport(req, url, caller), 201);
+      if (parts.length === 3 && parts[2] === "check") return json(await s.teleportCheck(req));
+    }
     if (parts[1] === "sessions") {
       const [, , id, sub, rid] = parts;
       // 一覧の変化を流す SSE（#24）。セッションの id は UUID なので stream とは重ならない
@@ -170,6 +175,11 @@ async function route(req: Request, s: Sessions, caller: Caller, store: Deps["sto
         if (!rid && m === "GET") return terminalStream(store, id, req, url);
         if (rid === "input" && parts.length === 5 && m === "POST") return json(await terminalInput(store, id, req));
         if (rid === "resize" && parts.length === 5 && m === "POST") return json(await terminalResize(store, id, req));
+      } else if (sub === "teleport" && !rid) {
+        if (m === "GET") return json(await s.teleportInfo(id));
+        if (m === "POST") return json(await s.teleport(id, req, caller));
+      } else if (sub === "export" && !rid && m === "POST") {
+        return await s.exportResponse(id, req);
       }
     }
   }
