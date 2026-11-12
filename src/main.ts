@@ -32,6 +32,7 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     startPty: (opts, caller) => PtyDriver.start(opts, {
       spawn: bunPtySpawn, hookBase: `http://127.0.0.1:${cfg.port}`, caller: caller.id, claudePath: Bun.which("claude") ?? undefined,
       agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
+      transcript: (id) => getSessionMessages(id),
     }),
     agents: () => listAgents(bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),
