@@ -54,10 +54,16 @@ function ptyFields(b: { name?: unknown; cols?: unknown; rows?: unknown }): { nam
   return { name: b.name as string | undefined, cols: dim(b.cols, "cols"), rows: dim(b.rows, "rows") };
 }
 
-const CACHE_MS = 2000; // 一覧のたびに claude を起動しないための短いメモリキャッシュ
+// 一覧の材料のメモリキャッシュ。古くなっても要求は待たせずに古い値を返し、裏で1回だけ取り直す。
+// 取り直しを待たせると、Claude Town の2秒ごとの一覧がほぼ毎回 listSessions と claude の起動を待ち、
+// 機械が混んでいると1秒を超えた（2026-11-12 の 23:06、konaito-pro。jsonl 8024 個で listSessions は1回 CPU 約300ms）
+const AGENTS_MS = 2000;   // 端末のセッション（claude agents --json）。生きているものなので短く
+const HISTORY_MS = 15000; // 終わったセッション（SDK の listSessions）。重いので長く
+
+type CacheEntry = { at: number; value: Promise<unknown>; refreshing: boolean };
 
 export class Sessions {
-  private cache = new Map<string, { at: number; value: Promise<unknown> }>();
+  private cache = new Map<string, CacheEntry>();
   private realRoots?: Promise<string[]>;
   constructor(private d: Deps) {}
 
@@ -67,15 +73,28 @@ export class Sessions {
     return this.realRoots;
   }
 
-  private cached<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  // 初めての要求だけは取れるまで待つ。失敗したら覚えず、次の要求で取り直す。
+  // 古くなったら古い値を返しつつ裏で取り直し、取れたら差し替える。取り直しに失敗したら古い値を使い続け、ttl 後にまた試す
+  private cached<T>(key: string, ttl: number, fn: () => Promise<T>): Promise<T> {
     const hit = this.cache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_MS) return hit.value as Promise<T>;
-    const value = fn();
-    this.cache.set(key, { at: Date.now(), value });
-    return value;
+    if (!hit) {
+      const value = fn();
+      this.cache.set(key, { at: Date.now(), value, refreshing: false });
+      value.catch(() => { if (this.cache.get(key)?.value === value) this.cache.delete(key); });
+      return value;
+    }
+    if (Date.now() - hit.at >= ttl && !hit.refreshing) {
+      hit.refreshing = true;
+      const next = fn();
+      next.then(
+        () => this.cache.set(key, { at: Date.now(), value: next, refreshing: false }),
+        () => { hit.refreshing = false; hit.at = Date.now(); },
+      );
+    }
+    return hit.value as Promise<T>;
   }
-  private agents() { return this.cached("agents", () => this.d.agents()); }
-  private past() { return this.cached("history", () => this.d.history.list()); }
+  private agents() { return this.cached("agents", AGENTS_MS, () => this.d.agents()); }
+  private past() { return this.cached("history", HISTORY_MS, () => this.d.history.list()); }
 
   async host() {
     const h = await this.d.host();

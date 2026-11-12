@@ -27,7 +27,7 @@ function harness(over: Partial<Deps> = {}, agents: () => AgentInfo[] = () => [])
     startNode: async (opts) => { const d = new FakeDriver({ id: "node1", capabilities: { send: true, permissions: true, interrupt: true, stop: true, events: true } }); d.cwd = opts.cwd; return d; },
     startPty: async (opts, caller) => {
       ptyCalls.push({ opts, caller });
-      return PtyDriver.start(opts, { spawn: f.spawn, hookBase: "http://127.0.0.1:9", caller: caller.id, tmp: root, pasteDelayMs: 0 });
+      return PtyDriver.start(opts, { spawn: f.spawn, hookBase: "http://127.0.0.1:9", caller: caller.id, tmp: root, pasteDelayMs: 0, inputTimeoutMs: 0 });
     },
     agents: async () => agents(),
     terminalFor: (a) => new FakeDriver({ id: a.sessionId!, capabilities: { send: true, permissions: false, interrupt: false, stop: false, events: false }, kind: "terminal" }),
@@ -151,6 +151,7 @@ test("POST /terminal/input writes base64 bytes or text; /terminal/resize changes
   const { app, procs } = harness();
   const { id } = await create(app);
   const p = procs[0]!;
+  p.emit("\x1b[?2004h"); // claude が入力を読み始めた
   expect((await app.fetch(post(`/api/sessions/${id}/terminal/input`, { data: Buffer.from("\x03").toString("base64") }))).status).toBe(200);
   expect((await app.fetch(post(`/api/sessions/${id}/terminal/input`, { text: "ls\r" }))).status).toBe(200);
   expect(p.writes).toEqual(["\x03", "ls\r"]);
