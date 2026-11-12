@@ -34,7 +34,14 @@ test("starts claude with --session-id, a 0600 settings file holding the hooks, a
   const h = s.hooks.PermissionRequest[0].hooks[0];
   expect(h.url).toBe(`http://127.0.0.1:9/hooks/pty/${d.id}`);
   expect(h.headers["x-ccn-hook-token"]).toBe(d.token);
-  expect(Object.keys(s.hooks).sort()).toEqual(["Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "UserPromptSubmit"]);
+  expect(Object.keys(s.hooks).sort()).toEqual(["Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
+  // SessionStart は command の hook だけなので curl で送る。token は引数に出さず、0600 のヘッダのファイルから読む
+  const ss = s.hooks.SessionStart[0].hooks[0];
+  expect(ss.type).toBe("command");
+  expect(ss.command).not.toContain(d.token);
+  const hf = /-H @'([^']+)'/.exec(ss.command)![1]!;
+  expect(statSync(hf).mode & 0o777).toBe(0o600);
+  expect(readFileSync(hf, "utf8")).toBe(`x-ccn-hook-token: ${d.token}\n`);
   expect(p.argv).toContain("--permission-mode");
   expect(p.argv).toContain("--name");
   expect(p.argv.at(-1)).toBe("from local via vm\n\nhi");
@@ -119,8 +126,21 @@ test("resize is last-writer-wins and is broadcast to attached screens", async ()
   expect(d.size).toEqual({ cols: 80, rows: 24 });
 });
 
+test("send waits for SessionStart before pasting, and gives up with BusyError", async () => {
+  const { d, p } = await start({}, { readyTimeoutMs: 30 });
+  await expect(d.send("x")).rejects.toBeInstanceOf(BusyError);
+  expect(p.writes).toEqual([]);
+  const sending = d.send("y");
+  await tick();
+  expect(p.writes).toEqual([]);
+  await d.hook({ hook_event_name: "SessionStart", source: "startup" });
+  await sending;
+  expect(p.writes).toEqual(["\x1b[200~y\x1b[201~", "\r"]);
+});
+
 test("send pastes the text with bracketed paste and presses Enter", async () => {
   const { d, p } = await start();
+  await d.hook({ hook_event_name: "SessionStart" });
   const r = await d.send("from local via vm\n\nline1\nline2");
   expect(r.delivered).toBe("pty");
   expect(p.writes).toEqual(["\x1b[200~from local via vm\n\nline1\nline2\x1b[201~", "\r"]);
@@ -138,7 +158,7 @@ test("permission via hooks: pending, event, allow resolves the hook with the dec
   // 承認画面が出ている間は Enter を押させない
   await expect(d.send("x")).rejects.toBeInstanceOf(BusyError);
   await d.answer(p!.requestId, { behavior: "allow" });
-  expect(await out).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
+  expect(await out).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: { command: "rm -rf x", description: "remove" } } } });
   expect(d.summary().state).toBe("running");
   expect(evs.map((e) => e.type)).toEqual(["permission_request", "permission_answered"]);
 });

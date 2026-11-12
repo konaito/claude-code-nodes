@@ -44,6 +44,7 @@ export type PtyDeps = {
   reconcileDelayMs?: number;
   tmp?: string;             // 設定ファイルを置く場所。既定は OS の tmp
   pasteDelayMs?: number;
+  readyTimeoutMs?: number;  // send が claude の起動（SessionStart）を待つ上限。既定 20 秒
 };
 
 const MAX_BUFFER = 2 * 1024 * 1024;
@@ -71,13 +72,17 @@ export function childEnv(base: Record<string, string | undefined>): Record<strin
   return env;
 }
 
-// hooks を足した設定。受け口の設定があれば、その hooks の後ろに足す
-export function ptySettings(hookUrl: string, token: string, base: Record<string, unknown> = {}): Record<string, unknown> {
+// hooks を足した設定。受け口の設定があれば、その hooks の後ろに足す。
+// SessionStart は command の hook しか使えないので curl で送る。token は引数に出さず、0600 のヘッダのファイル（headerFile）から読ませる
+export function ptySettings(hookUrl: string, token: string, headerFile: string, base: Record<string, unknown> = {}): Record<string, unknown> {
   const hooks = { ...((base.hooks as Record<string, unknown[]>) ?? {}) };
   for (const e of HOOK_EVENTS) {
     const h = { type: "http", url: hookUrl, timeout: e === "PermissionRequest" ? PERMISSION_HOOK_TIMEOUT_S : EVENT_HOOK_TIMEOUT_S, headers: { [PTY_HOOK_TOKEN_HEADER]: token } };
     hooks[e] = [...(hooks[e] ?? []), { hooks: [h] }];
   }
+  const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const curl = `curl -s -m 5 -X POST -H 'content-type: application/json' -H @${q(headerFile)} --data-binary @- ${q(hookUrl)} >/dev/null 2>&1; true`;
+  hooks.SessionStart = [...(hooks.SessionStart ?? []), { hooks: [{ type: "command", command: curl, timeout: EVENT_HOOK_TIMEOUT_S }] }];
   return { ...base, hooks };
 }
 
@@ -120,6 +125,9 @@ export class PtyDriver implements Driver {
   private dir?: string;
   private reconcileTimer?: ReturnType<typeof setTimeout>;
   private exitedP?: Promise<void>;
+  // claude の画面が入力を受けられるようになった（SessionStart が届いた）。それより前に貼り付けると文が落ちる（2026-11-12 に実機で確認）
+  private readyResolve!: () => void;
+  private ready = new Promise<void>((r) => { this.readyResolve = r; });
 
   private constructor(private opts: PtyStartOptions, private deps: PtyDeps) {
     this.cols = opts.cols ?? 120;
@@ -134,7 +142,9 @@ export class PtyDriver implements Driver {
     d.dir = await mkdtemp(join(deps.tmp ?? tmpdir(), "ccn-pty-"));
     const base = opts.settings ? (JSON.parse(await readFile(opts.settings, "utf8")) as Record<string, unknown>) : {};
     const file = join(d.dir, "settings.json");
-    await writeFile(file, JSON.stringify(ptySettings(`${deps.hookBase}${PTY_HOOK_PATH}/${d.id}`, d.token, base)), { mode: 0o600 });
+    const headerFile = join(d.dir, "hook-headers");
+    await writeFile(headerFile, `${PTY_HOOK_TOKEN_HEADER}: ${d.token}\n`, { mode: 0o600 });
+    await writeFile(file, JSON.stringify(ptySettings(`${deps.hookBase}${PTY_HOOK_PATH}/${d.id}`, d.token, headerFile, base)), { mode: 0o600 });
     if (opts.prompt) d.state = "running";
     try {
       d.proc = deps.spawn(ptyArgv(deps.claudePath ?? "claude", d.id, file, opts), {
@@ -157,9 +167,14 @@ export class PtyDriver implements Driver {
   }
 
   // 文は貼り付け（bracketed paste）で入れて Enter を押す。改行を含んでも1つの文になる（2026-11-12 に実機で確認）。
-  // 承認画面が出ている間に Enter を押すと選択肢を選んでしまうので断る
+  // 承認画面が出ている間に Enter を押すと選択肢を選んでしまうので断る。起動の直後は SessionStart を待つ
   async send(text: string) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ok = await Promise.race([this.ready.then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 20_000); })]);
+    clearTimeout(timer);
+    if ((this.state as State) === "exited") throw new ExitedError(this.exitReason);
+    if (!ok) throw new BusyError("claude has not started yet; if the terminal shows a trust prompt, answer it there first");
     if (this.waiting.size) throw new BusyError("session is waiting for a permission answer; answer it first");
     this.proc!.write(`\x1b[200~${text}\x1b[201~`);
     await Bun.sleep(this.deps.pasteDelayMs ?? 150);
@@ -174,8 +189,9 @@ export class PtyDriver implements Driver {
     const w = this.waiting.get(requestId);
     if (!w) throw new NotFoundError(`no pending permission: ${requestId}`);
     this.waiting.delete(requestId);
+    // NodeDriver と同じく、allow で入力の差し替えが無ければ元の入力を返す（AskUserQuestion と ExitPlanMode は updatedInput が要る）
     const decision = a.behavior === "allow"
-      ? { behavior: "allow", ...(a.updatedInput ? { updatedInput: a.updatedInput } : {}), ...(a.updatedPermissions ? { updatedPermissions: a.updatedPermissions } : {}) }
+      ? { behavior: "allow", updatedInput: a.updatedInput ?? w.p.input, ...(a.updatedPermissions ? { updatedPermissions: a.updatedPermissions } : {}) }
       : { behavior: "deny", message: a.message };
     w.resolve({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision } });
     this.push("permission_answered", { requestId, behavior: a.behavior });
@@ -246,7 +262,11 @@ export class PtyDriver implements Driver {
     if (this.state === "exited") return undefined;
     this.lastActivityAt = Date.now();
     if (typeof body.permission_mode === "string") this.permissionMode = body.permission_mode;
+    // どの hook が来ても、claude は動いている
+    this.readyResolve();
     switch (body.hook_event_name) {
+      case "SessionStart":
+        return undefined;
       case "UserPromptSubmit":
         // 新しい文が入った。前のターンの承認待ちは残っていても答えようがない
         this.dropPending("superseded");
@@ -340,6 +360,7 @@ export class PtyDriver implements Driver {
   private finish(code: number | null, reason: string) {
     if (this.state === "exited") return;
     clearTimeout(this.reconcileTimer);
+    this.readyResolve();
     this.dropPending(reason);
     this.state = "exited";
     this.exitCode = code;

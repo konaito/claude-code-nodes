@@ -102,7 +102,9 @@ export class Sessions {
   async list(parent: string | null): Promise<SessionSummary[]> {
     const live = this.d.store.list();
     const seen = new Set(live.map((s) => s.id));
-    const terms = (await this.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId)).map((a) => this.d.terminalFor(a).summary());
+    // PTY の子は `claude agents --json` にも出る。id で除き、端末で /clear して id が変わっても pid で除く
+    const ptyPids = new Set(live.filter((s) => s.kind === "pty" && s.state !== "exited" && s.pid).map((s) => s.pid));
+    const terms = (await this.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId) && !(a.pid && ptyPids.has(a.pid))).map((a) => this.d.terminalFor(a).summary());
     for (const t of terms) seen.add(t.id);
     const past = (await this.past()).filter((h) => !seen.has(h.id));
     const all = [...live, ...terms, ...past];

@@ -101,6 +101,14 @@ test("a PTY session that claude agents also lists appears once", async () => {
   expect(list[0].kind).toBe("pty");
 });
 
+test("an agents row with the PTY's pid but another session id (after /clear in the terminal) is not listed again", async () => {
+  const { app } = harness({}, () => [{ pid: 4242, cwd: root, kind: "interactive", startedAt: 0, sessionId: "cleared-id", status: "idle" }, { pid: 99, cwd: root, kind: "interactive", startedAt: 0, sessionId: "other", status: "idle" }]);
+  await create(app);
+  const list = await (await app.fetch(req("/api/sessions"))).json();
+  expect(list.map((s: { kind: string }) => s.kind)).toEqual(["pty", "terminal"]);
+  expect(list[1].id).toBe("other");
+});
+
 test("terminal:true is refused on a node without the PTY driver, and bad sizes are refused", async () => {
   const { app } = harness({ startPty: undefined });
   const r = await app.fetch(post("/api/sessions", { cwd: root, terminal: true }));
@@ -200,6 +208,7 @@ test("hooks: only this machine with the session token; a PermissionRequest becom
 test("send_message reaches the PTY with the from line; DELETE stops it", async () => {
   const { app, procs, store } = harness();
   const { id } = await create(app);
+  await (store.get(id) as PtyDriver).hook({ hook_event_name: "SessionStart" });
   const r = await app.fetch(post(`/api/sessions/${id}/messages`, { text: "hi" }, { "x-ccn-from": "agent:vm/abcd1234/town" }));
   expect(await r.json()).toEqual({ delivered: "pty" });
   expect(procs[0]!.writes[0]).toBe("\x1b[200~from agent:vm/abcd1234/town via vm\n\nhi\x1b[201~");

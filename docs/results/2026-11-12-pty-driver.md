@@ -24,6 +24,7 @@
 - 最初の文は引数で渡す。起動直後の画面と貼り付けが競合しないため。
 - 承認待ちの間の send は 409 で断る。Enter が承認画面の選択になるため。
 - 端末で答えた承認は、同じ道具と入力の PostToolUse（PostToolUseFailure）、Stop、UserPromptSubmit で片付ける。hooks が来ない操作（端末への Esc、数字、Enter と API の interrupt）の後は、1.5秒後に `claude agents --json` の `status` と `waitingFor` で照らし合わせる。
+- send は SessionStart の hook が届くまで待つ（最大20秒、過ぎたら 409）。prompt 無しで作った直後に貼り付けると文が落ちた（次の節の追加の確認）。SessionStart は command の hook しか使えないので curl で送る。SessionStart が届いた直後（0.74秒）に貼り付けた文は通った。
 - hooks の宛先は `http://127.0.0.1:<port>/hooks/pty/<id>` にする。Access の呼び手ではなく、同じ機械（loopback で `cf-connecting-ip` が無い）とセッションごとの token で受ける。token を引数に出さないため、設定は 0600 のファイルで渡す。
 
 ## 試験ノードでの確認
@@ -46,13 +47,27 @@
 | 停止 | `DELETE` で 204。その後の一覧には履歴の行（`kind:"node"`、`state:"exited"`）として1回だけ出た |
 | MCP | `create_session`（terminal、name、as、as_session）、`read_messages`（`stop=permission` の後 `stop=result`）、`get_session` の `pending[].shown`、`answer_permission`、`list_sessions(parent=agent:ptytest/feedbeef/lead)`、`stop_session` が通った |
 
-`bun test` は 303 件が通り（1件は CC_LIVE の skip）、`bunx tsc --noEmit -p .` はエラー無し。
+### 追加の確認（試験ノードを `CLAUDE_CONFIG_DIR` を外して立て直した後）
+
+常駐と同じく `~/.claude` を使う形で、`/tmp/ccn-pty-node/live4.ts` と `live.ts` を通した。
+
+| 項目 | 結果 |
+| --- | --- |
+| 設定ディレクトリ | `env -u CLAUDE_CONFIG_DIR` で立てたノードでも hooks が届き、承認と返事が通った |
+| 作成直後の send | 直す前は、prompt 無しで作った直後の `POST …/messages` の文が届かなかった（イベントが空）。SessionStart を待つように直した後は `user, permission_request` が届いた |
+| 承認待ちの照らし合わせ | 承認画面が出ている間の `claude agents --json` は `status:"waiting"`、`waitingFor:"permission prompt"`。この間に ↓ と `\x1b[I`（フォーカス）を `terminal/input` で書いても、3.5秒後に pending は残っていた |
+| `/clear` | 端末で `/clear` した後も、`claude agents --json` の同じ pid の sessionId は元のままだった。一覧に別の行（kind terminal）が1つ出たが、利用者の hook（`close-check-state.py`）が同じ cwd で起動した `claude -p` だった。念のため、生きている PTY の pid と同じ行も一覧から除くようにした |
+| resume | DELETE した後に `terminal:true` と `resume:<id>` で作ると同じ id で起動した。前の会話で書いた語を聞くと `keep` と答えた |
+| allow の入力 | allow で `updatedInput` が無ければ元の入力を返すようにした（NodeDriver と同じ。AskUserQuestion と ExitPlanMode は updatedInput が要る）。直した後も live.ts の承認が通った |
+
+`bun test` は 305 件が通り（1件は CC_LIVE の skip）、`bunx tsc --noEmit -p .` はエラー無し。
 
 ## 確かめていないこと
 
 - 別の機械のノードを通した中継（Cloudflare の先）での端末の口。手元の試験ノードは Access が無いので、`/n/<自分>/` の道と、偽の相手への中継の試験だけで確かめた。
 - ノードの常駐（LaunchAgent）から起動した PTY。試験ノードは端末から起動した。
-- `terminal:true` と `resume` の組み合わせを実物で動かすこと。試験は引数の組み立てだけ。
+- `terminal:true` と `resume` と `fork` の組み合わせ。
+- 端末で `/clear` した後に、ノードの台帳の id と会話の id がずれること。hooks の `session_id` は変わる可能性があるが、ノードは最初の id のまま扱う。
 - 未信頼のディレクトリで、信頼の確認が端末に出る様子。
 - 30本を同時に持ったときの CPU とメモリ。Claude Town 側の子 family-computing が測る。
 - 末尾の再生で画面がどこまで戻るか。Claude Town 側で xterm.js に流して確かめる。
@@ -64,3 +79,4 @@
 - 人が端末で最初の文を打ったセッションは、終わって台帳から消えた後（30分後）に履歴から parent を引けない。履歴の parent は最初の文の from 行から作るため。
 - `read_messages` に出るのは、ターンの終わりの文（Stop の `last_assistant_message`）と使った道具の名前だけ。途中の文は端末の画面にしか出ない。
 - 停止した後の一覧の行は履歴から作るので、`kind` は `node` になる。
+- SessionStart が届かない（信頼の確認が出ている、curl が無い）と、send は20秒待って 409 を返す。
