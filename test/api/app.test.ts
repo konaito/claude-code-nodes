@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, setSystemTime } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -253,6 +253,40 @@ test("GET /api/sessions twice within the cache window runs claude agents once", 
   await app.fetch(req("/api/sessions"));
   await app.fetch(req("/api/sessions"));
   expect(calls).toBe(1);
+});
+
+// 古くなった一覧の材料は待たせずに返し、裏で取り直す（2026-11-12、取り直しを待って一覧が1秒を超えた）
+test("GET /api/sessions answers with the stale list while claude agents is re-read in the background", async () => {
+  let calls = 0;
+  let release!: (v: AgentInfo[]) => void;
+  const { app } = harness({ agents: async () => { calls++; return calls === 1 ? [term] : new Promise<AgentInfo[]>((r) => { release = r; }); } });
+  const t0 = Date.now();
+  try {
+    expect((await (await app.fetch(req("/api/sessions"))).json()).some((s: { id: string }) => s.id === "term1")).toBe(true);
+    setSystemTime(new Date(t0 + 3000));
+    // 取り直しは終わっていないが、古い一覧がすぐ返る
+    const stale = await Promise.race([app.fetch(req("/api/sessions")).then((r) => r.json()), Bun.sleep(200).then(() => "blocked")]);
+    expect(stale).not.toBe("blocked");
+    expect((stale as { id: string }[]).some((s) => s.id === "term1")).toBe(true);
+    expect(calls).toBe(2);
+    await app.fetch(req("/api/sessions")); // 取り直しの途中なので、もう1回は起動しない
+    expect(calls).toBe(2);
+    release([]);
+    await settle();
+    expect((await (await app.fetch(req("/api/sessions"))).json()).some((s: { id: string }) => s.id === "term1")).toBe(false);
+  } finally { setSystemTime(); }
+});
+
+test("a failed first read of the history is not remembered; the next GET reads again", async () => {
+  let calls = 0;
+  const base = harness().deps.history;
+  const { app } = harness({ history: { ...base, list: async () => { calls++; if (calls === 1) throw new Error("boom"); return base.list(); } } as unknown as Deps["history"] });
+  expect((await app.fetch(req("/api/sessions"))).status).toBe(500);
+  await settle();
+  const r = await app.fetch(req("/api/sessions"));
+  expect(r.status).toBe(200);
+  expect((await r.json()).some((s: { id: string }) => s.id === "old1")).toBe(true);
+  expect(calls).toBe(2);
 });
 
 test("GET messages of an exited live session falls back to history", async () => {
