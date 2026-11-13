@@ -88,11 +88,12 @@ beforeEach(async () => {
   convs = new Map([[ID, conv(ID, srcRepo)]]);
 });
 
-type Node = { app: ReturnType<typeof createApp>; store: SessionStore; starts: StartOptions[]; deps: Deps };
+type Node = { app: ReturnType<typeof createApp>; store: SessionStore; starts: StartOptions[]; deps: Deps; trusted: string[] };
 function node(name: string, o: { home: string; fns: TranscriptFns; configDir: string; agents?: AgentInfo[]; places?: () => Array<{ path: string; remote: string | null }>; peer?: () => Node }): Node {
   const store = new SessionStore();
   const starts: StartOptions[] = [];
   const registry = new StaticRegistry([{ name: "src", url: "https://src.test", status: "healthy", self: name === "src" }, { name: "dst", url: "https://dst.test", status: "healthy", self: name === "dst" }]);
+  const trusted: string[] = [];
   const deps: Deps = {
     nodeName: name, roots: [o.home], lobby: join(o.home, "lobby"), store, identity: new HeaderIdentity(),
     history: { list: async () => [], get: async () => undefined, messages: async () => ({ messages: [] }), count: async () => 0 } as unknown as Deps["history"],
@@ -106,8 +107,9 @@ function node(name: string, o: { home: string; fns: TranscriptFns; configDir: st
     home: o.home,
     places: { scan: async () => ({ places: (o.places?.() ?? []).map((p) => ({ name: p.path.split("/").pop()!, path: p.path, remote: p.remote, readme: [], mtimeMs: 0 })), partial: false, unreadable: [] }), resolveCwds: async () => new Map() } as unknown as Deps["places"],
     teleport: { fns: o.fns, git: bunGit, configDir: o.configDir },
+    trust: async (cwd) => { trusted.push(cwd); },
   };
-  return { app: createApp(deps), store, starts, deps };
+  return { app: createApp(deps), store, starts, deps, trusted };
 }
 const post = (path: string, body: unknown) => new Request(`http://127.0.0.1${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
@@ -147,6 +149,7 @@ test("move: the source node child is stopped, the destination gets the branch, c
   expect(lines.map((l) => l.cwd)).toEqual([dstRepo, dstRepo]);
   expect(dst.starts).toEqual([expect.objectContaining({ cwd: dstRepo, resume: ID, defer: true })]);
   expect(dst.store.get(ID)).toBeDefined();
+  expect(dst.trusted).toEqual([dstRepo]); // 取り込んだ場所を、起動の前に信頼済みにする（#46）
 });
 
 test("fork keeps the source running and the destination gets a new id", async () => {

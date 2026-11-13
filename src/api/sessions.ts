@@ -468,6 +468,8 @@ export class Sessions {
     const pack = decodePack(new Uint8Array(await req.arrayBuffer()));
     await this.refuseLive(pack.id);
     const r = await importPack({ ...td, place: this.placeDeps() }, pack, { cwd: url.searchParams.get("cwd") ?? undefined });
+    // create と同じく、起動の前に cwd（と git のルート）を信頼済みにする（#46）。clone した場所は未信頼のことがある
+    await this.d.trust?.(r.cwd).catch(() => {});
     const settings = await lobbySettingsFor(r.cwd, this.d.lobby);
     const driver = await this.d.startNode({ cwd: r.cwd, resume: r.id, defer: true, permissionMode: pack.permissionMode as StartOptions["permissionMode"], settings }, caller);
     this.d.store.add(driver);
