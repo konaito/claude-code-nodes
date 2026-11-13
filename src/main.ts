@@ -11,7 +11,7 @@ import { History } from "./engine/history";
 import { NodeDriver } from "./engine/node-driver";
 import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
 import { PtyDriver, bunPtySpawn } from "./engine/pty-driver";
-import { listAgents, bunRunner } from "./engine/agents";
+import { listAgents, withoutHeadless, bunRunner } from "./engine/agents";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
 import { Relay } from "./relay/relay";
@@ -34,7 +34,8 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
       agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
       transcript: (id) => getSessionMessages(id),
     }),
-    agents: () => listAgents(bunRunner),
+    // 一覧には裏方の `claude -p` を出さない。PTY の子の状態合わせ（agentInfo）には掛けない
+    agents: async () => withoutHeadless(await listAgents(bunRunner), bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),
     host: async () => ({ claudeVersion: (await bunRunner(["claude", "--version"])).stdout.trim(), account: await account(), load: loadavg() }),
     registry,
