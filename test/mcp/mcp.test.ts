@@ -111,6 +111,25 @@ test("list_peers and list_sessions read the same API as HTTP", async () => {
   expect(mine.sessions.map((s: { id: string }) => s.id)).toEqual(["old1"]);
 });
 
+// #44: ノードが自動で止めた子は、終わっていても1日は既定の一覧に出し、理由を付ける
+test("list_sessions shows recently idle-stopped children by default with their exit reason", async () => {
+  const reason = "idle-stop: no activity for 10 min; the conversation is kept, continue with create_session resume=old2";
+  const history = {
+    list: async () => [
+      { id: "old1", kind: "node", capabilities: caps(false), cwd: "/home/u/x", state: "exited", startedAt: 1, lastActivityAt: 1, parent: "agent:lead" },
+      { id: "old2", kind: "node", capabilities: caps(false), cwd: "/home/u/y", state: "exited", startedAt: 1, lastActivityAt: Date.now() - 60_000, parent: "agent:lead", exitReason: reason },
+      { id: "old3", kind: "node", capabilities: caps(false), cwd: "/home/u/z", state: "exited", startedAt: 1, lastActivityAt: Date.now() - 3 * 86_400_000, parent: "agent:lead", exitReason: reason },
+    ],
+    messages: async () => ({ messages: [] }), get: async () => undefined, count: async () => 0,
+  } as unknown as Deps["history"];
+  const { app } = harness({ history });
+  const c = await connect(app);
+  const ls = json(await c.callTool({ name: "list_sessions", arguments: {} }));
+  expect(ls.sessions.map((s: { id: string }) => s.id)).toEqual(["old2", LIVE]); // 新しい順（偽の LIVE は lastActivityAt が 0）
+  expect(ls.sessions[0].exitReason).toBe(reason);
+  expect(ls.sessions[1].exitReason).toBeUndefined();
+});
+
 test("send_message puts the same from line as HTTP, signs as the given role and returns the cursor before sending", async () => {
   const { app, live } = harness();
   live.push({ type: "assistant", data: { type: "assistant", message: { content: "earlier" } } });

@@ -9,6 +9,7 @@ import { render } from "../cli/read";
 import type { ApiCall } from "./server";
 import type { PendingPermission, SessionSummary } from "../sessions/types";
 import { clipInput, describePending } from "../sessions/pending";
+import { isIdleStopped } from "../sessions/idle-stop";
 
 export type ToolClock = { now: () => number; sleep: (ms: number) => Promise<void>; pollMs: number };
 type Ctx = { nodeName: string; caller: Caller; api: ApiCall; clock: ToolClock };
@@ -65,7 +66,9 @@ const peerArg = z.string().optional().describe("Node name from list_peers. Omit 
 const sessionArg = z.string().describe("sessionId, its first 8+ characters, or <peer>/<sessionId>");
 const asArg = z.string().optional().describe("Role to sign as, e.g. lead. The child sees `from agent:<node>/<as_session first 8>/<role> via <node>` and its parent field becomes that name. Ignored for callers signed in by email");
 const asSessionArg = z.string().optional().describe("Your own Claude Code session id (e.g. $CLAUDE_CODE_SESSION_ID). Put into the agent name so list_sessions(parent=...) finds only your children, and so the node can count how deep you are. Always pass it with create_session");
-const compact = (s: SessionSummary, peer: string) => ({ peer, id: s.id, kind: s.kind, state: s.state, cwd: s.cwd, parent: s.parent, depth: s.depth, title: s.title, permissionMode: s.permissionMode, lastActivityAt: s.lastActivityAt });
+const compact = (s: SessionSummary, peer: string) => ({ peer, id: s.id, kind: s.kind, state: s.state, cwd: s.cwd, parent: s.parent, depth: s.depth, title: s.title, permissionMode: s.permissionMode, lastActivityAt: s.lastActivityAt, ...(s.state === "exited" && s.exitReason ? { exitReason: s.exitReason } : {}) });
+// 一覧の既定に入れる、自動で止めた子の期間。親が止まったことに気づけるように、終わったものでも1日は出す
+const IDLE_STOPPED_SHOWN_MS = 24 * 3600_000;
 
 export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
   server.registerTool("list_peers", {
@@ -77,7 +80,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
 
   server.registerTool("list_sessions", {
     title: "List sessions",
-    description: `List Claude Code sessions on one node, newest first. By default only sessions that are not exited (node children and terminal sessions); set include_exited for past ones. Returns at most ${LIST_LIMIT} unless limit is given.`,
+    description: `List Claude Code sessions on one node, newest first. By default only sessions that are not exited (node children and terminal sessions), plus children the node stopped for being idle in the last 24 hours (state exited, exitReason starting with idle-stop:; continue them with create_session resume=<id>). Set include_exited for all past ones. Returns at most ${LIST_LIMIT} unless limit is given.`,
     inputSchema: {
       peer: peerArg,
       parent: z.string().optional().describe("Only children whose first message came from this caller, e.g. the `parent` returned by create_session"),
@@ -89,7 +92,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     const q = a.parent ? `?parent=${encodeURIComponent(a.parent)}` : "";
     const list = await call<SessionSummary[]>(base, "GET", a.peer, `/api/sessions${q}`);
     const peer = a.peer || base.nodeName;
-    const shown = list.filter((s) => a.include_exited || s.state !== "exited").sort((x, y) => y.lastActivityAt - x.lastActivityAt);
+    const shown = list.filter((s) => a.include_exited || s.state !== "exited" || (isIdleStopped(s) && Date.now() - s.lastActivityAt < IDLE_STOPPED_SHOWN_MS)).sort((x, y) => y.lastActivityAt - x.lastActivityAt);
     const limit = a.limit ?? LIST_LIMIT;
     return { sessions: shown.slice(0, limit).map((s) => compact(s, peer)), total: shown.length, truncated: shown.length > limit };
   })());
@@ -168,6 +171,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       "Set terminal=true to run the child as an interactive claude in a pseudo-terminal owned by the node (kind pty): a person can watch and type in it through the node's terminal endpoints, and you still drive it with send_message, read_messages, answer_permission, interrupt_session and stop_session. A pty session starts claude at once even without a prompt. name sets its display title.",
       "Children go two levels down at most: a session started by a person is depth 0, its child depth 1, a grandchild depth 2, and a depth 2 session cannot create children (409). A grandchild does the work itself or uses a sub-agent (the Agent tool). Pass as and as_session so the node can tell your depth; a session in the lobby does not count as a level.",
       "Every message arrives with a from line naming you. Returns the session id, its cwd, the parent name it records, its depth, and the cursor to pass as `after` to read_messages (0, or the earlier transcript length when a terminal session is resumed, so the old reply is not read as the new one). Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does. The lobby gives its child the lobby's own mode.",
+      "A child started by an agent (a node or pty session whose parent is agent:...) that stays idle after its turn, with no messages, no terminal input and no open terminal view, is stopped by the node after 10 minutes by default (node setting idleStopMinutes). It then shows state exited with an exitReason starting with idle-stop:. The conversation is kept, and create_session resume=<id> continues it. Sessions started by a person and terminal sessions are never stopped this way.",
     ].join(" "),
     inputSchema: {
       peer: peerArg,
@@ -228,7 +232,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
 
   server.registerTool("read_messages", {
     title: "Read messages",
-    description: `Read a session's messages after a cursor and wait up to wait_seconds (max ${MAX_WAIT_SECONDS}, default ${DEFAULT_WAIT_SECONDS}) for the turn to end. Shows assistant text, tool names, permission requests and exit. Ends with stop: result (turn finished), permission (answer it with answer_permission), exited (resume with create_session resume=<id>), timeout (still working; call again with after=cursor), or truncated (output limit; call again with after=cursor).`,
+    description: `Read a session's messages after a cursor and wait up to wait_seconds (max ${MAX_WAIT_SECONDS}, default ${DEFAULT_WAIT_SECONDS}) for the turn to end. Shows assistant text, tool names, permission requests and exit. Ends with stop: result (turn finished), permission (answer it with answer_permission), exited (the [exited] line gives the reason, and idle-stop: means the node stopped an idle child; resume with create_session resume=<id>), timeout (still working; call again with after=cursor), or truncated (output limit; call again with after=cursor).`,
     inputSchema: {
       peer: peerArg,
       session: sessionArg,
@@ -282,7 +286,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
 
   server.registerTool("stop_session", {
     title: "Stop session",
-    description: "End a node child's or a pty session's process. The conversation is kept and can be continued with create_session resume=<id>. Terminal sessions cannot be stopped.",
+    description: "End a node child's or a pty session's process. The conversation is kept and can be continued with create_session resume=<id>. Terminal sessions cannot be stopped. Stop your children when you are done with them; the node also stops an idle child of an agent after 10 minutes by default.",
     inputSchema: { peer: peerArg, session: sessionArg },
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   }, async (a) => run(async () => {

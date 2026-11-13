@@ -16,7 +16,11 @@ export interface Driver {
   answer(requestId: string, a: PermissionAnswer): Promise<void>; // capabilities.permissions が false なら throw
   interrupt(): Promise<void>; // capabilities.interrupt が false なら throw
   setPermissionMode?(mode: string): Promise<void>; // NodeDriver だけが実装する。無ければ API は 409
-  stop(): Promise<void>;
+  stop(reason?: string): Promise<void>; // reason は終わった理由（exitReason と exited の reason）。無ければ Driver が決める
+  // 手が空いた子を止める仕組み（src/sessions/idle-stop.ts）が使う。無いものは数えない
+  viewers?(): number;              // 今つながっている端末の画面の数。0 より多い間は止めない
+  idleSince?(): number;            // summary の lastActivityAt に数えない動き（端末の画面の接続と切断）の最後の時刻
+  confirmIdle?(): Promise<boolean>; // 止める直前に、本体がまだ待機中かを確かめる。false なら止めない
 }
 
 export class CapabilityError extends Error {

@@ -462,6 +462,41 @@ test("stop sends SIGTERM and waits for the exit", async () => {
   expect(d.summary().state).toBe("exited");
 });
 
+// #44: 手が空いた子を止める仕組みのための口
+test("stop with a reason makes it the exit reason, in the summary and in the exited event", async () => {
+  const { d } = await start();
+  const evs = collect(d);
+  await d.stop("idle-stop: no activity");
+  await tick();
+  expect(d.summary().exitReason).toBe("idle-stop: no activity");
+  expect(evs.at(-1)).toMatchObject({ type: "exited", data: { reason: "idle-stop: no activity" } });
+});
+
+test("terminal views are counted, and opening and closing one is recorded as activity", async () => {
+  const { d } = await start();
+  expect(d.viewers()).toBe(0);
+  expect(d.idleSince()).toBe(0);
+  const it = d.attach()[Symbol.asyncIterator]();
+  await it.next();
+  expect(d.viewers()).toBe(1);
+  const opened = d.idleSince();
+  expect(opened).toBeGreaterThan(0);
+  await Bun.sleep(3);
+  await it.return!(undefined);
+  expect(d.viewers()).toBe(0);
+  expect(d.idleSince()).toBeGreaterThan(opened);
+});
+
+test("confirmIdle asks claude agents and says no while it is busy", async () => {
+  let status: "busy" | "idle" = "busy";
+  const { d } = await start({}, { agentInfo: async (pid) => ({ pid, cwd: "/w", kind: "interactive", startedAt: 0, status }) });
+  expect(await d.confirmIdle()).toBe(false);
+  status = "idle";
+  expect(await d.confirmIdle()).toBe(true);
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "x" });
+  expect(await d.confirmIdle()).toBe(false); // hooks の上で作業中なら聞かずに false
+});
+
 test("stopPtysOnExit stops the live PTY children before the node exits", async () => {
   const { stopPtysOnExit } = await import("../../src/main");
   const { SessionStore } = await import("../../src/sessions/store");

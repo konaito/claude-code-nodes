@@ -107,6 +107,11 @@ export class Sessions {
     return d ? { found: true, ...d } : { found: false };
   }
 
+  private withReason(s: SessionSummary): SessionSummary {
+    const reason = this.d.store.exitReasonOf(s.id);
+    return reason && !s.exitReason ? { ...s, exitReason: reason } : s;
+  }
+
   // 根も symlink（macOS の /var など）を解いて比べる。解けない根はそのまま
   private roots(): Promise<string[]> {
     this.realRoots ??= Promise.all(this.d.roots.map((r) => realpath(resolve(r)).catch(() => resolve(r))));
@@ -185,7 +190,8 @@ export class Sessions {
     const ptyPids = new Set(live.filter((s) => s.kind === "pty" && s.state !== "exited" && s.pid).map((s) => s.pid));
     const terms = (await this.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId) && !(a.pid && ptyPids.has(a.pid))).map((a) => this.d.terminalFor(a).summary());
     for (const t of terms) seen.add(t.id);
-    const past = !states || states.has("exited") ? (await this.past()).filter((h) => !seen.has(h.id)) : [];
+    // 台帳から掃いた後も、覚えている終わりの理由（自動で止めたことなど）を重ねる
+    const past = !states || states.has("exited") ? (await this.past()).filter((h) => !seen.has(h.id)).map((h) => this.withReason(h)) : [];
     const all = [...live, ...terms, ...past];
     return all.filter((s) => (!parent || s.parent === parent) && (!states || states.has(s.state)));
   }
@@ -275,7 +281,7 @@ export class Sessions {
     const driver = await this.find(id);
     if (driver) return { ...driver.summary(), ...(this.depths.has(driver.id) ? { depth: this.depths.get(driver.id) } : {}), pending: driver.pending(), cursor: await this.cursor(id) };
     const past = await this.d.history.get(id);
-    if (past) return { ...past, pending: [], cursor: await this.cursor(id) };
+    if (past) return { ...this.withReason(past), pending: [], cursor: await this.cursor(id) };
     throw new HttpError(404, { error: "unknown session" });
   }
   // messages?after= と同じ数え方にする。生きているものは台帳の最後の seq、それ以外（端末、終わったもの、過去）は履歴の件数
