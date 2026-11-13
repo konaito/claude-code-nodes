@@ -12,6 +12,7 @@ import { NodeDriver } from "./engine/node-driver";
 import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
 import { PtyDriver, bunPtySpawn } from "./engine/pty-driver";
 import { listAgents, withoutHeadless, bunRunner } from "./engine/agents";
+import { claudeConfigFile, gitRootOf, trustDir } from "./engine/trust";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
 import { Relay } from "./relay/relay";
@@ -35,6 +36,8 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
       // dir は起動した cwd。見つからなければ（cwd の書き方が違うときなど）全部のプロジェクトから探す
       transcript: async (id, dir) => { const m = dir ? await getSessionMessages(id, { dir }).catch(() => []) : []; return m.length ? m : getSessionMessages(id); },
     }),
+    // 子に渡すのと同じ環境（process.env。childEnv も SDK も CLAUDE_CONFIG_DIR を落とさない）から、claude が読む設定ファイルを決める
+    trust: (cwd) => trustDir(cwd, { configFile: claudeConfigFile(process.env, homedir()), gitRoot: gitRootOf(bunRunner) }),
     // 一覧には裏方の `claude -p` を出さない。PTY の子の状態合わせ（agentInfo）には掛けない
     agents: async () => withoutHeadless(await listAgents(bunRunner), bunRunner),
     terminalFor: (a) => new TerminalDriver(a, { uid: userInfo().uid, connect: unixConnect }),
