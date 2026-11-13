@@ -32,7 +32,8 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     startPty: (opts, caller) => PtyDriver.start(opts, {
       spawn: bunPtySpawn, hookBase: `http://127.0.0.1:${cfg.port}`, caller: caller.id, claudePath: Bun.which("claude") ?? undefined,
       agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
-      transcript: (id) => getSessionMessages(id),
+      // dir は起動した cwd。見つからなければ（cwd の書き方が違うときなど）全部のプロジェクトから探す
+      transcript: async (id, dir) => { const m = dir ? await getSessionMessages(id, { dir }).catch(() => []) : []; return m.length ? m : getSessionMessages(id); },
     }),
     // 一覧には裏方の `claude -p` を出さない。PTY の子の状態合わせ（agentInfo）には掛けない
     agents: async () => withoutHeadless(await listAgents(bunRunner), bunRunner),

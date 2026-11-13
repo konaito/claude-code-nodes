@@ -49,7 +49,10 @@ export type PtyDeps = {
   inputTimeoutMs?: number;  // 起動から入力の受け付け（ESC[?2004h）を待つ上限。過ぎたら溜めた入力を流す。既定 10 秒
   // 会話の行（SDK の getSessionMessages）。hooks は途中の文を運ばないので、hooks が届くたびにこれを読み、まだ出していない行を流す。
   // 無ければ hooks から組み立てる（途中の文は出ない）
-  transcript?: (id: string) => Promise<TranscriptLine[]>;
+  // dir は会話の置き場（起動した cwd）。渡すと全部のプロジェクトを探さずに済む
+  transcript?: (id: string, dir?: string) => Promise<TranscriptLine[]>;
+  // PreToolUse と PostToolUse の後、その道具の tool_use か tool_result の行が出るまで読み直す間隔（ミリ秒）。全部待っても出なければあきらめる
+  chaseDelaysMs?: number[];
 };
 export type TranscriptLine = { type: string; uuid: string; message?: unknown; timestamp?: string };
 
@@ -61,9 +64,12 @@ const REPLAY_CHUNK = 64 * 1024;
 // 前の data から間が空いていれば、待たずにすぐ送る（打った文字の表示を遅らせない）
 const DATA_GAP_MS = 17;
 const SUB_LIMIT = 8 * 1024 * 1024; // 1つの画面に溜めてよいバイト数。超えたら切り、画面は after で繋ぎ直す
-const HOOK_EVENTS = ["UserPromptSubmit", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "Notification"] as const;
+// PreToolUse は道具を使い始めた印。tool_use の行はこの時点で jsonl にある（2026-11-13 に実測、#43）。無いと承認の要らない道具の tool_use が、道具が終わるまで読まれない
+const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "Notification"] as const;
 const PERMISSION_HOOK_TIMEOUT_S = 7 * 24 * 3600; // 承認は人が答えるまで待つ。切れると端末の承認画面だけが残る
 const EVENT_HOOK_TIMEOUT_S = 10;
+// PostToolUse の時点では tool_result の行はまだ jsonl に無い（2026-11-13 に実測、#43）。書かれるまで、この間隔で読み直す。合わせて約4.6秒
+const CHASE_DELAYS_MS = [150, 300, 600, 1200, 2400];
 
 type Waiting = { p: PendingPermission; resolve: (out: unknown) => void };
 type Sub = { q: AsyncQueue<TermFrame>; bytes: number };
@@ -150,7 +156,10 @@ export class PtyDriver implements Driver {
   private early: Uint8Array[] = [];
   private scanTail = "";
   private seenLines = new Set<string>();     // 流した会話の行の uuid
-  private syncing: Promise<void> = Promise.resolve();
+  // 会話の読み込みは、走っている1本と、その後に続ける1本だけにする。getSessionMessages は毎回 jsonl を全部読むので、hooks が重なっても読む回数を増やさない
+  private syncRun?: Promise<boolean>;
+  private syncNext?: Promise<boolean>;
+  private wanted = new Set<string>();        // 行が出るのを待っている道具（"use:<id>" か "result:<id>"）。行を流したら消す
   private fallbackTexts: string[] = [];      // 行が書かれる前に Stop の hook の文で補った分。後から同じ文の行が来たら流さない
   private turnTexts: string[] = [];          // このターンに流した文
   private unsent: Uint8Array[] = []; // まだ画面に送っていない出力。末尾は this.end
@@ -336,6 +345,13 @@ export class PtyDriver implements Driver {
         this.turnTexts = [];
         this.push("user", { type: "user", message: { role: "user", content: String(body.prompt ?? "") } });
         return undefined;
+      case "PreToolUse": {
+        // 道具を使い始めた。tool_use の行はもう書かれているので、hook は待たせずに裏で読む
+        if (!this.waiting.size) this.state = "running";
+        this.turnSeen = true;
+        void this.chase("use", body);
+        return undefined;
+      }
       case "PermissionRequest":
         // 承認を待つ間も、道具の前に書いた文が見えるように先に流す（承認の hook は待たせない）
         void this.syncTranscript();
@@ -346,8 +362,9 @@ export class PtyDriver implements Driver {
         for (const [id, w] of this.waiting) if (w.p.toolName === body.tool_name && sameInput(w.p.input, body.tool_input)) this.drop(id, w, "answered in terminal");
         if (!this.waiting.size) this.state = "running";
         this.turnSeen = true; // Stop の hook がターンを続けさせた後も、ターンの途中にいる
-        // 会話の行が読めなければ、hook の道具の名前と入力で補う
+        // 会話の行が読めなければ、hook の道具の名前と入力で補う。読めたら、結果の行が書かれるまで裏で読み直す
         if (!(await this.syncTranscript())) this.push("assistant", { type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name: body.tool_name, input: body.tool_input ?? {} }] } });
+        else void this.chase("result", body);
         return undefined;
       }
       case "Stop":
@@ -466,39 +483,73 @@ export class PtyDriver implements Driver {
   }
   private push(type: string, data: unknown) { this.out.push({ at: Date.now(), type, data }); }
 
+  // 道具の tool_use か tool_result の行が出るまで、CHASE_DELAYS_MS の間隔で読み直す。サブエージェントの道具（agent_id がある）は、行が本体の会話に入らないので追わない
+  private async chase(kind: "use" | "result", body: Record<string, unknown>) {
+    const id = typeof body.tool_use_id === "string" ? body.tool_use_id : "";
+    if (!id || body.agent_id || !this.deps.transcript) { if (kind === "use") await this.syncTranscript(); return; }
+    const key = `${kind}:${id}`;
+    if (this.seenTools.has(key)) return;
+    this.wanted.add(key);
+    try {
+      if (kind === "use") await this.syncTranscript();
+      for (const ms of this.deps.chaseDelaysMs ?? CHASE_DELAYS_MS) {
+        if (!this.wanted.has(key) || this.state === "exited") return;
+        await Bun.sleep(ms);
+        await this.syncTranscript();
+      }
+    } finally { this.wanted.delete(key); }
+  }
+  // 流した道具の行の印。追い始める前に流れていた行を、もう一度待たないため。古いものから捨てる
+  private seenTools = new Set<string>();
+  private markTool(key: string) {
+    this.wanted.delete(key);
+    this.seenTools.add(key);
+    if (this.seenTools.size > 512) this.seenTools.delete(this.seenTools.values().next().value!);
+  }
+
   // 会話の行を読み、まだ流していない行を順に流す。assistant の行は全部、user の行は道具の結果だけ（打った文は UserPromptSubmit で流す）。
-  // このプロセスの起動より前の行（resume や fork で引き継いだ会話）は流さない。同時に呼ばれても順に1回ずつ読む
+  // このプロセスの起動より前の行（resume や fork で引き継いだ会話）は流さない。
+  // 読んでいる間に呼ばれたら、今の読み込みの後にもう1回だけ読む（その間の呼び出しは全部その1回を待つ）
   // 読めたら true。transcript が無いか、読めなければ false（呼び手が hooks の値で補う）
   private syncTranscript(): Promise<boolean> {
-    const read = this.deps.transcript;
-    if (!read) return Promise.resolve(false);
-    const run = this.syncing.then(async () => {
-      if (this.state === "exited") return false;
-      const lines = await read(this.id).catch(() => undefined);
-      if (!lines) return false;
-      for (const l of lines) {
-        if (!l.uuid || this.seenLines.has(l.uuid)) continue;
-        this.seenLines.add(l.uuid);
-        const at = l.timestamp ? Date.parse(l.timestamp) : NaN;
-        if (Number.isFinite(at) && at < this.startedAt) continue;
-        const content = (l.message as { content?: unknown } | undefined)?.content;
-        if (l.type === "assistant") {
-          const blocks = Array.isArray(content) ? (content as { type?: string; text?: string }[]) : [];
-          const text = blocks.length === 1 && blocks[0]!.type === "text" ? blocks[0]!.text ?? "" : undefined;
-          if (text !== undefined) {
-            const i = this.fallbackTexts.indexOf(text);
-            if (i >= 0) { this.fallbackTexts.splice(i, 1); continue; } // Stop の hook の文で補った分
-            this.turnTexts.push(text);
-          }
-          this.push("assistant", l);
-        } else if (l.type === "user" && Array.isArray(content) && (content as { type?: string }[]).some((b) => b.type === "tool_result")) {
-          this.push("user", l);
-        }
-      }
-      return true;
-    });
-    this.syncing = run.then(() => {}, () => {});
+    if (!this.deps.transcript) return Promise.resolve(false);
+    if (!this.syncRun) return this.startSync();
+    this.syncNext ??= this.syncRun.then(() => { this.syncNext = undefined; return this.startSync(); });
+    return this.syncNext;
+  }
+  private startSync(): Promise<boolean> {
+    const run = this.readTranscript();
+    this.syncRun = run;
+    void run.finally(() => { if (this.syncRun === run) this.syncRun = undefined; });
     return run;
+  }
+  private async readTranscript(): Promise<boolean> {
+    const read = this.deps.transcript!;
+    if (this.state === "exited") return false;
+    const lines = await read(this.id, this.opts.cwd).catch(() => undefined);
+    if (!lines) return false;
+    for (const l of lines) {
+      if (!l.uuid || this.seenLines.has(l.uuid)) continue;
+      this.seenLines.add(l.uuid);
+      const at = l.timestamp ? Date.parse(l.timestamp) : NaN;
+      if (Number.isFinite(at) && at < this.startedAt) continue;
+      const content = (l.message as { content?: unknown } | undefined)?.content;
+      const blocks = Array.isArray(content) ? (content as { type?: string; text?: string; id?: string; tool_use_id?: string }[]) : [];
+      if (l.type === "assistant") {
+        const text = blocks.length === 1 && blocks[0]!.type === "text" ? blocks[0]!.text ?? "" : undefined;
+        if (text !== undefined) {
+          const i = this.fallbackTexts.indexOf(text);
+          if (i >= 0) { this.fallbackTexts.splice(i, 1); continue; } // Stop の hook の文で補った分
+          this.turnTexts.push(text);
+        }
+        for (const b of blocks) if (b.type === "tool_use" && b.id) this.markTool(`use:${b.id}`);
+        this.push("assistant", l);
+      } else if (l.type === "user" && blocks.some((b) => b.type === "tool_result")) {
+        for (const b of blocks) if (b.type === "tool_result" && b.tool_use_id) this.markTool(`result:${b.tool_use_id}`);
+        this.push("user", l);
+      }
+    }
+    return true;
   }
   private finish(code: number | null, reason: string) {
     if (this.state === "exited") return;
