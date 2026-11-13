@@ -487,6 +487,19 @@ test("terminal views are counted, and opening and closing one is recorded as act
   expect(d.idleSince()).toBeGreaterThan(opened);
 });
 
+test("close on an attached view drops it at once, even while the reader waits for output that never comes", async () => {
+  const { d } = await start();
+  const view = d.attach();
+  const it = view[Symbol.asyncIterator]();
+  await it.next(); // size
+  await it.next(); // replay
+  const pending = it.next(); // 待機中の claude は何も出さない
+  expect(d.viewers()).toBe(1);
+  view.close();
+  expect(d.viewers()).toBe(0);
+  expect((await pending).done).toBe(true);
+});
+
 test("confirmIdle asks claude agents and says no while it is busy", async () => {
   let status: "busy" | "idle" = "busy";
   const { d } = await start({}, { agentInfo: async (pid) => ({ pid, cwd: "/w", kind: "interactive", startedAt: 0, status }) });

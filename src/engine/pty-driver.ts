@@ -282,7 +282,8 @@ export class PtyDriver implements Driver {
   // after がまだ覚えている範囲なら続きのバイト列だけを data で流す。そうでなければ、ヘッドレスの端末の今の画面を replay で1回流す。
   // replay の offset はスナップショットを取った時点のバイト位置で、それより後の出力は data で続く。終わったセッションは replay と exit だけ
   // バイト位置はプロセスごとに0から数えるので、同じ id を resume した後の位置と混ざらないよう、epoch（このプロセスの印）が合うときだけ after を受ける
-  attach(after?: number, epoch?: number): AsyncIterable<TermFrame> {
+  // 返り値の close は購読をすぐ外す（読み手が切れたとき。次の出力を待たずに画面の数から外す）
+  attach(after?: number, epoch?: number): AsyncIterable<TermFrame> & { close(): void } {
     // まだ送っていない出力を今いる画面に送ってから、新しい画面を足す。新しい画面には at までが replay か head で届く
     this.flushOut();
     const q = new AsyncQueue<TermFrame>();
@@ -298,7 +299,7 @@ export class PtyDriver implements Driver {
     if (exited) q.close();
     else { this.subs.add(sub); this.lastViewAt = Date.now(); q.onClose = () => { this.subs.delete(sub); this.lastViewAt = Date.now(); }; }
     const rawReplay = () => this.tail(this.bufStart).map((u, i, a) => ({ type: "replay" as const, b64: b64(u), offset: this.bufStart + a.slice(0, i + 1).reduce((n, x) => n + x.length, 0) }));
-    return (async function* () {
+    const gen = (async function* () {
       try {
       yield size;
       if (snap) {
@@ -313,6 +314,7 @@ export class PtyDriver implements Driver {
       if (ending) yield ending;
       } finally { q.close(); } // 途中で読むのをやめても購読を残さない
     })();
+    return Object.assign(gen, { close: () => q.close() });
   }
   // 覚えている範囲を from から切り出し、64KB ごとに分ける
   private tail(from: number): Uint8Array[] {

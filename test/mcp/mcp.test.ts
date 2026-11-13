@@ -191,6 +191,17 @@ test("read_messages renders the turn and stops at result with the next cursor", 
   expect(again).toMatch(/^stop=timeout state=running pending=0 cursor=3 /);
 });
 
+// #44: 終わった後の messages は jsonl から返すので exited のイベントが無い。詳細の exitReason で理由を出す
+test("read_messages on a session the node stopped shows the exit reason", async () => {
+  const { app, store } = harness();
+  class Stopped extends FakeDriver { summary() { return { ...super.summary(), state: "exited" as const, exitReason: "idle-stop: no activity for 10 min" }; } }
+  store.add(new Stopped({ id: "22222222-0000-0000-0000-000000000000", capabilities: caps(false) }));
+  const c = await connect(app);
+  const out = text(await c.callTool({ name: "read_messages", arguments: { session: "22222222-0000-0000-0000-000000000000", after: 0, wait_seconds: 1 } }));
+  expect(out).toContain("[exited] idle-stop: no activity for 10 min");
+  expect(out).toMatch(/stop=exited/);
+});
+
 test("read_messages stops at a permission request and answer_permission answers the only pending one", async () => {
   const { app, live } = harness();
   const input = { command: "rm -rf /tmp/x", description: "Remove x" };
