@@ -167,9 +167,17 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | --- | --- | --- |
 | result | ターンが終わり、返事が出そろった | 読んで次を決める |
 | permission | 子がツールの承認を待っている | `[pending]` 行の中身（`command="…"`、`file_path="…"`）を見て、requestId で `ccn:answer_permission` |
-| exited | 子のプロセスが終わった | 続けるなら `ccn:create_session` に `resume=<id>`。終わった後の会話は位置で数え直すので、読み直すときは `after=0` |
+| exited | 子のプロセスが終わった。`[exited]` の行に理由が出る。`idle-stop:` で始まれば、ノードが手の空いた子を止めた | 続けるなら `ccn:create_session` に `resume=<id>`。終わった後の会話は位置で数え直すので、読み直すときは `after=0` |
 | timeout | まだ動いている | 同じ `session` で `after=<cursor>` を渡して呼び直す |
 | truncated | 文字数の上限に達した | `after=<cursor>` で続きを読む |
+
+### 手の空いた子は自動で止まる
+
+エージェントが立てた子（`parent` が `agent:` で始まる node と pty のセッション）は、ターンが終わって待機のまま10分（ノードの設定 `idleStopMinutes`、0 で止めない）何もなければ、ノードが止める。会話は残り、`ccn:create_session` に `resume=<id>` を渡せば続けられる。
+
+- 止めないのは、作業中、承認待ち、人が端末で入力しているか画面を開いている間（閉じた時刻と最後の入力から数え直す）、人が立てたセッション（`parent` が `local` か email）、端末のセッション。
+- 止めた子は `state` が `exited`、`exitReason` が `idle-stop:` で始まる。`ccn:list_sessions` は、止めてから1日の間は既定の一覧にも出す。
+- 止まるのを待たず、済んだ子は `ccn:stop_session` で止める。
 
 返事を急かす文は送らない。子のターンが乱れる。様子は `ccn:get_session` で見る。
 

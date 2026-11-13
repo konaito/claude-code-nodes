@@ -142,7 +142,7 @@ export class NodeDriver implements Driver {
   // 起動前は止めるターンが無い。権限モードは起動のときに渡す
   async interrupt() { if (this.q) await this.q.interrupt(); }
   async setPermissionMode(mode: string) { if (this.q) await this.q.setPermissionMode(mode as PermissionMode); this.permissionMode = mode; }
-  async stop() { this.input.close(); this.abort.abort(); this.finish("stopped"); }
+  async stop(reason = "stopped") { this.input.close(); this.abort.abort(); this.finish(reason); }
 
   private enqueueUser(text: string) {
     this.input.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as SDKUserMessage);

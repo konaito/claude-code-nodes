@@ -54,3 +54,12 @@ test("lobbyOf is the configured lobby, else <home>/.local/share/ccn/lobby", () =
   expect(lobbyOf({ name: "vm", port: 1, roots: ["/x"], lobby: "/x/in" }, "/home/u")).toBe("/x/in");
   expect(lobbyOf({ name: "vm", port: 1, roots: ["/x"] }, "/home/u")).toBe("/home/u/.local/share/ccn/lobby");
 });
+
+test("loadConfig reads idleStopMinutes (0 turns it off) and ignores negative or non-number values", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-conf-"));
+  const read = (v: unknown) => { const p = join(dir, `${Math.random()}.json`); writeFileSync(p, JSON.stringify({ name: "vm", port: 1, roots: ["/x"], idleStopMinutes: v })); return loadConfig(p).idleStopMinutes; };
+  expect(read(5)).toBe(5);
+  expect(read(0)).toBe(0);
+  expect(read(-1)).toBeUndefined();
+  expect(read("10")).toBeUndefined();
+});

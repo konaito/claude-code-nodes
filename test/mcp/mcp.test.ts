@@ -111,6 +111,25 @@ test("list_peers and list_sessions read the same API as HTTP", async () => {
   expect(mine.sessions.map((s: { id: string }) => s.id)).toEqual(["old1"]);
 });
 
+// #44: ノードが自動で止めた子は、終わっていても1日は既定の一覧に出し、理由を付ける
+test("list_sessions shows recently idle-stopped children by default with their exit reason", async () => {
+  const reason = "idle-stop: no activity for 10 min; the conversation is kept, continue with create_session resume=old2";
+  const history = {
+    list: async () => [
+      { id: "old1", kind: "node", capabilities: caps(false), cwd: "/home/u/x", state: "exited", startedAt: 1, lastActivityAt: 1, parent: "agent:lead" },
+      { id: "old2", kind: "node", capabilities: caps(false), cwd: "/home/u/y", state: "exited", startedAt: 1, lastActivityAt: Date.now() - 60_000, parent: "agent:lead", exitReason: reason },
+      { id: "old3", kind: "node", capabilities: caps(false), cwd: "/home/u/z", state: "exited", startedAt: 1, lastActivityAt: Date.now() - 3 * 86_400_000, parent: "agent:lead", exitReason: reason },
+    ],
+    messages: async () => ({ messages: [] }), get: async () => undefined, count: async () => 0,
+  } as unknown as Deps["history"];
+  const { app } = harness({ history });
+  const c = await connect(app);
+  const ls = json(await c.callTool({ name: "list_sessions", arguments: {} }));
+  expect(ls.sessions.map((s: { id: string }) => s.id)).toEqual(["old2", LIVE]); // 新しい順（偽の LIVE は lastActivityAt が 0）
+  expect(ls.sessions[0].exitReason).toBe(reason);
+  expect(ls.sessions[1].exitReason).toBeUndefined();
+});
+
 test("send_message puts the same from line as HTTP, signs as the given role and returns the cursor before sending", async () => {
   const { app, live } = harness();
   live.push({ type: "assistant", data: { type: "assistant", message: { content: "earlier" } } });
@@ -170,6 +189,21 @@ test("read_messages renders the turn and stops at result with the next cursor", 
   // 続きは無いので、締め切りまで待って timeout で返す（偽の時計）
   const again = text(await c.callTool({ name: "read_messages", arguments: { session: LIVE, after: 3, wait_seconds: 2 } }));
   expect(again).toMatch(/^stop=timeout state=running pending=0 cursor=3 /);
+});
+
+// #44: 終わった後の messages は jsonl から返すので exited のイベントが無い。詳細の exitReason で理由を出す
+test("read_messages on a session the node stopped shows the exit reason", async () => {
+  const { app, store } = harness();
+  class Stopped extends FakeDriver { summary() { return { ...super.summary(), state: "exited" as const, exitReason: "idle-stop: no activity for 10 min" }; } }
+  store.add(new Stopped({ id: "22222222-0000-0000-0000-000000000000", capabilities: caps(false) }));
+  const c = await connect(app);
+  const out = text(await c.callTool({ name: "read_messages", arguments: { session: "22222222-0000-0000-0000-000000000000", after: 0, wait_seconds: 1 } }));
+  expect(out).toContain("[exited] idle-stop: no activity for 10 min");
+  expect(out).toMatch(/stop=exited/);
+  // 生きていた頃の cursor で読んでも、理由と読み直しの案内の両方が出る
+  const late = text(await c.callTool({ name: "read_messages", arguments: { session: "22222222-0000-0000-0000-000000000000", after: 7, wait_seconds: 1 } }));
+  expect(late).toContain("[exited] idle-stop: no activity for 10 min");
+  expect(late).toContain("[hint] nothing after 7");
 });
 
 test("read_messages stops at a permission request and answer_permission answers the only pending one", async () => {

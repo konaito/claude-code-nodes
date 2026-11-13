@@ -35,7 +35,7 @@ export function terminalStream(store: SessionStore, id: string, req: Request, ur
       else if (f.type === "exit") yield { event: "exit", data: { code: f.code, reason: f.reason } };
       else yield { id: f.offset, event: f.type, data: { b64: f.b64 } };
     }
-  })());
+  })(), undefined, () => frames.close());
 }
 
 // POST /api/sessions/:id/terminal/input。{ data: base64 } をそのまま書く。{ text } は UTF-8 で書く

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
 import { createApp, type Deps } from "./api/app";
 import { SessionStore } from "./sessions/store";
+import { DEFAULT_IDLE_STOP_MS } from "./sessions/idle-stop";
 import { HeaderIdentity, type Identity } from "./identity/identity";
 import { AccessIdentity } from "./identity/access";
 import { History } from "./engine/history";
@@ -24,7 +25,7 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     nodeName: cfg.name,
     roots: cfg.roots,
     lobby: lobbyOf(cfg),
-    store: new SessionStore(),
+    store: new SessionStore({ idleStopMs: (cfg.idleStopMinutes ?? DEFAULT_IDLE_STOP_MS / 60_000) * 60_000 }),
     identity: identityFor(cfg),
     history: new History({ listSessions, getSessionMessages, getSessionInfo }),
     startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined }),

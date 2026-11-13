@@ -138,6 +138,8 @@ export class PtyDriver implements Driver {
   private lastActivityAt = Date.now();
   private permissionMode?: string;
   private exitReason?: string;
+  private stopReason?: string; // stop に渡された理由。終了コードから作る理由より優先する
+  private lastViewAt = 0;      // 端末の画面の接続と切断の最後の時刻（手が空いた子を止める仕組みが動きとして数える）
   private exitCode: number | null = null;
   private dir?: string;
   private screen: Screen;
@@ -196,7 +198,7 @@ export class PtyDriver implements Driver {
     }
     // 版が変わって ESC[?2004h が出なくなっても止まらないよう、上限を過ぎたら受け付けたものとして流す
     d.inputTimer = setTimeout(() => d.markInputOn(), deps.inputTimeoutMs ?? 10_000);
-    d.exitedP = d.proc.exited.then((code) => d.finish(code, code === 0 || code === null ? "ended" : `exit ${code}`), (e) => d.finish(null, String(e)));
+    d.exitedP = d.proc.exited.then((code) => d.finish(code, d.stopReason ?? (code === 0 || code === null ? "ended" : `exit ${code}`)), (e) => d.finish(null, d.stopReason ?? String(e)));
     return d;
   }
 
@@ -246,8 +248,9 @@ export class PtyDriver implements Driver {
     this.proc!.write("\x1b");
     this.scheduleReconcile();
   }
-  async stop() {
+  async stop(reason?: string) {
     if (this.state === "exited" || !this.proc) return;
+    this.stopReason ??= reason;
     this.proc.kill("SIGTERM");
     const killed = await Promise.race([this.exitedP!.then(() => true), Bun.sleep(3000).then(() => false)]);
     if (!killed) { this.proc.kill("SIGKILL"); await this.exitedP; }
@@ -279,7 +282,8 @@ export class PtyDriver implements Driver {
   // after がまだ覚えている範囲なら続きのバイト列だけを data で流す。そうでなければ、ヘッドレスの端末の今の画面を replay で1回流す。
   // replay の offset はスナップショットを取った時点のバイト位置で、それより後の出力は data で続く。終わったセッションは replay と exit だけ
   // バイト位置はプロセスごとに0から数えるので、同じ id を resume した後の位置と混ざらないよう、epoch（このプロセスの印）が合うときだけ after を受ける
-  attach(after?: number, epoch?: number): AsyncIterable<TermFrame> {
+  // 返り値の close は購読をすぐ外す（読み手が切れたとき。次の出力を待たずに画面の数から外す）
+  attach(after?: number, epoch?: number): AsyncIterable<TermFrame> & { close(): void } {
     // まだ送っていない出力を今いる画面に送ってから、新しい画面を足す。新しい画面には at までが replay か head で届く
     this.flushOut();
     const q = new AsyncQueue<TermFrame>();
@@ -293,9 +297,9 @@ export class PtyDriver implements Driver {
     const exited = this.state === "exited";
     const ending: TermFrame | undefined = exited ? { type: "exit", code: this.exitCode, reason: this.exitReason ?? "" } : undefined;
     if (exited) q.close();
-    else { this.subs.add(sub); q.onClose = () => this.subs.delete(sub); }
+    else { this.subs.add(sub); this.lastViewAt = Date.now(); q.onClose = () => { this.subs.delete(sub); this.lastViewAt = Date.now(); }; }
     const rawReplay = () => this.tail(this.bufStart).map((u, i, a) => ({ type: "replay" as const, b64: b64(u), offset: this.bufStart + a.slice(0, i + 1).reduce((n, x) => n + x.length, 0) }));
-    return (async function* () {
+    const gen = (async function* () {
       try {
       yield size;
       if (snap) {
@@ -310,6 +314,7 @@ export class PtyDriver implements Driver {
       if (ending) yield ending;
       } finally { q.close(); } // 途中で読むのをやめても購読を残さない
     })();
+    return Object.assign(gen, { close: () => q.close() });
   }
   // 覚えている範囲を from から切り出し、64KB ごとに分ける
   private tail(from: number): Uint8Array[] {
@@ -325,6 +330,17 @@ export class PtyDriver implements Driver {
     const out: Uint8Array[] = [];
     for (let i = 0; i < kept.length; i += REPLAY_CHUNK) out.push(kept.subarray(i, i + REPLAY_CHUNK));
     return out;
+  }
+
+  // 手が空いた子を止める仕組み（src/sessions/idle-stop.ts）のための口
+  viewers() { return this.subs.size; }
+  idleSince() { return this.lastViewAt; }
+  // claude 本体がまだ待機中か。`claude agents --json` で busy か承認待ちなら false。引けなければ hooks の state を信じる
+  async confirmIdle(): Promise<boolean> {
+    if (this.state !== "idle" || !this.proc) return false;
+    if (!this.deps.agentInfo) return true;
+    const a = await this.deps.agentInfo(this.proc.pid).catch(() => undefined);
+    return !a || a.status === undefined || a.status === "idle";
   }
 
   // --- hooks の受け口。api が token を確かめてから呼ぶ。返り値は hook の応答の JSON（無ければ空の 200） ---
