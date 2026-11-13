@@ -28,7 +28,8 @@ export class Relay {
     this.timeoutMs = deps.timeoutMs ?? 15_000;
   }
 
-  async forward(peer: string, rest: string, req: Request, caller: Caller): Promise<Response> {
+  // timeoutMs は最初の応答までの待ちの上書き（teleport の取り込みは clone を含むので長く待つ）
+  async forward(peer: string, rest: string, req: Request, caller: Caller, timeoutMs = this.timeoutMs): Promise<Response> {
     const token = this.deps.serviceToken;
     if (!token) throw new RelayNotConfiguredError();
     const target = (await this.deps.registry.peers()).find((p) => p.name === peer);
@@ -46,7 +47,7 @@ export class Relay {
     if (hasBody) { init.body = req.body; init.duplex = "half"; }
     let upstream: Response;
     try {
-      upstream = await withTimeout(this.fetchFn(`${target.url}/${rest}${url.search}`, init), this.timeoutMs);
+      upstream = await withTimeout(this.fetchFn(`${target.url}/${rest}${url.search}`, init), timeoutMs);
     } catch (e) {
       throw new PeerUnreachableError(peer, e);
     }

@@ -4,13 +4,15 @@ import { createReadStream, createWriteStream, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { loadConfig } from "../config";
+import { loadConfig, lobbyOf, type Config } from "../config";
 import { appHomeOf, CONFIG_ENV, configDirOf, LEGACY_CONFIG_ENV, LEGACY_SERVICE_NAMING } from "../names";
 import { bunRunner } from "../engine/agents";
 import { realCf } from "../join/cf";
 import { serviceManager } from "../join/services";
 import { main } from "./commands";
 import { joinCommands } from "./join-commands";
+import { clientFor } from "./client";
+import { localPlaces, type PullDeps } from "./teleport";
 
 function ttyAsk(prompt: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -43,7 +45,28 @@ export async function run(argv: string[]): Promise<number> {
     bunPath: process.execPath, cloudflaredPath: Bun.which("cloudflared") ?? join(home, ".local", "bin", "cloudflared"), uid: userInfo().uid,
     tty: ttyAsk, ttyWrite: (t) => writeFileSync("/dev/tty", t), clipboard, run: bunRunner, now: () => new Date(),
   });
-  return main(argv, { cfg: loadConfig(), env: process.env, out: (s) => console.log(s), fetchFn: fetch, stdin: () => Bun.stdin.text(), join: join_ });
+  const cfg = loadConfig();
+  return main(argv, { cfg, env: process.env, out: (s) => console.log(s), fetchFn: fetch, stdin: () => Bun.stdin.text(), join: join_, pullDeps: () => pullDeps(cfg, home) });
+}
+
+// 手元へ持ってくるときの道具。端末の claude と同じ CLAUDE_CONFIG_DIR（この CLI のプロセスの環境）に書く
+async function pullDeps(cfg: Config, home: string): Promise<PullDeps> {
+  const { importSessionToStore, forkSession, deleteSession, getSessionInfo } = await import("@anthropic-ai/claude-agent-sdk");
+  const { bunGit } = await import("../teleport/git");
+  const { claudeConfigDir } = await import("../teleport/transcript");
+  const local = clientFor(cfg, undefined, undefined, process.env);
+  return {
+    teleport: { fns: { importSessionToStore, forkSession, deleteSession, getSessionInfo }, git: bunGit, configDir: claudeConfigDir() },
+    place: { git: bunGit, home, roots: cfg.roots, lobby: lobbyOf(cfg, home), places: localPlaces(local, fetch) },
+    interactive: !!process.stdin.isTTY && !!process.stdout.isTTY,
+    open: async (cwd, id) => Bun.spawn(["claude", "--resume", id], { cwd, stdio: ["inherit", "inherit", "inherit"] }).exited,
+    localLive: async (id) => {
+      const r = await fetch(`${local.base}/api/sessions/${id}`, { headers: local.headers }).catch(() => undefined);
+      if (!r || !r.ok) return false;
+      const d = (await r.json().catch(() => ({}))) as { state?: string };
+      return !!d.state && d.state !== "exited";
+    },
+  };
 }
 
 if (import.meta.main) process.exit(await run(process.argv.slice(2)));

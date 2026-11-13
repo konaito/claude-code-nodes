@@ -91,6 +91,8 @@ ccn allow <対象> [requestId]                          # 承認（pending が1�
 ccn deny <対象> [requestId] "<理由>"                   # 拒否
 ccn interrupt <対象>                                  # 今のターンを止める
 ccn stop <対象>                                       # 子を止める（jsonl は残り、--resume で再開できる）
+ccn teleport [<対象>] [--to <peer>] [--fork] [--cwd <dir>]
+                                                    # 会話と作業ツリーごと移す。--to を省くと手元に持ってきて claude --resume の命令を出す
 ```
 
 `<対象>` は `<ノード名>/<sessionId の先頭8文字以上>` か sessionId。ノード名を省くと手元のノード。`<文>` を `-` にすると標準入力から読む。`--as` は役割名だけで、使えない文字は `-` になる。

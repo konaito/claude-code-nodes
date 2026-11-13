@@ -294,6 +294,23 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     await call(base, "DELETE", t.peer, `/api/sessions/${t.id}`);
     return { ok: true, peer: t.peer, id: t.id };
   })());
+
+  server.registerTool("teleport_session", {
+    title: "Move a session to another node",
+    description: "Move a session (its conversation and its git working tree: HEAD, branch, staged and unstaged changes, untracked files) to another node, which continues it as an idle node child (send_message starts it). The destination directory is found there by the git remote, or cloned into ~/Documents/<repo>. By default the source is stopped (move); fork=true keeps the source and gives the destination a new id. A running terminal session cannot be stopped, so it is forked with a warning. Fails without changing anything when the destination working tree has changes. To bring a session into your own terminal, use the ccn CLI: ccn teleport <peer>/<id>.",
+    inputSchema: {
+      peer: peerArg,
+      session: sessionArg,
+      to: z.string().describe("Destination node name from list_peers"),
+      fork: z.boolean().optional().describe("Keep the source running and continue under a new id at the destination"),
+      cwd: z.string().optional().describe("Absolute directory on the destination node to use instead of searching by git remote"),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (a) => run(async () => {
+    const t = await resolve(base, a.peer, a.session);
+    const r = await call<{ id: string; cwd: string }>(base, "POST", t.peer, `/api/sessions/${t.id}/teleport`, { to: a.to, fork: a.fork === true, ...(a.cwd ? { cwd: a.cwd } : {}) });
+    return { peer: a.to, ...r };
+  })());
 }
 
 export type ReadOut = { lines: string[]; cursor: number; stop: "result" | "permission" | "exited" | "timeout" | "truncated"; state: string; pending: PendingPermission[] };

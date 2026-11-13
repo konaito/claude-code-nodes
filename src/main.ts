@@ -1,5 +1,5 @@
 // 組み立て。どの実装を使うかはここだけで決める。本物の SDK、claude、受信ソケットをつないで 127.0.0.1 で待つ
-import { query, listSessions, getSessionMessages, getSessionInfo } from "@anthropic-ai/claude-agent-sdk";
+import { query, listSessions, getSessionMessages, getSessionInfo, importSessionToStore, forkSession, deleteSession } from "@anthropic-ai/claude-agent-sdk";
 import { homedir, loadavg, userInfo } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
@@ -19,6 +19,8 @@ import { CloudflareRegistry } from "./registry/cloudflare";
 import { Relay } from "./relay/relay";
 import { defaultPath, entryOf, lobbyOf } from "./config";
 import { prepareLobby } from "./lobby/lobby";
+import { bunGit } from "./teleport/git";
+import { claudeConfigDir } from "./teleport/transcript";
 
 export function buildDeps(cfg: Config, configFile?: string): Deps {
   const registry = registryFor(cfg);
@@ -48,6 +50,8 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     appRoot: join(import.meta.dir, ".."),
     home: homedir(),
     configFile,
+    // teleport の取り込みは、ノードを動かしている Claude の設定ディレクトリ（CLAUDE_CONFIG_DIR か ~/.claude）に書く
+    teleport: { fns: { importSessionToStore, forkSession, deleteSession, getSessionInfo }, git: bunGit, configDir: claudeConfigDir() },
   };
 }
 
