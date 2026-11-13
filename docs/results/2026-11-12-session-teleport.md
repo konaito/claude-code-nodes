@@ -32,7 +32,7 @@ konaito が meta-da の端末で承認した範囲（git の導入、vm の本�
 - 何が起きたか。下見で vm の `~/Documents/ccn-teleport-test` に clone した。そのあとの取り込みで、「exists but its remote does not match」で止まった。
 - 原因。取り込みで移動先を探し直したとき、`places` の10秒の覚えに、直前の clone が載っていなかった。そのため同じ場所へ clone し直そうとした。
 - 影響。move の手順どおり、移動元は止まった状態で残った。返事の hint（`ccn new /Users/konaito/.cache/ccn-tp/src --peer konaito-pro --resume 24d05012-…`）で、そのまま再開できた。
-- 直し方（9d5a3f7）。取り込みには下見で決まった場所を渡す。clone 先に remote が一致するリポジトリがあれば、places に出ていなくてもそれを使う。試験を3件足した。vm を直した版に上げ直した。
+- 直し方（9d5a3f7、2026-11-13 の rebase の後は 3cc3616）。取り込みには下見で決まった場所を渡す。clone 先に remote が一致するリポジトリがあれば、places に出ていなくてもそれを使う。試験を3件足した。vm を直した版に上げ直した。
 
 ### move（手元の試験ノードの子 → vm）
 
@@ -115,7 +115,7 @@ expect の端末（TTY）で `ccn teleport vm/76117a5f --fork --cwd /Users/konai
 
 ## 2026-11-13 main への rebase と追加の確認
 
-マージの前に、枝を main（8b3b6a4）へ rebase した。main は枝の分岐元（086d910）から51件進み、PTY のセッション、深さの制限、一覧の SSE が入っていた。
+マージの前に、枝を main（aeb1a64）へ rebase した。main は枝の分岐元（086d910）から51件進み、PTY のセッション、深さの制限、一覧の SSE、#47 の自動停止、#48 の信頼の処理が入っていた。
 
 ### rebase
 
@@ -127,16 +127,16 @@ expect の端末（TTY）で `ccn teleport vm/76117a5f --fork --cwd /Users/konai
 - 何が起きたか。Claude Town の転出の画面は、子孫のいるセッションでは、開いた時点で `{"to", "fork", "subtree": true, "dryRun": true}` を `POST /api/sessions/:id/teleport` に送る（family-computing の `src/App.tsx` の `Teleport`）。この枝は `subtree` と `dryRun` を読まず、普通の move として親だけを移していた。
 - 確かめ方。`test/teleport/api.test.ts` に試験を足し、`dryRun: true` で 200 が返り移動元が止まることを、直す前に失敗として見た。
 - 原因。ccn に、子孫ごと移す口（subtree）と計画だけ返す口（dryRun）が無い。全部のブランチを `git grep` しても実装は無かった。
-- 直し方（1bbcde7）。`subtree` か `dryRun` に false 以外の値があれば、下見の前に 501（`code: "unsupported"`）で断る。false は付けないのと同じに扱う。試験を2件足した。
+- 直し方（2b16602）。`subtree` か `dryRun` に false 以外の値があれば、下見の前に 501（`code: "unsupported"`）で断る。false は付けないのと同じに扱う。試験を2件足した。
 - 影響。Claude Town で子孫のいるセッションの転出は、計画も実行もエラーになる。子孫のいないセッションの転出は、`subtree` と `dryRun` を送らないので、これまでどおり動く。
 
 直したあとの `bun test` は 436件が通り、1件は飛ばした。失敗は0件だった。`tsc` はエラーなしだった。
 
 ### 2回目の rebase と信頼の処理
 
-- 作業の途中で main が 6e5bfbd に進んだ（#47 の自動停止、#48 の信頼の処理）。もう一度 rebase し、衝突は無かった。
-- #48 は、`Sessions.create` で claude を起動する前に cwd と git のルートを信頼済みにする。teleport の取り込みは create を通らずに子を立てるので、この処理を通っていなかった。取り込みでも起動の前に同じ処理を呼ぶようにし、move の試験で、移動先のリポジトリが信頼済みにされることを確かめた。
-- そのあとの `bun test` は 436件が通り、1件は飛ばした。失敗は0件だった。`tsc` はエラーなしだった。下の PTY の実機確認は、2回目の rebase の前の版（9fb6b54 の時点）で行った。
+- 作業の途中で main が 6e5bfbd に進んだ。増えたのは #49（#48 の配布の記録）だけだった。もう一度 rebase し、衝突は無かった。
+- 1回目の rebase で #48 の信頼の処理との組み合わせを見落としていた。#48 は、`Sessions.create` で claude を起動する前に cwd と git のルートを信頼済みにする。teleport の取り込みは create を通らずに子を立てるので、この処理を通っていなかった。取り込みでも起動の前に同じ処理を呼ぶようにし、move の試験で、移動先のリポジトリが信頼済みにされることを確かめた。
+- そのあとの `bun test` は 436件が通り、1件は飛ばした。失敗は0件だった。`tsc` はエラーなしだった。下の PTY の実機確認の1回目は、信頼の処理を足す前の版で行った。
 
 ### 実機: PTY のセッションの move
 
@@ -160,7 +160,7 @@ expect の端末（TTY）で `ccn teleport vm/76117a5f --fork --cwd /Users/konai
 
 終わったあと、試験のセッションを DELETE で止め、試験ノード2つを自分の pid で止め、`~/.claude/projects` の試験の置き場2つを消した。
 
-最終版（35bbd28、2回目の rebase と信頼の処理の後）で、同じ立て方のまま手順 1〜5 をやり直した。
+信頼の処理を足した版（35bbd28）で、同じ立て方のまま手順 1〜5 をやり直した。
 
 - PTY のセッション `cab081d3` に「合言葉は「かぼす88」」と送り、idle（claude の pid 19419）にした。
 - `subtree` と `dryRun` 付きの要求は 501 になった。
@@ -174,3 +174,5 @@ expect の端末（TTY）で `ccn teleport vm/76117a5f --fork --cwd /Users/konai
 - 子孫ごとの転出（subtree）と計画（dryRun）。ccn には無い。
 - 取り込みは `Sessions.create` を通らないので、移動先で深さを刻まない。移したセッションの深さは、深さの規則（`src/api/depth.ts`）のとおり、呼び手と最初の文の from 行から後でたどる。
 - PTY のセッションを、移動先でも PTY として再開すること。今は node の子として再開する。
+- PTY のセッションの fork と、PTY の子が自分自身を移すこと。実機では試していない。
+- #47 の自動停止との組み合わせ。取り込んだ子は1通目まで awaitingFirst なので、自動停止の対象にならない（`src/sessions/idle-stop.ts` の `idleStoppable`、コードを読んで確かめた）。1通目の後は、親が `agent:` の子と同じく、待機が10分続くと止まる。Claude Town は転出の POST に `x-ccn-from: agent:…` を付けるので、移した子はこの対象になる。実機の呼び手は2回とも local だった。
