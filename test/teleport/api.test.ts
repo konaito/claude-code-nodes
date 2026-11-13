@@ -174,6 +174,31 @@ test("a running source is not moved and nothing changes at the destination", asy
   expect(await sh(dstRepo, "rev-parse", "HEAD")).toBe(head);
 });
 
+// Claude Town の転出は、子孫がいると画面を開いた時点で dryRun（計画だけ）と subtree（子孫ごと）を送る。
+// このノードはどちらも持たないので、黙って普通の move をせず、何も変えずに断る
+test("dryRun and subtree are refused before anything happens, so a plan request never moves the session", async () => {
+  for (const extra of [{ dryRun: true }, { subtree: true }, { subtree: true, dryRun: false }, { dryRun: "yes" }]) {
+    const { src, dst } = pair();
+    const d = liveSrc(src);
+    const head = await sh(dstRepo, "rev-parse", "HEAD");
+    const r = await src.app.fetch(post(`/api/sessions/${ID}/teleport`, { to: "dst", ...extra }));
+    expect(r.status).toBe(501);
+    expect(((await r.json()) as { code: string }).code).toBe("unsupported");
+    expect(d.summary().state).toBe("idle");
+    expect(src.store.get(ID)).toBeDefined();
+    expect(dst.starts).toEqual([]);
+    expect(await sh(dstRepo, "rev-parse", "HEAD")).toBe(head);
+  }
+});
+
+test("dryRun: false and subtree: false are the same as leaving them out", async () => {
+  const { src, dst } = pair();
+  liveSrc(src);
+  const r = await src.app.fetch(post(`/api/sessions/${ID}/teleport`, { to: "dst", fork: true, dryRun: false, subtree: false }));
+  expect(r.status).toBe(200);
+  expect(dst.starts.length).toBe(1);
+});
+
 test("a dirty destination stops the move at the check, before the source is stopped", async () => {
   const { src, dst } = pair();
   const d = liveSrc(src);

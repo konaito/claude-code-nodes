@@ -477,7 +477,11 @@ export class Sessions {
   }
   // 移動元のノードが進める teleport。下見、（move なら）止める、書き出す、取り込むの順。CLI の接続が切れても最後まで進む
   async teleport(id: string, req: Request, caller: Caller) {
-    const body = (await req.json().catch(() => ({}))) as { to?: unknown; fork?: unknown; cwd?: unknown };
+    const body = (await req.json().catch(() => ({}))) as { to?: unknown; fork?: unknown; cwd?: unknown; dryRun?: unknown; subtree?: unknown };
+    // 子孫ごと移す（subtree）と計画だけ返す（dryRun）は持っていない。黙って無視すると、計画のつもりの要求で本当に移してしまうので、何もせずに断る。false は付けないのと同じ
+    for (const k of ["subtree", "dryRun"] as const) {
+      if (body[k] !== undefined && body[k] !== false) throw new HttpError(501, { error: `${k} is not supported by ${this.d.nodeName}; teleport moves one session at a time`, code: "unsupported" });
+    }
     if (typeof body.to !== "string" || !body.to) throw new HttpError(400, { error: "to (peer name) is required" });
     if (body.to === this.d.nodeName) throw new HttpError(400, { error: `the session is already on ${this.d.nodeName}` });
     if (body.cwd !== undefined && typeof body.cwd !== "string") throw new HttpError(400, { error: "cwd must be a string" });
