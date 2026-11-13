@@ -200,6 +200,10 @@ test("read_messages on a session the node stopped shows the exit reason", async 
   const out = text(await c.callTool({ name: "read_messages", arguments: { session: "22222222-0000-0000-0000-000000000000", after: 0, wait_seconds: 1 } }));
   expect(out).toContain("[exited] idle-stop: no activity for 10 min");
   expect(out).toMatch(/stop=exited/);
+  // 生きていた頃の cursor で読んでも、理由と読み直しの案内の両方が出る
+  const late = text(await c.callTool({ name: "read_messages", arguments: { session: "22222222-0000-0000-0000-000000000000", after: 7, wait_seconds: 1 } }));
+  expect(late).toContain("[exited] idle-stop: no activity for 10 min");
+  expect(late).toContain("[hint] nothing after 7");
 });
 
 test("read_messages stops at a permission request and answer_permission answers the only pending one", async () => {

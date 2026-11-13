@@ -345,9 +345,10 @@ export async function readMessages(c: Ctx, peer: string, id: string, after: numb
     detail = undefined;
   }
   detail ??= await call<Detail>(c, "GET", peer, `/api/sessions/${id}`).catch(() => undefined);
+  // 生きている間の cursor は台帳の seq、終わった後は履歴の件数なので、生きていた頃の cursor では何も読めないことがある
+  const nothing = stop === "exited" && !lines.length && after > 0;
   // 終わった後の messages は jsonl から返すので、exited のイベント（理由）が入らない。詳細の exitReason で理由を出す（自動で止めた子など、#44）
   if (stop === "exited" && !lines.some((l) => l.startsWith("[exited]")) && detail?.exitReason) lines.push(`[exited] ${detail.exitReason}`);
-  // 生きている間の cursor は台帳の seq、終わった後は履歴の件数なので、生きていた頃の cursor では何も読めないことがある
-  if (stop === "exited" && !lines.length && after > 0) lines.push(`[hint] nothing after ${after}. Exited sessions are counted by transcript position, not by the live seq; read again with after=0`);
+  if (nothing) lines.push(`[hint] nothing after ${after}. Exited sessions are counted by transcript position, not by the live seq; read again with after=0`);
   return { lines, cursor, stop, state: detail?.state ?? "unknown", pending: detail?.pending ?? [] };
 }

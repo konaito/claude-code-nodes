@@ -6,7 +6,7 @@ import { FakeDriver } from "../helpers/fake-driver";
 import type { Kind, SessionSummary } from "../../src/sessions/types";
 
 const caps = { send: true, permissions: true, interrupt: true, stop: true, events: true };
-const MS = 40;
+const MS = 150; // 0.5倍や0.7倍で待つ試験の余裕を、混んだ機械でも取れる長さにする
 
 class Child extends FakeDriver {
   parent: string | undefined = "agent:vm/abcd1234/lead";
