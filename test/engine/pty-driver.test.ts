@@ -34,7 +34,7 @@ test("starts claude with --session-id, a 0600 settings file holding the hooks, a
   const h = s.hooks.PermissionRequest[0].hooks[0];
   expect(h.url).toBe(`http://127.0.0.1:9/hooks/pty/${d.id}`);
   expect(h.headers["x-ccn-hook-token"]).toBe(d.token);
-  expect(Object.keys(s.hooks).sort()).toEqual(["Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
+  expect(Object.keys(s.hooks).sort()).toEqual(["Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
   // SessionStart は command の hook だけなので curl で送る。token は引数に出さず、0600 のヘッダのファイルから読む
   const ss = s.hooks.SessionStart[0].hooks[0];
   expect(ss.type).toBe("command");
@@ -290,6 +290,64 @@ test("a failing transcript read does not break the turn", async () => {
   // 読めないときは今までどおり hooks から組み立てる
   expect(evs.map((e) => e.type)).toEqual(["user", "assistant", "assistant", "result"]);
   expect(d.summary().state).toBe("idle");
+});
+
+// #43: 承認の要らない道具の tool_use は、PostToolUse（道具が終わった後）まで読まれなかった。tool_result の行は PostToolUse より後に書かれる
+test("PreToolUse streams the tool_use line while the tool runs, without making the hook wait for the read", async () => {
+  const lines: ReturnType<typeof line>[] = [];
+  let release!: () => void;
+  let reads = 0;
+  const { d } = await start({}, { chaseDelaysMs: [5], transcript: async () => { reads++; if (reads === 1) await new Promise<void>((r) => { release = r; }); return lines; } });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+  lines.push(line("a1", "assistant", [{ type: "tool_use", id: "t1", name: "Bash", input: { command: "sleep 30" } }]));
+  // hook の応答は読み込みを待たない（待つと道具の開始が遅れる）
+  expect(await d.hook({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "sleep 30" }, tool_use_id: "t1" })).toBeUndefined();
+  expect(evs.map((e) => e.type)).toEqual(["user"]);
+  release();
+  await tick();
+  expect(evs.map((e) => e.type)).toEqual(["user", "assistant"]);
+  expect(d.summary().state).toBe("running");
+});
+
+test("after PostToolUse, the tool_result line written later is read again until it shows up, then reading stops", async () => {
+  const lines: ReturnType<typeof line>[] = [line("a1", "assistant", [{ type: "tool_use", id: "t1", name: "Bash", input: {} }])];
+  let reads = 0;
+  const { d } = await start({}, { chaseDelaysMs: [5, 5, 5, 5, 5, 5], transcript: async () => { reads++; return lines; } });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+  await d.hook({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {}, tool_use_id: "t1" });
+  expect(evs.map((e) => e.type)).toEqual(["user", "assistant"]);
+  await Bun.sleep(8);
+  lines.push(line("r1", "user", [{ type: "tool_result", tool_use_id: "t1", content: "hi" }]));
+  await Bun.sleep(40);
+  expect(evs.map((e) => e.type)).toEqual(["user", "assistant", "user"]);
+  const after = reads;
+  await Bun.sleep(40);
+  expect(reads).toBe(after); // 結果の行が出たら読み直しをやめる
+  expect(reads).toBeLessThan(6);
+});
+
+test("reading again gives up after the last delay, and tools of a subagent are not chased", async () => {
+  let reads = 0;
+  const { d } = await start({}, { chaseDelaysMs: [2, 2], transcript: async () => { reads++; return []; } });
+  await d.hook({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {}, tool_use_id: "t9" });
+  await Bun.sleep(30);
+  expect(reads).toBe(3); // PostToolUse の1回と、間隔ごとの2回
+  await d.hook({ hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {}, tool_use_id: "t10", agent_id: "sub1" });
+  await Bun.sleep(30);
+  expect(reads).toBe(4);
+});
+
+test("overlapping reads are merged: one running read and one more after it", async () => {
+  let reads = 0;
+  let release!: () => void;
+  const { d } = await start({}, { chaseDelaysMs: [], transcript: async () => { reads++; if (reads === 1) await new Promise<void>((r) => { release = r; }); return []; } });
+  for (let i = 0; i < 5; i++) await d.hook({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: {}, tool_use_id: `p${i}` });
+  expect(reads).toBe(1);
+  release();
+  await tick();
+  expect(reads).toBe(2);
 });
 
 test("permission via hooks: pending, event, allow resolves the hook with the decision", async () => {
