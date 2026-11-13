@@ -160,6 +160,14 @@ expect の端末（TTY）で `ccn teleport vm/76117a5f --fork --cwd /Users/konai
 
 終わったあと、試験のセッションを DELETE で止め、試験ノード2つを自分の pid で止め、`~/.claude/projects` の試験の置き場2つを消した。
 
+最終版（35bbd28、2回目の rebase と信頼の処理の後）で、同じ立て方のまま手順 1〜5 をやり直した。
+
+- PTY のセッション `cab081d3` に「合言葉は「かぼす88」」と送り、idle（claude の pid 19419）にした。
+- `subtree` と `dryRun` 付きの要求は 501 になった。
+- move は 200 を返した。pid 19419 は `ps` から消え、tp-b の一覧には `cab081d3 node idle` が出た。tp-b の作業ツリーは ` M a.txt` と `?? u.txt` だった。
+- tp-b で合言葉を聞くと、返事は「かぼす88」だった。
+- 片付けでは、試験の置き場（`/private/tmp/ccn-tpv`、本番の設定の写しを含む）と `~/.claude/projects` の試験の置き場を消した。信頼の処理により、`~/.claude.json` に `/private/tmp/ccn-tpv/a/proj` と `/private/tmp/ccn-tpv/b/proj` の信頼の記録が残った。動いている claude と書き込みがぶつかるのを避けるため、消していない。
+
 ### 2026-11-13 の時点で確かめていないこと
 
 - 上の「確かめていないこと」は、PTY のセッションの move を除いて残る。
