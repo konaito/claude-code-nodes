@@ -112,3 +112,51 @@ expect の端末（TTY）で `ccn teleport vm/76117a5f --fork --cwd /Users/konai
 - 大きな会話（数 MB 以上）を運ぶときの時間と、Cloudflare の打ち切り（約100秒）。
 - MCP の `teleport_session` を実機の MCP クライアントから呼ぶこと。試験は一覧に出ることだけを見た。
 - incertotech。
+
+## 2026-11-13 main への rebase と追加の確認
+
+マージの前に、枝を main（8b3b6a4）へ rebase した。main は枝の分岐元（086d910）から51件進み、PTY のセッション、深さの制限、一覧の SSE が入っていた。
+
+### rebase
+
+- 衝突は `src/api/app.ts`、`src/api/errors.ts`、`src/api/sessions.ts` の3つだった。どれも両方の分岐を残して解いた（端末の口と teleport の口、`BusyError` と teleport の例外、深さと一覧の監視の import と teleport の import）。
+- rebase の直後の `bun test` は 434件が通り、1件は飛ばした。失敗は0件だった。`bunx tsc --noEmit -p .` はエラーなしで終わった。
+
+### 見つかった不具合: Claude Town の計画の要求で本当に移る
+
+- 何が起きたか。Claude Town の転出の画面は、子孫のいるセッションでは、開いた時点で `{"to", "fork", "subtree": true, "dryRun": true}` を `POST /api/sessions/:id/teleport` に送る（family-computing の `src/App.tsx` の `Teleport`）。この枝は `subtree` と `dryRun` を読まず、普通の move として親だけを移していた。
+- 確かめ方。`test/teleport/api.test.ts` に試験を足し、`dryRun: true` で 200 が返り移動元が止まることを、直す前に失敗として見た。
+- 原因。ccn に、子孫ごと移す口（subtree）と計画だけ返す口（dryRun）が無い。全部のブランチを `git grep` しても実装は無かった。
+- 直し方（1bbcde7）。`subtree` か `dryRun` に false 以外の値があれば、下見の前に 501（`code: "unsupported"`）で断る。false は付けないのと同じに扱う。試験を2件足した。
+- 影響。Claude Town で子孫のいるセッションの転出は、計画も実行もエラーになる。子孫のいないセッションの転出は、`subtree` と `dryRun` を送らないので、これまでどおり動く。
+
+直したあとの `bun test` は 436件が通り、1件は飛ばした。失敗は0件だった。`tsc` はエラーなしだった。
+
+### 実機: PTY のセッションの move
+
+これまでの実機の確認は node のセッションだけだった。Claude Town のセッションの多くは PTY なので、rebase した枝で PTY のセッションを移した。
+
+- 立て方。同じ機械に試験ノードを2つ立てた（tp-a は 4431、tp-b は 4432）。本番のノード（4323）は変えていない。起動は family-computing の `docs/research/teleport-parent-test/launch.ts` を、この worktree に向けたものを使った。登録簿を2ノードの StaticRegistry にし、History と teleport の SDK 呼び出しをノードごとの cwd に絞り、端末の一覧（`claude agents`）を空にしてある。claude は 2.1.323 で、モデルは既定のままにした。
+- 試験のリポジトリ。ローカルの bare リポジトリを `/private/tmp/ccn-tpv/a/proj`（tp-a）と `/private/tmp/ccn-tpv/b/proj`（tp-b）に clone した。tp-a の側は `a.txt` を変更し、`u.txt` を未追跡にした。
+
+手順と結果は次のとおり。
+
+1. tp-a に `terminal: true` でセッションを立て、「合言葉は「すだち77」」と送った（`f99e5950`、kind pty、claude の pid 93308）。返事は「OK」で、state は idle になった。
+2. Claude Town の計画の要求と同じ body（`subtree: true`、`dryRun: true`）を送った。返事は 501 の `subtree is not supported by tp-a; teleport moves one session at a time` だった。tp-a のセッションは idle のまま、pid も同じだった。tp-b の `GET /api/sessions/f99e5950-…` は 404 で、tp-b の作業ツリーも変わらなかった。
+3. `{"to": "tp-b", "cwd": "/private/tmp/ccn-tpv/b/proj"}` で move した。返事は 200 で、id は同じだった。
+4. move の後の状態。
+   - pid 93308 は `ps` に無かった。
+   - tp-a の一覧では `f99e5950 node exited` になった。
+   - tp-b の一覧では `f99e5950 node idle`（awaitingFirst）になった。移動先では PTY ではなく、遅延起動のノードの子になる。
+   - tp-b の作業ツリーは ` M a.txt` と `?? u.txt` で、`a.txt` の中身は移動元と同じだった。
+5. tp-b に「前に覚えた合言葉は？」と送ると、返事は「すだち77」だった。
+6. 別の PTY のセッション（`388e3717`）に長い出力を頼み、running の間に move した。返事は 409 の `busy` で、tp-a のセッションは running のままだった。tp-b には何も作られなかった（404）。
+
+終わったあと、試験のセッションを DELETE で止め、試験ノード2つを自分の pid で止め、`~/.claude/projects` の試験の置き場2つを消した。
+
+### 2026-11-13 の時点で確かめていないこと
+
+- 上の「確かめていないこと」は、PTY のセッションの move を除いて残る。
+- 子孫ごとの転出（subtree）と計画（dryRun）。ccn には無い。
+- 取り込みは `Sessions.create` を通らないので、移動先で深さを刻まない。移したセッションの深さは、深さの規則（`src/api/depth.ts`）のとおり、呼び手と最初の文の from 行から後でたどる。
+- PTY のセッションを、移動先でも PTY として再開すること。今は node の子として再開する。
