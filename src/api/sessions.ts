@@ -35,6 +35,8 @@ export type Deps = {
   history: History;
   startNode: (opts: StartOptions, caller: Caller) => Promise<Driver>;
   startPty?: (opts: PtyStartOptions, caller: Caller) => Promise<PtyDriver>; // terminal: true の作成。無いノードは 400 で断る
+  // claude を起動する前に cwd を信頼済みにする（src/engine/trust.ts）。失敗しても投げない。無ければ何もしない
+  trust?: (cwd: string) => Promise<unknown>;
   agents: () => Promise<AgentInfo[]>;
   terminalFor: (a: AgentInfo) => Driver;
   host: () => Promise<HostInfo>;
@@ -235,8 +237,11 @@ export class Sessions {
       const liveOne = this.d.store.get(body.resume);
       if (liveOne && liveOne.summary().state !== "exited") throw new HttpError(409, { error: "session is still running", hint: "delete first" });
     }
+    if (pty && !this.d.startPty) throw new HttpError(400, { error: "terminal sessions are not supported on this node" });
+    // 信頼の確認画面で子が止まらないよう、起動の前に cwd（と git のルート）を信頼済みにする（#46）。pty、node、受け口、resume の全部がここを通る。
+    // node の子の遅延起動（1通目の send で起動）では、ここから起動まで間が空く。その間に記録が消えても、-p の claude は確認画面を出さない
+    await this.d.trust?.(cwd).catch(() => {});
     if (pty) {
-      if (!this.d.startPty) throw new HttpError(400, { error: "terminal sessions are not supported on this node" });
       const settings = await lobbySettingsFor(cwd, this.d.lobby);
       const prompt = body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined;
       const depth = await this.stampDepth(tracer, child.depth, body.resume);
@@ -244,7 +249,7 @@ export class Sessions {
       // 台帳の番号はこの件数から振り、それより前は messages が jsonl から返す（ノードの再起動で付け直しても前の会話が見える）。
       // fork は新しい id の jsonl がまだ無いので 0（今までどおり、付けた後の分だけ）
       const historyBase = body.resume && !body.fork ? await this.d.history.count(body.resume).catch(() => 0) : 0;
-      const driver = await this.d.startPty({ cwd, prompt, permissionMode: body.permissionMode, model: body.model, resume: body.resume, fork: body.fork, settings, ...pty }, caller);
+      const driver = await this.d.startPty!({ cwd, prompt, permissionMode: body.permissionMode, model: body.model, resume: body.resume, fork: body.fork, settings, ...pty }, caller);
       this.setDepth(driver.id, depth);
       this.d.store.add(driver, { historyBase });
       // cursor は read_messages の after に渡す値。0 だと resume した前の会話の返事を、今の返事として読んでしまう

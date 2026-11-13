@@ -234,3 +234,27 @@ test("terminal:true without cwd starts in the lobby", async () => {
   expect(ptyCalls[0]!.opts.cwd).toBe(root);
 });
 void (null as unknown as FakePty);
+
+test("claude を起動する前に cwd を信頼済みにする（pty、node、受け口、resume）。trust が落ちても起動は続ける（#46）", async () => {
+  const order: string[] = [];
+  const { app } = harness({
+    trust: async (cwd) => { order.push(`trust ${cwd}`); },
+    startPty: async (opts) => { order.push(`pty ${opts.cwd}`); return PtyDriver.start(opts, { spawn: fakeSpawn().spawn, hookBase: "http://127.0.0.1:9", tmp: root, pasteDelayMs: 0, inputTimeoutMs: 0 }); },
+    startNode: async (opts) => { order.push(`node ${opts.cwd}`); const d = new FakeDriver({ id: crypto.randomUUID(), capabilities: { send: true, permissions: true, interrupt: true, stop: true, events: true } }); d.cwd = opts.cwd; return d; },
+  });
+  await create(app);
+  expect((await app.fetch(post("/api/sessions", { cwd: root, prompt: "x" }))).status).toBe(201);
+  expect((await app.fetch(post("/api/sessions", {}))).status).toBe(201); // 受け口（このハーネスでは root）
+  expect((await app.fetch(post("/api/sessions", { cwd: root, terminal: true, resume: "11111111-2222-3333-4444-555555555555" }))).status).toBe(201);
+  expect(order).toEqual([`trust ${root}`, `pty ${root}`, `trust ${root}`, `node ${root}`, `trust ${root}`, `node ${root}`, `trust ${root}`, `pty ${root}`]);
+
+  const { app: app2 } = harness({ trust: async () => { throw new Error("boom"); } });
+  await create(app2);
+});
+
+test("PTY を持たないノードへの terminal:true は信頼を書かずに断る", async () => {
+  const trusted: string[] = [];
+  const { app } = harness({ startPty: undefined, trust: async (cwd) => { trusted.push(cwd); } });
+  expect((await app.fetch(post("/api/sessions", { cwd: root, terminal: true }))).status).toBe(400);
+  expect(trusted).toEqual([]);
+});
