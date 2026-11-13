@@ -120,3 +120,15 @@ test("without fileSize nothing is remembered and every call reads", async () => 
   await h.count("s1"); await h.count("s1"); await h.messages("s1", 0);
   expect(reads).toBe(3);
 });
+
+// limit を渡すと、そのページが limit 件ちょうどなら末尾とはみなさない（pty の境界までのページ）
+test("messages with a limit reads that many and remembers the end only when the page is short", async () => {
+  const { st, h } = fakeTranscript();
+  st.n = 5;
+  const r = await h.messages("s1", 1, 2);
+  expect(r.messages.length).toBe(2);
+  expect(r.next).toBe(3);
+  expect(st.readOpts.at(-1)).toMatchObject({ offset: 1, limit: 2 });
+  // まだ件数を覚えていないので、後ろも読める
+  expect((await h.messages("s1", 3)).messages.length).toBe(2);
+});

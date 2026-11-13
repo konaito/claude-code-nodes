@@ -4,7 +4,7 @@ import type { SessionSummary } from "../sessions/types";
 import { parseFirstPrompt } from "../identity/from-line";
 
 export type HistoryFns = { listSessions: typeof listSessions; getSessionMessages: typeof getSessionMessages; getSessionInfo: typeof getSessionInfo };
-const PAGE = 200;
+export const PAGE = 200;
 const NONE = { send: false, permissions: false, interrupt: false, stop: false, events: false };
 
 // 会話の件数を覚える数の上限。Claude Town などが開いている会話の数より十分多ければよい
@@ -26,14 +26,14 @@ export class History {
     const { info } = await this.info(id);
     return info ? toSummary(info) : undefined;
   }
-  // 会話を after の次から1ページ読む。jsonl の印が前に数えたときと同じで、after がその件数以上なら、読まずに空を返す
-  async messages(id: string, after = 0): Promise<{ messages: SessionMessage[]; next?: number }> {
+  // 会話を after の次から1ページ（最大 limit 件、既定 200）読む。jsonl の印が前に数えたときと同じで、after がその件数以上なら、読まずに空を返す
+  async messages(id: string, after = 0, limit = PAGE): Promise<{ messages: SessionMessage[]; next?: number }> {
     const { key, dir } = await this.info(id);
     const m = key ? this.marks.get(id) : undefined;
     if (m && m.key === key && after >= m.count) return { messages: [], next: undefined };
-    const messages = await this.fns.getSessionMessages(id, { ...dir, offset: after, limit: PAGE });
+    const messages = await this.fns.getSessionMessages(id, { ...dir, offset: after, limit });
     // 1ページに収まったなら、そこが末尾なので件数が分かる
-    if (key && messages.length < PAGE && (messages.length > 0 || after === 0)) this.remember(id, { key, count: after + messages.length });
+    if (key && messages.length < limit && (messages.length > 0 || after === 0)) this.remember(id, { key, count: after + messages.length });
     return { messages, next: messages.length ? after + messages.length : undefined };
   }
   // 会話の件数。messages の after（offset）で数えた末尾。jsonl の印が変わっていなければ数え直さない

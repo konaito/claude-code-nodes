@@ -167,7 +167,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       "Omit prompt to create an idle session that waits for its first message: the id is fixed at once, and claude starts when send_message delivers the first message. With a prompt it starts working right away. A session that never gets a message is cleaned up after 30 minutes.",
       "Set terminal=true to run the child as an interactive claude in a pseudo-terminal owned by the node (kind pty): a person can watch and type in it through the node's terminal endpoints, and you still drive it with send_message, read_messages, answer_permission, interrupt_session and stop_session. A pty session starts claude at once even without a prompt. name sets its display title.",
       "Children go two levels down at most: a session started by a person is depth 0, its child depth 1, a grandchild depth 2, and a depth 2 session cannot create children (409). A grandchild does the work itself or uses a sub-agent (the Agent tool). Pass as and as_session so the node can tell your depth; a session in the lobby does not count as a level.",
-      "Every message arrives with a from line naming you. Returns the session id, its cwd, the parent name it records, its depth, and cursor 0 for read_messages. Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does. The lobby gives its child the lobby's own mode.",
+      "Every message arrives with a from line naming you. Returns the session id, its cwd, the parent name it records, its depth, and the cursor to pass as `after` to read_messages (0, or the earlier transcript length when a terminal session is resumed, so the old reply is not read as the new one). Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does. The lobby gives its child the lobby's own mode.",
     ].join(" "),
     inputSchema: {
       peer: peerArg,
@@ -196,8 +196,8 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       if (a.model) body.model = a.model;
       if (a.resume) body.resume = a.resume;
       if (a.fork) body.fork = true;
-      let r: { id: string; cwd?: string; state?: string; kind?: string; depth?: number };
-      try { r = await call<{ id: string; cwd?: string; state?: string; kind?: string; depth?: number }>(ctx, "POST", a.peer, "/api/sessions", body); }
+      let r: { id: string; cwd?: string; state?: string; kind?: string; depth?: number; cursor?: number };
+      try { r = await call<{ id: string; cwd?: string; state?: string; kind?: string; depth?: number; cursor?: number }>(ctx, "POST", a.peer, "/api/sessions", body); }
       catch (e) {
         // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
         if (e instanceof ToolError && (!a.cwd || !a.prompt) && !a.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
@@ -207,7 +207,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       }
       // terminal を知らない古い版のノードは、黙って SDK の子を立てる
       const notes = [note, a.terminal && r.kind !== "pty" ? `${a.peer || base.nodeName} runs an older ccn without terminal sessions; it started a ${r.kind ?? "node"} session instead` : undefined].filter(Boolean);
-      return { peer: a.peer || base.nodeName, id: r.id, kind: r.kind, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, ...(r.depth !== undefined ? { depth: r.depth } : {}), cursor: 0, ...(notes.length ? { note: notes.join("; ") } : {}) };
+      return { peer: a.peer || base.nodeName, id: r.id, kind: r.kind, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, ...(r.depth !== undefined ? { depth: r.depth } : {}), cursor: typeof r.cursor === "number" ? r.cursor : 0, ...(notes.length ? { note: notes.join("; ") } : {}) };
     })();
   });
 
