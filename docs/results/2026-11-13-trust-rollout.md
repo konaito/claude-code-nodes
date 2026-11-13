@@ -1,6 +1,6 @@
 # PR #48（子を立てる前に cwd を信頼済みにする）を本番の3台に配った記録（2026-11-13）
 
-PR #48 をマージした main（aeb1a64）を3台に配った。作業は konaito-pro の ccn の PTY の子（ccn-trust、04f598da）から行った。親は Meta（4fe4f09b）で、マージと配布は Meta が依頼文で承認した。
+PR #48 をマージした main（aeb1a64）を3台に配った。incertotech と vm は、konaito-pro の ccn の PTY の子（ccn-trust、04f598da）が配った。konaito-pro は、#295 を担当したセッション（8074d764）の台本が配った。親は Meta（4fe4f09b）で、マージと配布は Meta が依頼文で承認した。
 
 ## #47 も一緒に入った経緯
 
@@ -26,13 +26,13 @@ ccn-trust はこれに気づかないまま、incertotech と vm に aeb1a64 を
 | --- | --- | --- | --- |
 | 更新前の中身 | 8b3b6a4（`2d47227f504d`） | 7f3bbad（`38d637bf553f`） | 7f3bbad（`38d637bf553f`） |
 | 今回入った PR | #47、#48 | #42、#45、#47、#48 | #42、#45、#47、#48 |
-| aeb1a64 への更新 | （台本の結果で埋める） | 18:02:32〜18:02:33 | 18:03:44 |
-| ノードの pid | （同上） | 42896 から 68574 | MainPID 293 から 1075 |
-| 更新後の中身 | （同上） | `d71235bb44fc` | `d71235bb44fc` |
+| aeb1a64 への更新 | 18:11:32（8074d764 の台本） | 18:02:32〜18:02:33 | 18:03:44 |
+| ノードの pid | 確かめていない | 42896 から 68574 | MainPID 293 から 1075 |
+| 更新後の中身 | `d71235bb44fc`（18:27 に確認） | `d71235bb44fc` | `d71235bb44fc` |
 | claude の版 | 2.1.323 | 2.1.319 | 2.1.322 |
-| 確認画面（新しい git リポジトリのサブディレクトリ） | （同上） | 出ない | 出ない |
-| 確認画面（git worktree の中） | 試していない | 試していない | 出ない |
-| send と返事 | （同上） | 200、`pong` | 200、`pong` |
+| 確認画面（新しい git リポジトリのサブディレクトリ） | 出ない | 出ない | 出ない |
+| 確認画面（git worktree の中） | 出ない | 試していない | 出ない |
+| send と返事 | 200、`pong`（2回とも） | 200、`pong` | 200、`pong` |
 
 ## incertotech と vm
 
@@ -46,7 +46,22 @@ ccn-trust はこれに気づかないまま、incertotech と vm に aeb1a64 を
 
 konaito-pro には ccn-trust は配っていない。#295 を担当したセッション（8074d764）が、18:01 から自分の台本（`~/.local/share/ccn/tools/update-resume.py`、pid 12992）で更新を待っていたためである。ノードを2回再起動しないよう、ccn-trust の台本（`/tmp/ccn-trust-rollout/rollout-pro.ts`）は止めた。8074d764 の台本は `ccn update` の後に印（`withoutHeadless`、`idleStoppable`）を探し、無ければ `~/Documents/claude-code-nodes` を main に pull して `ccn update --from` で入れ直す。
 
-（更新の後の結果で埋める）
+8074d764 の台本の結果は `~/.local/share/ccn/log/update-20261113-180126.md` にある。18:01:26 に生きている pty を10本控えた。18:11:27 に、作業中の4本（643253ff、16fec158、0bcd39c2、cb14ebd2）を待ちきれないまま更新した。18:11:32 に `ccn update` が終わり、18:11:35〜36 に10本を同じ id で resume した。作業中だった4本には、続きを頼む文を送った。
+
+### 確かめたこと
+
+- 18:27 に `~/.local/share/ccn/app` の値を出すと `d71235bb44fc` で、aeb1a64 と一致した。
+- `verify.ts` を2回流した。新しい git リポジトリのサブディレクトリと、`git worktree add` した先の2つである。どちらも確認画面は出ず、入力欄が出た。send には 200 が返り、返事は `pong` だった。試しの項目、リポジトリ、会話の置き場は片付けた。
+
+### ai-trip-plan の子
+
+元の不具合の子 409c61a5（`~/Documents/ai-trip-plan`）は、resume の直後に `exit 1` で終わり、戻らなかった。8074d764 の報告では、jsonl が無かった。1通目を受ける前に確認画面で止まっていたため、resume する会話が無かったと見ている。
+
+代わりに、Meta が 18:12 ごろ、同じ cwd に `terminal: true` の子（ad0927cb）を新しく立てた。Meta によると、確認画面は出ずに動き出し、その子は konaito/ai-trip-plan#15 まで出した。`~/.claude.json` の `projects["/Users/konaito/Documents/ai-trip-plan"].hasTrustDialogAccepted` は、18:28 に ccn-trust が読んだときも true だった。
+
+### idle-stop で ccn-trust が止まった
+
+ccn-trust（04f598da）も、更新の後に resume された。続く文が来ないまま10分 idle だったので、#47 の自動停止で止まった。Meta が resume して、この作業を続けた。#47 が入ったノードでは、resume された agent の子も、10分のうちに次の文が来なければ止まる。
 
 ## 前の版に戻す手順
 
@@ -56,4 +71,5 @@ konaito-pro には ccn-trust は配っていない。#295 を担当したセッ�
 ## 確かめていないこと
 
 - MCP の `send_message` での送信。確かめたのは、同じ処理を通る HTTP の `POST …/messages` である。
-- incertotech と konaito-pro での、git worktree の中を cwd にした場合。
+- incertotech での、git worktree の中を cwd にした場合。
+- konaito-pro の更新の後のノードの pid。
