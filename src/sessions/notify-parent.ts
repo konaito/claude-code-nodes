@@ -18,8 +18,8 @@ const REASON_MAX = 200;
 export type NotifyTiming = {
   delayMs?: number;  // 最初のイベントから送るまで待つ時間。続けて来たイベントをまとめる。既定 3秒
   minGapMs?: number; // 同じ子から続けて送る間隔の下限（終わったときの知らせは除く）。既定 20秒
-  retryMs?: number;  // 親が受けられないとき（pty の承認待ち）に送り直す間隔。既定 10秒
-  retries?: number;  // 送り直す回数の上限。既定 6
+  retryMs?: number;  // 親が受けられないとき（pty の承認待ち）に送り直す最初の間隔。倍々に伸ばし、60秒で止める。既定 10秒
+  retries?: number;  // 送り直す回数の上限。既定 15（既定の間隔で約13分）
 };
 export type NotifyDeps = NotifyTiming & {
   nodeName: string;
@@ -57,13 +57,19 @@ export class ParentNotifier {
     this.delayMs = d.delayMs ?? 3000;
     this.minGapMs = d.minGapMs ?? 20_000;
     this.retryMs = d.retryMs ?? 10_000;
-    this.retries = d.retries ?? 6;
+    this.retries = d.retries ?? 15;
   }
 
   // 親（や人）が API で止める直前に呼ぶ。その子の exited は知らせない
   suppress(id: string) {
     this.suppressed.add(id);
     if (this.suppressed.size > 256) this.suppressed.delete(this.suppressed.values().next().value!); // 終わりが来なかった分を溜めない
+  }
+  // 台帳から消した後に呼ぶ。印と覚えている cursor を捨てる。同じ id を resume すると台帳の番号は振り直され、
+  // もう終わっていた子の stop は exited を出さないので、残すと resume 後の思わぬ終わり方を知らせなくなる
+  clear(id: string) {
+    this.suppressed.delete(id);
+    this.forget(id);
   }
 
   // 台帳のイベントを1件受ける
@@ -155,7 +161,7 @@ export class ParentNotifier {
     }
     if (cur) return;
     this.pending.set(id, p);
-    this.schedule(id, p, false, this.retryMs);
+    this.schedule(id, p, false, Math.min(this.retryMs * 2 ** (p.tries - 1), Math.max(this.retryMs, 60_000)));
   }
 
   // 送るときの状態で文を作る。もう当たらないもの（作業に戻ったターン、答え済みの承認）は入れない。何も無ければ undefined

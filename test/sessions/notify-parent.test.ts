@@ -138,6 +138,20 @@ test("an unexpected exit is sent; idle-stop and stops through the API are not", 
   expect(c.parent.sent).toEqual([]);
 });
 
+test("after stop_session on an already exited child, a resumed child with the same id still reports an unexpected exit", async () => {
+  const { store, sessions, parent, child } = setup();
+  store.add(parent); store.add(child);
+  child.exit(idleStopReason(600_000, C));
+  await wait(DELAY);
+  await sessions.remove(C); // もう終わっているので exited は出ない
+  const again = new S(C, `agent:vm/${P.slice(0, 8)}/lead`, "node", "running");
+  store.add(again);
+  again.exit("exit 1");
+  await wait(DELAY * 3);
+  expect(parent.sent.length).toBe(1);
+  expect(parent.sent[0]).toContain("が終わった: exit 1");
+});
+
 test("no endless back and forth: the parent's own turn ends are not sent to the child, and a cycle made by resume is refused", async () => {
   const { store, parent, child } = setup();
   store.add(parent); store.add(child);

@@ -413,8 +413,12 @@ export class Sessions {
     if (!driver.capabilities.stop) throw new HttpError(409, { error: "capability stop not available" });
     // API で止めた子の終わりは親に知らせない。stop_session は呼び手を名乗らないので、親が止めたのか人が止めたのかは見分けない
     this.notifier?.suppress(driver.id);
-    await driver.stop();
-    this.d.store.remove(id);
+    try {
+      await driver.stop();
+      this.d.store.remove(id);
+    } finally {
+      this.notifier?.clear(driver.id);
+    }
     // 台帳から消したセッションは、終わったセッションの一覧から出す。立ててすぐ止めた子が一覧から消えないように
     this.expireHistory();
   }
@@ -477,8 +481,12 @@ export class Sessions {
       const live = this.d.store.get(id);
       if (live && live.capabilities.stop) {
         this.notifier?.suppress(id); // 移すために止めた。親に「終わった」と知らせない
-        await live.stop();
-        this.d.store.remove(id);
+        try {
+          await live.stop();
+          this.d.store.remove(id);
+        } finally {
+          this.notifier?.clear(id);
+        }
       } else {
         fork = true;
         warnings.push(`the ${info.kind} session cannot be stopped by ccn, so it was forked instead (new id). Close the original yourself so it does not continue in two places`);
