@@ -288,7 +288,7 @@ VMの127.0.0.1に立て、curlで作る、送る、SSEで読む、承認する�
 - 名乗り（`as`）は、HTTP で `x-ccn-from` を信じる呼び手（ノード用サービストークンと同じ機械）だけに許す。email の呼び手は email のまま。
 - 待つツール `read_messages` は最大50秒で返す。Cloudflare は応答の無いまま125秒で524を返し、MCP の TypeScript クライアントの要求の既定の締め切りは60秒なので、その手前にした。続きは cursor で読む。出力は既定2万字で切る。
 - 認可は今の Access のまま。同じ機械からは無認証（127.0.0.1）、外からはノード用サービストークン（Claude Code の `headersHelper` でファイルから読む）か、Access の Managed OAuth。Managed OAuth を有効にすると、Access がクライアントに OAuth の認可サーバーとして振る舞い、ノードには今と同じ `Cf-Access-Jwt-Assertion` が届くので、`AccessIdentity` は変えなくてよい。本番で有効にするかは別に決める。
-- `/skill.md` は製品の説明と MCP でのつなぎ方を Agent Skills の形（name、description、500行未満）で書いた文書で、認証なしで配る。正本は `skills/claude-code-nodes/SKILL.md`（束に入り、利用者の機械にはリンクしない）。Bypass アプリ `ccn-install` は `<host>/install` と `<host>/skill.md` を外す。
+- `/skill.md` は製品の説明と MCP でのつなぎ方を Agent Skills の形（name、description、500行未満）で書いた文書で、認証なしで配る。正本は `skills/claude-code-nodes/SKILL.md`（束に入り、利用者の機械にはリンクしない）。Bypass アプリ `ccn-install` は `<host>/install` と `<host>/skill.md` を外す。2026-11-14 に、PWA の manifest とアイコンを置く `<host>/pwa` も足した（`docs/results/2026-11-14-pwa.md`）。
 
 ## 受け口とプロンプト無しの作成（2026-11-11、本人が「ccn 専用の受け口を各ノードに作る」「受け口が対象の場所に子を立てる」を選んだ）
 
