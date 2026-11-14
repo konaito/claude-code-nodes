@@ -63,3 +63,12 @@ test("loadConfig reads idleStopMinutes (0 turns it off) and ignores negative or 
   expect(read(-1)).toBeUndefined();
   expect(read("10")).toBeUndefined();
 });
+
+test("loadConfig reads notifyParent only as a boolean (absent means on)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cc-conf-"));
+  const read = (v: unknown) => { const p = join(dir, `${Math.random()}.json`); writeFileSync(p, JSON.stringify({ name: "vm", port: 1, roots: ["/x"], notifyParent: v })); return loadConfig(p).notifyParent; };
+  expect(read(false)).toBe(false);
+  expect(read(true)).toBe(true);
+  expect(read("false")).toBeUndefined();
+  expect(read(undefined)).toBeUndefined();
+});

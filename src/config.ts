@@ -18,6 +18,7 @@ export type Config = {
   cfApiToken?: string;   // 登録簿を読む CF API トークン（Cloudflare Tunnel Read）
   lobby?: string;        // 受け口のディレクトリ。無ければ names.ts の lobbyDirOf（roots の内側に置く）
   idleStopMinutes?: number; // エージェントが立てた子を、idle のままこの分数を過ぎたら止める（src/sessions/idle-stop.ts）。無ければ 10、0 で止めない
+  notifyParent?: boolean;   // エージェントが立てた子のターンの終わり、承認待ち、思わぬ終わり方を親に知らせる（src/sessions/notify-parent.ts）。無ければ true
 };
 // CONFIG_ENV（CCN_CONFIG。旧の CC_CONFIG も読む）で設定ファイルを差し替えられる（手元で別ポートのノードを試すとき用）
 export const defaultPath = () => process.env[CONFIG_ENV] ?? process.env[LEGACY_CONFIG_ENV] ?? resolveConfigPath(homedir());
@@ -46,6 +47,7 @@ export function loadConfig(path = defaultPath()): Config {
     if (v) cfg[k] = v;
   }
   if (typeof raw.idleStopMinutes === "number" && Number.isFinite(raw.idleStopMinutes) && raw.idleStopMinutes >= 0) cfg.idleStopMinutes = raw.idleStopMinutes;
+  if (typeof raw.notifyParent === "boolean") cfg.notifyParent = raw.notifyParent;
   const t = raw.serviceToken as Record<string, unknown> | undefined;
   if (t && str(t.clientId) && str(t.clientSecret)) cfg.serviceToken = { clientId: t.clientId as string, clientSecret: t.clientSecret as string };
   return cfg;

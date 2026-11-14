@@ -47,6 +47,7 @@ ccn(remote) を立てると決まったら、次のように進める。
    - `permission_mode`: 省くと、この機械の Claude Code の既定になる。CLI の既定の `bypassPermissions` とは違う
 2. 指示は `send_message` で送り、返る `cursor` を控える。子が終わった後の `parent` は1通目の from 行から決まるので、`as` と `as_session` も `create_session` と同じものを渡す。
 3. 返事は `read_messages` に `after=<cursor>` を渡して読む。最大50秒で返るので、最後の行の `stop` を見て呼び直す。
+   子のターンが終わったときと承認待ちになったときは、ノードが `[ccn]` で始まる文を親（自分）に送る。待たずにほかの作業をしてよく、届いた文にある `read_messages` か `answer_permission` を呼べばよい。読み済みなら返事は要らない。
 4. `stop=permission` なら、`get_session` の `pending` を見て `answer_permission` で答える。承認待ちの間は `send_message` が 409 で断られる。
 5. 済んだら `stop_session` で止める。
 

@@ -15,6 +15,8 @@ const REASONS_MAX = 256; // 台帳から掃いた後も覚えておく終わり�
 const BOOT = Date.now().toString(36);
 let epochs = 0;
 type Change = { id: string; summary: SessionSummary };
+// 台帳がイベントに seq を振った直後に呼ぶ。stream_event は渡さない。親への知らせ（src/sessions/notify-parent.ts）が使う
+export type EventListener = (d: Driver, ev: DriverEvent) => void;
 type Entry = {
   driver: Driver;
   events: DriverEvent[];
@@ -39,6 +41,8 @@ export class SessionStore {
   private now: () => number;
   private idle?: IdleStop;
   private reasons = new Map<string, string>(); // 台帳から掃いたセッションの exitReason
+  private listeners = new Set<EventListener>();
+  private quieted = false;
 
   // idleStopMs を渡すと、エージェントが立てた子が idle のままその時間を過ぎたら止める（src/sessions/idle-stop.ts）。0 か無ければ止めない
   constructor(opts: { maxEvents?: number; endedTtlMs?: number; maxEnded?: number; unsentTtlMs?: number; now?: () => number; idleStopMs?: number } = {}) {
@@ -51,6 +55,10 @@ export class SessionStore {
       this.idle = new IdleStop({ timeoutMs: opts.idleStopMs, now: this.now, alive: (d) => { const e = this.entries.get(d.id); return !!e && e.driver === d && !e.ended; } });
     }
   }
+  // イベントの購読。台帳に載っている間のイベントだけを渡す（入れ直しや掃除で外れた Driver の分は渡さない）。外すときは返り値を呼ぶ
+  onEvent(fn: EventListener): () => void { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; }
+  // ノードが止まるときに呼ぶ。以後は onEvent の購読に何も渡さない（止める途中の exited を親に知らせないため）
+  quiet() { this.quieted = true; }
   // 台帳から掃いた後の終わりの理由。一覧と詳細が履歴の分に重ねる
   exitReasonOf(id: string): string | undefined { return this.reasons.get(id); }
 
@@ -159,6 +167,9 @@ export class SessionStore {
           if (st === "idle") this.idle?.arm(e.driver);
           else this.idle?.forget(e.driver.id);
           this.emitChange(e.driver);
+        }
+        if (raw.type !== "stream_event" && !this.quieted) {
+          for (const f of this.listeners) { try { f(e.driver, ev); } catch (err) { console.error(`session ${e.driver.id}: event listener failed:`, err); } }
         }
       }
     } catch (err) {

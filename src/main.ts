@@ -51,6 +51,7 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     home: homedir(),
     configFile,
     // teleport の取り込みは、ノードを動かしている Claude の設定ディレクトリ（CLAUDE_CONFIG_DIR か ~/.claude）に書く
+    notifyParent: cfg.notifyParent === false ? false : undefined,
     teleport: { fns: { importSessionToStore, forkSession, deleteSession, getSessionInfo }, git: bunGit, configDir: claudeConfigDir() },
   };
 }
@@ -96,6 +97,7 @@ export function stopPtysOnExit(store: SessionStore, exit: (code: number) => void
   const onSignal = async () => {
     if (stopping) return;
     stopping = true;
+    store.quiet(); // 止める途中の exited を親に知らせない
     const live = store.list().filter((s) => s.kind === "pty" && s.state !== "exited").map((s) => store.get(s.id)).filter((d) => d !== undefined);
     await Promise.race([Promise.allSettled(live.map((d) => d.stop())), Bun.sleep(5000)]);
     exit(0);
