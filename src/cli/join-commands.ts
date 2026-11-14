@@ -14,7 +14,7 @@ import { CliError, clientFor, api } from "./client";
 import { readUntilResult } from "./read";
 import type { Ctx } from "./commands";
 import type { Parsed } from "./args";
-import { ACCESS_APP, appHomeOf, BUNDLE_PATH, BYPASS_APP, CLI_NAME, CONFIG_FILE, ENTRY_DOMAIN, launchdLabel, LEGACY_ACCESS_APP, LEGACY_BUNDLE_PATH, LEGACY_BYPASS_APP, LEGACY_SERVICE_TOKEN, LEGACY_TUNNEL_PREFIX, legacyAppHomeOf, OLD_CLI_NAMES, SERVICE_TOKEN, systemdUnitName, TUNNEL_PREFIX, TUNNEL_TOKEN_FILE } from "../names";
+import { ACCESS_APP, appHomeOf, BUNDLE_PATH, BYPASS_APP, CLI_NAME, CONFIG_FILE, launchdLabel, LEGACY_ACCESS_APP, LEGACY_BUNDLE_PATH, LEGACY_BYPASS_APP, LEGACY_SERVICE_TOKEN, LEGACY_TUNNEL_PREFIX, legacyAppHomeOf, OLD_CLI_NAMES, SERVICE_TOKEN, systemdUnitName, TUNNEL_PREFIX, TUNNEL_TOKEN_FILE } from "../names";
 import { dropLegacyAppHome, dropLegacyServices, dropLegacySkill, hasLegacy, moveLegacyConfig, realMigrateFs, type MigrateFs } from "../join/migrate";
 
 export type JoinDeps = {
@@ -32,7 +32,6 @@ export type JoinDeps = {
   now: () => Date;
 };
 export const TESTED_CLAUDE = "2.1.318";
-const DEFAULTS = { email: "ceo@fybe.jp", domain: ENTRY_DOMAIN, zone: "fybe.jp", teamDomain: "fybejp.cloudflareaccess.com", accountId: "9b67e2ec0e2cf3359289e1fc860d3777" };
 const str = (v: string | true | undefined) => (typeof v === "string" ? v : undefined);
 const num = (v: string | true | undefined, d: number) => { const n = Number(str(v)); return str(v) !== undefined && Number.isFinite(n) ? n : d; };
 
@@ -63,16 +62,22 @@ export function joinCommands(d: JoinDeps) {
 
   async function setup(flags: Parsed["flags"], ctx: Ctx): Promise<number> {
     const hosts = (str(flags.hosts) ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    if (!hosts.length) throw new CliError(1, `--hosts <a,b> が要る（例: '${TUNNEL_PREFIX}*.fybe.jp,${ENTRY_DOMAIN}'）`);
+    if (!hosts.length) throw new CliError(1, `--hosts <a,b> が要る（例: '${TUNNEL_PREFIX}*.example.com,${CLI_NAME}.example.com'）`);
     const had = existsSync(readPath());
     const cfg = loadConfig(readPath());
+    // Cloudflare と Access の値は、フラグか既にある設定から取る。作者の環境の値を既定にしない（公開に合わせて外した）
+    const need = (flag: string, v: string | undefined) => { if (!v) throw new CliError(1, `--${flag} が要る（${CONFIG_FILE} にもまだ無い）`); return v; };
+    const email = need("email", str(flags.email));
+    const domain = need("domain", str(flags.domain) ?? cfg.domain);
+    const zone = need("zone", str(flags.zone) ?? cfg.zone);
+    const teamDomain = need("team-domain", str(flags["team-domain"]) ?? cfg.teamDomain);
+    const accountId = need("account-id", str(flags["account-id"]) ?? cfg.accountId);
     // 改名前の名前（cc-node、cc、cc-install）の資源があればそれを使う。Access アプリは新しい名前と --hosts で上書きするので aud は変わらない
     const tok = await ensureServiceToken(d.cf, { name: SERVICE_TOKEN, legacyNames: [LEGACY_SERVICE_TOKEN], duration: "8760h" });
     let serviceToken: Config["serviceToken"];
     if (tok.clientSecret) serviceToken = { clientId: tok.clientId, clientSecret: tok.clientSecret };
     else if (cfg.serviceToken?.clientId === tok.clientId) serviceToken = cfg.serviceToken;
     else throw new CliError(1, `サービストークン ${tok.name}（${tok.id}）は既にあるが secret が手元に無い。cf zero-trust access service-tokens rotate ${tok.id} で取り直すか、消してからやり直す`);
-    const email = str(flags.email) ?? DEFAULTS.email;
     const app = await ensureAccessApp(d.cf, { name: ACCESS_APP, legacyNames: [LEGACY_ACCESS_APP], hosts, sessionDuration: "720h", email, serviceTokenId: tok.id });
     const bypass = await ensureBypassApp(d.cf, { name: BYPASS_APP, legacyNames: [LEGACY_BYPASS_APP], hosts });
     // CF API トークンは手元の設定、無ければ標準入力（--cf-token-stdin。pbpaste | ... 用）、無ければ /dev/tty。argv と環境変数には出さない
@@ -80,9 +85,7 @@ export function joinCommands(d: JoinDeps) {
     if (!cfApiToken) throw new CliError(1, "CF API トークンが空");
     const next: Config = {
       name: str(flags.name) ?? cfg.name, port: num(flags.port, cfg.port), roots: had ? cfg.roots : [d.home],
-      domain: str(flags.domain) ?? cfg.domain ?? DEFAULTS.domain, zone: str(flags.zone) ?? cfg.zone ?? DEFAULTS.zone,
-      teamDomain: str(flags["team-domain"]) ?? cfg.teamDomain ?? DEFAULTS.teamDomain, aud: app.aud,
-      accountId: str(flags["account-id"]) ?? cfg.accountId ?? DEFAULTS.accountId, serviceToken, cfApiToken,
+      domain, zone, teamDomain, aud: app.aud, accountId, serviceToken, cfApiToken,
     };
     if (cfg.entry) next.entry = cfg.entry;
     if (cfg.lobby) next.lobby = cfg.lobby;

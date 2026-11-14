@@ -5,7 +5,7 @@ description: Claude Code Nodes（ccn）で、この機械（ccn(local)）か別�
 
 # ccn（Claude Code Nodes）
 
-自分（親）はこの機械の Claude Code。子は別の機械（またはこの機械）で動く Claude Code のセッションで、`ccn` で扱う。どの機械にも同じノード（Claude Code Nodes）が居て、`~/.config/ccn/ccn.json` のサービストークンで相手のノード（`https://ccn-<ノード名>.fybe.jp`）を直接呼ぶ。材料はそのまま渡されるので、読んで判断するのは親の仕事。
+自分（親）はこの機械の Claude Code。子は別の機械（またはこの機械）で動く Claude Code のセッションで、`ccn` で扱う。どの機械にも同じノード（Claude Code Nodes）が居て、`~/.config/ccn/ccn.json` のサービストークンで相手のノード（`https://ccn-<ノード名>.<zone>`、zone は ccn.json の値）を直接呼ぶ。材料はそのまま渡されるので、読んで判断するのは親の仕事。
 
 - ccn(local): この機械のノードに立てる子。MCP の `create_session` に `terminal: true` を渡し、端末（PTY）の中の対話の claude として立てる。
 - ccn(remote): 別の機械のノードに立てる子。主に CLI の `ccn` で扱う。
@@ -125,4 +125,4 @@ ccn teleport [<対象>] [--to <peer>] [--fork] [--cwd <dir>]
 ## 設定
 
 - `~/.config/ccn/ccn.json`（0600）。ノードの名前、ポート、domain、サービストークン。参加（`curl -fsSL <入口>/install | sh`）が書く。
-- 相手のノードは `https://ccn-<ノード名>.fybe.jp` を直接呼ぶ（改名前のノードは登録簿に `https://cc-<ノード名>.fybe.jp` で出る）。手元のノードは `http://127.0.0.1:<port>` に無認証。別のホストにはトークンを付けない。
+- 相手のノードは `https://ccn-<ノード名>.<zone>` を直接呼ぶ（改名前のノードは登録簿に `https://cc-<ノード名>.<zone>` で出る）。手元のノードは `http://127.0.0.1:<port>` に無認証。別のホストにはトークンを付けない。

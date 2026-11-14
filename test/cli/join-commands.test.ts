@@ -94,9 +94,11 @@ test("install keeps the other keys of an existing settings.json and stops on an 
   expect(readFileSync(join(e.home, ".claude", "settings.json"), "utf8")).toBe("");
 });
 
+const SETUP = ["--email", "owner@example.com", "--domain", "ccn.example.com", "--zone", "example.com", "--team-domain", "team.cloudflareaccess.com", "--account-id", "acc-test"];
+
 test("setup calls service token, access app, bypass app in order and saves aud", async () => {
   const w = world();
-  expect(await main(["setup", "--hosts", "*.cc.fybe.jp", "--name", "konaito-pro", "--port", "4323"], w.ctx)).toBe(0);
+  expect(await main(["setup", "--hosts", "*.cc.fybe.jp", ...SETUP, "--name", "konaito-pro", "--port", "4323"], w.ctx)).toBe(0);
   const heads = w.calls.map((c) => c.slice(0, 4).join(" "));
   expect(heads).toEqual([
     "zero-trust access service-tokens list", "zero-trust access service-tokens create",
@@ -104,7 +106,7 @@ test("setup calls service token, access app, bypass app in order and saves aud",
     "zero-trust access applications list", "zero-trust access applications create",
   ]);
   const cfg = loadConfig(join(w.configDir, "ccn.json"));
-  expect(cfg).toEqual({ name: "konaito-pro", port: 4323, roots: [w.home], domain: "ccn.fybe.jp", zone: "fybe.jp", teamDomain: "fybejp.cloudflareaccess.com", aud: "aud-created", accountId: "9b67e2ec0e2cf3359289e1fc860d3777", serviceToken: { clientId: "cid.new", clientSecret: "csec.new" }, cfApiToken: "CF-FROM-TTY" });
+  expect(cfg).toEqual({ name: "konaito-pro", port: 4323, roots: [w.home], domain: "ccn.example.com", zone: "example.com", teamDomain: "team.cloudflareaccess.com", aud: "aud-created", accountId: "acc-test", serviceToken: { clientId: "cid.new", clientSecret: "csec.new" }, cfApiToken: "CF-FROM-TTY" });
   expect(w.lines.join("\n")).not.toContain("csec.new");
 });
 
@@ -131,6 +133,28 @@ test("node add refuses before setup", async () => {
   const w = world();
   expect(await main(["node", "add", "vm"], w.ctx)).toBe(1);
   expect(w.calls.length).toBe(0);
+});
+
+test("setup has no built-in Cloudflare or Access values and names the missing flag before calling cf", async () => {
+  const w = world();
+  for (const [drop, flag] of [["--email", "email"], ["--account-id", "account-id"], ["--team-domain", "team-domain"]] as const) {
+    const i = SETUP.indexOf(drop);
+    const args = [...SETUP.slice(0, i), ...SETUP.slice(i + 2)];
+    w.lines.length = 0;
+    expect(await main(["setup", "--hosts", "*.example.com", ...args], w.ctx)).toBe(1);
+    expect(w.lines.join("\n")).toContain(`--${flag} が要る`);
+  }
+  expect(w.calls).toEqual([]);
+});
+
+test("setup takes domain, zone, team domain and account id from the saved config on later runs, but always wants --email", async () => {
+  const w = world();
+  saveConfig({ name: "vm", port: 4322, roots: [w.home], domain: "ccn.example.com", zone: "example.com", teamDomain: "team.cloudflareaccess.com", accountId: "acc-saved" }, join(w.configDir, "ccn.json"));
+  expect(await main(["setup", "--hosts", "*.example.com"], w.ctx)).toBe(1);
+  expect(w.lines.join("\n")).toContain("--email が要る");
+  expect(await main(["setup", "--hosts", "*.example.com", "--email", "owner@example.com"], w.ctx)).toBe(0);
+  const cfg = loadConfig(join(w.configDir, "ccn.json"));
+  expect([cfg.domain, cfg.zone, cfg.teamDomain, cfg.accountId]).toEqual(["ccn.example.com", "example.com", "team.cloudflareaccess.com", "acc-saved"]);
 });
 
 test("update swaps app.new into app and restarts node", async () => {
@@ -228,7 +252,7 @@ test("uninstall removes services and the cc directories", async () => {
 test("setup reads the CF API token from stdin with --cf-token-stdin and never prompts", async () => {
   const w = world({ tty: async () => { throw new Error("tty must not be used"); } });
   const ctx = { ...w.ctx, stdin: async () => "CF-FROM-STDIN\n" };
-  expect(await main(["setup", "--hosts", "*.cc.fybe.jp", "--cf-token-stdin"], ctx)).toBe(0);
+  expect(await main(["setup", "--hosts", "*.cc.fybe.jp", ...SETUP, "--cf-token-stdin"], ctx)).toBe(0);
   expect(loadConfig(join(w.configDir, "ccn.json")).cfApiToken).toBe("CF-FROM-STDIN");
   expect(w.lines.join("\n")).not.toContain("CF-FROM-STDIN");
 });
@@ -496,6 +520,6 @@ test("install --from writes the lobby's CLAUDE.md and .claude/settings.json and 
 test("setup keeps a configured lobby", async () => {
   const w = world();
   saveConfig({ name: "konaito-pro", port: 4323, roots: [w.home], lobby: join(w.home, "lobby") }, join(w.configDir, "ccn.json"));
-  expect(await main(["setup", "--hosts", "*.cc.fybe.jp"], w.ctx)).toBe(0);
+  expect(await main(["setup", "--hosts", "*.cc.fybe.jp", ...SETUP], w.ctx)).toBe(0);
   expect(loadConfig(join(w.configDir, "ccn.json")).lobby).toBe(join(w.home, "lobby"));
 });

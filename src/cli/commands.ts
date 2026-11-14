@@ -51,7 +51,8 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} teleport [<対象>] [--to <peer>] [--fork] [--cwd <dir>] [--no-open]
                                                        セッションを会話と作業ツリーごと移す。--to を省くと手元の端末へ持ってきて claude --resume で開く。
                                                        既定は move（移動元を止める）、--fork は移動元を残して別 id で分岐
-  ${CLI_NAME} setup --hosts <a,b> [--name] [--port] [--cf-token-stdin]   1回だけの準備（cf のある機械で）
+  ${CLI_NAME} setup --hosts <a,b> --email <addr> --domain <host> --zone <zone> --team-domain <team>.cloudflareaccess.com --account-id <id> [--name] [--port] [--cf-token-stdin]
+                                                       1回だけの準備（cf のある機械で）。--email 以外は2回目から設定の値を使う
   ${CLI_NAME} node add <名> [--port] [--to <file>] / node token <名> [--port] [--to <file>] / node remove <名> [--legacy] / node migrate <名> [--rename]
   ${CLI_NAME} entry <名> [--host <h>] / install [--from <dir>] / update [--from <dir>] [--entry <url>] / uninstall / doctor / serve
 <対象> は <peer>/<sessionId の先頭8文字以上> か sessionId。peer を省くと手元のノード`;
