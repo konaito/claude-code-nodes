@@ -54,12 +54,12 @@ test("ensureAccessApp updates by id when the name exists", async () => {
   expect(f.body(1).self_hosted_domains).toEqual(["*.cc.fybe.jp", "cc.fybe.jp"]);
 });
 
-test("ensureBypassApp scopes each host to /install and /skill.md with an everyone bypass", async () => {
+test("ensureBypassApp scopes each host to /install, /skill.md and /pwa with an everyone bypass", async () => {
   const f = fakeCf();
   await ensureBypassApp(f.cf, { name: "cc-install", hosts: ["*.cc.fybe.jp", "cc.fybe.jp"] });
   const b = f.body(1);
   expect(b.domain).toBe("*.cc.fybe.jp/install");
-  expect(b.self_hosted_domains).toEqual(["*.cc.fybe.jp/install", "*.cc.fybe.jp/skill.md", "cc.fybe.jp/install", "cc.fybe.jp/skill.md"]);
+  expect(b.self_hosted_domains).toEqual(["*.cc.fybe.jp/install", "*.cc.fybe.jp/skill.md", "*.cc.fybe.jp/pwa", "cc.fybe.jp/install", "cc.fybe.jp/skill.md", "cc.fybe.jp/pwa"]);
   expect(b.policies).toEqual([{ name: "public", decision: "bypass", include: [{ everyone: {} }] }]);
 });
 

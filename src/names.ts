@@ -52,7 +52,7 @@ export const LEGACY_BUNDLE_PATH = "/install/cc.tar.gz";
 export const TUNNEL_PREFIX = "ccn-";
 export const LEGACY_TUNNEL_PREFIX = "cc-";
 export const ACCESS_APP = "ccn";                   // 人の email とノード用サービストークンを通す Access アプリ
-export const BYPASS_APP = "ccn-install";           // <host>/install だけ Access を外すアプリ
+export const BYPASS_APP = "ccn-install";           // <host> の PUBLIC_PATHS だけ Access を外すアプリ
 export const SERVICE_TOKEN = "ccn-node";           // ノード用サービストークン
 export const LEGACY_ACCESS_APP = "cc";
 export const LEGACY_BYPASS_APP = "cc-install";
@@ -67,7 +67,12 @@ export const MCP_PATH = "/mcp";
 export const MCP_SERVER_NAME = "ccn";              // serverInfo の名前。/skill.md の claude mcp add の例もこの名前にそろえる
 export const SKILL_MD_PATH = "/skill.md";
 export const PUBLIC_SKILL_NAME = "claude-code-nodes"; // agentskills の name。親ディレクトリ名と同じにする
-export const PUBLIC_PATHS = ["/install", SKILL_MD_PATH]; // 認証なしで読める道。Bypass アプリはホストごとにこの全部を外す
+// PWA の manifest とアイコンの置き場（src/web/pwa/）。ホーム画面のアイコンを取りに来る要求が Access の cookie を付けるとは限らないので、Access を外す。
+// Service Worker は scope を / にするためルートに置き、Access の裏のままにする
+export const PWA_PATH = "/pwa";
+export const PWA_MANIFEST_PATH = `${PWA_PATH}/manifest.webmanifest`;
+export const SW_PATH = "/sw.js";
+export const PUBLIC_PATHS = ["/install", SKILL_MD_PATH, PWA_PATH]; // 認証なしで読める道。Bypass アプリはホストごとにこの全部を外す
 
 // 利用者の機械に配るスキルと child.md
 export const SKILL_NAME = "ccn";
