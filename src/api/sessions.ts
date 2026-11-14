@@ -22,6 +22,7 @@ import { sse } from "./sse";
 import { DEPTH_HINT, DEPTH_HOPS, DEPTH_REFUSAL, DepthTracer, MAX_DEPTH, type SessionDepth } from "./depth";
 import { ListWatch, type ListFilter } from "./list-watch";
 import type { State } from "../sessions/types";
+import { ParentNotifier, type NotifyTiming } from "../sessions/notify-parent";
 
 // jsonl（会話の履歴）から返す messages の番号の印。jsonl の位置はノードを起動し直しても変わらないので、決まった値にする
 export const HISTORY_EPOCH = "history";
@@ -55,6 +56,9 @@ export type Deps = {
   places?: PlacesScanner; // places の走査（試験で止まる fs に差し替える）。無ければ本物の fs
   listWatch?: { tickMs?: number; debounceMs?: number }; // 一覧の変化を流す間隔（試験で短くする）
   teleport?: TeleportDeps; // セッションを別のノードへ移す（SDK の関数、git、Claude の設定ディレクトリ）。無ければ teleport の道は 501
+  // エージェントが立てた子のターンの終わり、承認待ち、思わぬ終わり方を親のセッションに知らせる（src/sessions/notify-parent.ts）。
+  // false で知らせない。無ければ既定の間隔で知らせる（試験は間隔を短くして渡す）
+  notifyParent?: false | NotifyTiming;
 };
 
 // teleport の取り込みは clone を含むので、中継の最初の応答を長く待つ。Cloudflare は応答の無いまま 100 秒前後で切るので、その手前
@@ -88,7 +92,53 @@ export class Sessions {
   private cache = new Map<string, CacheEntry>();
   private realRoots?: Promise<string[]>;
   private depths = new Map<string, number>(); // 作ったときに刻んだ深さ。台帳と同じくメモリだけ
-  constructor(private d: Deps) {}
+  private notifier?: ParentNotifier;
+  constructor(private d: Deps) {
+    if (d.notifyParent !== false) {
+      const n = new ParentNotifier({ ...d.notifyParent, nodeName: d.nodeName, resolveParent: (s) => this.parentOf(s), historyBase: (id) => d.store.historyBase(id) });
+      this.notifier = n;
+      d.store.onEvent((drv, ev) => n.observe(drv, ev));
+    }
+  }
+
+  // 子の parent（agent:<ノード>/<sid8>/<役割>）から、知らせを送る親を決める。同じノードで生きているものだけ。
+  // 台帳（node、pty）を先に探し、無ければ端末のセッション。先頭8文字で2つ以上に当たれば決めない。
+  // 受け口の子は、受け口ではなく受け口の依頼主に送る。受け口は子を立てて渡したら手を離し、依頼主が子と直接話すため。
+  // 親を上へたどって子に戻るなら送らない（子が止まった親を resume すると、親の parent が子になり、知らせが往復し続ける）
+  private async parentOf(child: SessionSummary): Promise<Driver | undefined> {
+    let a = child.parent ? parseAgent(child.parent) : undefined;
+    if (a?.sid && a.node === this.d.nodeName && a.role === "lobby") {
+      const sid = a.sid;
+      // 受け口のセッションは手が空いて止まっていてもよい。台帳（終わったものも30分残る）、無ければ過去の一覧から親を読む
+      const inStore = this.d.store.list().filter((s) => s.id.startsWith(sid));
+      const lobbies = inStore.length ? inStore : (await this.past().catch(() => [])).filter((s) => s.id.startsWith(sid));
+      a = lobbies.length === 1 && lobbies[0]!.parent ? parseAgent(lobbies[0]!.parent) : undefined;
+      if (a?.role === "lobby") return undefined;
+    }
+    if (!a?.sid || a.node !== this.d.nodeName) return undefined;
+    const sid = a.sid;
+    const live = this.d.store.list().filter((s) => s.id.startsWith(sid) && s.id !== child.id && s.state !== "exited");
+    let parent: Driver | undefined;
+    if (live.length > 1) return undefined;
+    if (live.length === 1) parent = this.d.store.get(live[0]!.id);
+    else {
+      const terms = (await this.agents()).filter((t) => t.sessionId?.startsWith(sid) && t.sessionId !== child.id);
+      if (terms.length !== 1) return undefined;
+      parent = this.d.terminalFor(terms[0]!);
+    }
+    if (!parent) return undefined;
+    // 輪の検査。台帳の親だけをたどる（端末のセッションは parent を持たない）
+    let up: SessionSummary | undefined = parent.summary();
+    for (let i = 0; up && i < DEPTH_HOPS; i++) {
+      const p: ReturnType<typeof parseAgent> = up.parent ? parseAgent(up.parent) : undefined;
+      if (!p?.sid || p.node !== this.d.nodeName) break;
+      const psid = p.sid;
+      if (child.id.startsWith(psid)) return undefined;
+      const next: SessionSummary[] = this.d.store.list().filter((s) => s.id.startsWith(psid) && s.state !== "exited");
+      up = next.length === 1 ? next[0] : undefined;
+    }
+    return parent;
+  }
 
   // 深さをたどる道具。別のノードへは呼び手のまま中継で GET /api/depth を聞く
   private tracer(caller: Caller): DepthTracer {
@@ -361,6 +411,8 @@ export class Sessions {
   async remove(id: string) {
     const driver = await this.must(id);
     if (!driver.capabilities.stop) throw new HttpError(409, { error: "capability stop not available" });
+    // API で止めた子の終わりは親に知らせない。stop_session は呼び手を名乗らないので、親が止めたのか人が止めたのかは見分けない
+    this.notifier?.suppress(driver.id);
     await driver.stop();
     this.d.store.remove(id);
     // 台帳から消したセッションは、終わったセッションの一覧から出す。立ててすぐ止めた子が一覧から消えないように
@@ -424,6 +476,7 @@ export class Sessions {
     if (!fork && info.live) {
       const live = this.d.store.get(id);
       if (live && live.capabilities.stop) {
+        this.notifier?.suppress(id); // 移すために止めた。親に「終わった」と知らせない
         await live.stop();
         this.d.store.remove(id);
       } else {
