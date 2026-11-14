@@ -4,8 +4,9 @@ import { HttpError, json, toResponse } from "./errors";
 import type { Caller } from "../identity/identity";
 import { installerScript } from "../join/installer";
 import { bundle } from "../join/bundle";
-import { BUNDLE_PATH, CLI_NAME, LEGACY_BUNDLE_PATH, MCP_PATH, SKILL_MD_PATH } from "../names";
+import { BUNDLE_PATH, CLI_NAME, LEGACY_BUNDLE_PATH, MCP_PATH, PWA_PATH, SKILL_MD_PATH, SW_PATH } from "../names";
 import { pageHtml } from "../web/page";
+import { pwaAsset, SW_JS } from "../web/pwa";
 import { mcpHandler, type ApiCall } from "../mcp/server";
 import { skillMd } from "../mcp/skill-md";
 import { isPtyHook, ptyHook, terminalInput, terminalResize, terminalStream } from "./terminal";
@@ -37,7 +38,7 @@ function originOf(req: Request, url: URL): string {
   return `${scheme}://${host}`;
 }
 
-// 認証の要らない道。インストーラ、その実行物、/skill.md
+// 認証の要らない道。インストーラ、その実行物、/skill.md、PWA の manifest とアイコン
 async function publicRoute(req: Request, url: URL, appRoot: string): Promise<Response> {
   if (req.method !== "GET") throw new HttpError(405, { error: "method not allowed" });
   if (url.pathname === "/install") {
@@ -49,11 +50,15 @@ async function publicRoute(req: Request, url: URL, appRoot: string): Promise<Res
   // Cloudflare は .gz を既定で cache するので、古い実行物を配らないよう no-store を付ける。
   // 旧のパスは、まだ更新していないノードの ccn update が取りに来るので移行の間は同じものを配る
   if (url.pathname === BUNDLE_PATH || url.pathname === LEGACY_BUNDLE_PATH) return new Response(bundle(appRoot), { headers: { "content-type": "application/gzip", "cache-control": "no-store" } });
+  if (url.pathname.startsWith(`${PWA_PATH}/`)) {
+    const r = await pwaAsset(url.pathname, new URL(originOf(req, url)).host);
+    if (r) return r;
+  }
   throw new HttpError(404, { error: "not found" });
 }
 
-// 呼び手の解決をしない経路（インストーラの配布と /skill.md）
-const isPublic = (path: string) => path === "/install" || path.startsWith("/install/") || path === SKILL_MD_PATH;
+// 呼び手の解決をしない経路（インストーラの配布、/skill.md、PWA の manifest とアイコン）。Access の Bypass アプリ（names.ts の PUBLIC_PATHS）と合わせる
+const isPublic = (path: string) => path === "/install" || path.startsWith("/install/") || path === SKILL_MD_PATH || path.startsWith(`${PWA_PATH}/`);
 
 export function createApp(deps: Deps) {
   const s = new Sessions(deps);
@@ -129,6 +134,10 @@ async function route(req: Request, s: Sessions, caller: Caller, store: Deps["sto
   const m = req.method;
   if ((url.pathname === "/" || url.pathname === "/index.html") && m === "GET") {
     return new Response(await pageHtml(), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+  }
+  // Service Worker は scope を / にするためルートに置く。Access の裏のままにする
+  if (url.pathname === SW_PATH && m === "GET") {
+    return new Response(SW_JS, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache" } });
   }
   if (parts[0] === "api") {
     if (parts[1] === "host" && parts.length === 2 && m === "GET") return json(await s.host());

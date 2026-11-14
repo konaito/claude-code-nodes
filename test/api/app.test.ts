@@ -527,3 +527,46 @@ test("POST /api/sessions passes the lobby's settings file only to sessions in th
   expect([0, 1, 2].map(settingsOf)).toEqual([file, file, file]);
   expect([3, 4, 5].map(settingsOf)).toEqual([undefined, undefined, undefined]);
 });
+
+// --- PWA（manifest、アイコン、Service Worker） ---
+test("PWA manifest and icons are public, and the manifest is root-relative and named after the host", async () => {
+  const { app } = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "no"); } } });
+  const r = await app.fetch(new Request("http://127.0.0.1/pwa/manifest.webmanifest", { headers: { host: "ccn-vm.fybe.jp", "x-forwarded-host": "ccn-vm.fybe.jp" } }));
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toContain("application/manifest+json");
+  const m = (await r.json()) as { short_name: string; start_url: string; scope: string; display: string; theme_color: string; icons: Array<{ src: string; sizes: string; purpose: string }> };
+  expect(m.short_name).toBe("ccn-vm");
+  expect([m.start_url, m.scope, m.display, m.theme_color]).toEqual(["/", "/", "standalone", "#ffffff"]);
+  expect(m.icons.map((i) => `${i.sizes} ${i.purpose}`)).toEqual(["192x192 any", "512x512 any", "512x512 maskable"]);
+  const entry = (await (await app.fetch(new Request("http://127.0.0.1/pwa/manifest.webmanifest", { headers: { host: "ccn.fybe.jp" } }))).json()) as { short_name: string };
+  expect(entry.short_name).toBe("ccn");
+  const local = (await (await app.fetch(req("/pwa/manifest.webmanifest"))).json()) as { short_name: string };
+  expect(local.short_name).toBe("ccn");
+  for (const src of [...m.icons.map((i) => i.src), "/pwa/icon-180.png"]) {
+    const icon = await app.fetch(req(src));
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toBe("image/png");
+    const png = new Uint8Array(await icon.arrayBuffer());
+    expect([...png.slice(1, 4)].map((c) => String.fromCharCode(c)).join("")).toBe("PNG");
+  }
+  expect((await app.fetch(req("/pwa/nope.png"))).status).toBe(404);
+  expect((await app.fetch(req("/pwa/../api/host"))).status).not.toBe(200);
+});
+
+test("the Service Worker and the page stay behind the identity check", async () => {
+  const denied = harness({ identity: { callerOf: async () => { throw new AccessDenied(401, "no"); } } });
+  expect((await denied.app.fetch(req("/sw.js"))).status).toBe(401);
+  expect((await denied.app.fetch(req("/"))).status).toBe(401);
+  const { app } = harness();
+  const sw = await app.fetch(req("/sw.js"));
+  expect(sw.status).toBe(200);
+  expect(sw.headers.get("content-type")).toContain("javascript");
+  const body = await sw.text();
+  expect(body).not.toContain("caches");
+  expect(body).not.toContain("respondWith");
+  const page = await (await app.fetch(req("/"))).text();
+  expect(page).toContain('<link rel="manifest" href="/pwa/manifest.webmanifest" crossorigin="use-credentials">');
+  expect(page).toContain('<link rel="apple-touch-icon" href="/pwa/icon-180.png">');
+  expect(page).toContain('navigator.serviceWorker.register("/sw.js", { scope: "/" })');
+  expect(page).not.toContain("%%");
+});

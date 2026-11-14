@@ -54,7 +54,7 @@ export async function ensureAccessApp(cf: CfRunner, o: { name: string; legacyNam
   return { id: app.id, aud: app.aud };
 }
 
-// Bypass アプリ（BYPASS_APP）。<host>/install と <host>/skill.md（PUBLIC_PATHS）だけ Access を外す。1アプリの domain は 50 件まで
+// Bypass アプリ（BYPASS_APP）。<host>/install、<host>/skill.md、<host>/pwa（PUBLIC_PATHS）だけ Access を外す。1アプリの domain は 50 件まで
 export async function ensureBypassApp(cf: CfRunner, o: { name: string; legacyNames?: string[]; hosts: string[] }): Promise<{ id: string }> {
   const app = await ensureApp(cf, o.name, o.legacyNames ?? [], appBody({
     name: o.name, hosts: o.hosts.flatMap((h) => PUBLIC_PATHS.map((p) => `${h}${p}`)),
