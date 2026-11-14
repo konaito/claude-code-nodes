@@ -57,7 +57,6 @@ export const SERVICE_TOKEN = "ccn-node";           // ノード用サービス�
 export const LEGACY_ACCESS_APP = "cc";
 export const LEGACY_BYPASS_APP = "cc-install";
 export const LEGACY_SERVICE_TOKEN = "cc-node";
-export const ENTRY_DOMAIN = "ccn.fybe.jp";         // 入口の既定のホスト名
 
 // MCP の口と、公開する説明書。/skill.md の正本は <appRoot>/skills/<PUBLIC_SKILL_NAME>/SKILL.md（束に入り、利用者の機械にはリンクしない）
 // PTY のセッションの hooks（http）の宛先。<PTY_HOOK_PATH>/<sessionId> に claude が POST する。認証は Access ではなくセッションごとの token
