@@ -182,3 +182,38 @@ test("resume with defer waits for the first send, then starts claude with resume
   expect(d.id).toBe(id);
   await d.stop();
 });
+
+test("prepare が返した環境で claude を起動する。遅延起動では1通目の send のときに呼ぶ（アカウントの選択）", async () => {
+  const fake = makeFakeQuery();
+  const calls: string[] = [];
+  const prepare = async (cwd: string) => { calls.push(cwd); return { PATH: "/bin", CLAUDE_CONFIG_DIR: "/p/shared" }; };
+  const d = await NodeDriver.start({ cwd: "/tmp", sessionId: "s-1" }, { queryFn: fake.queryFn, nodeName: "vm", prepare });
+  expect(calls).toEqual([]);
+  await d.send("hi");
+  await until(() => fake.received.length === 1);
+  expect(calls).toEqual(["/tmp"]);
+  expect(fake.lastOptions.env).toEqual({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/p/shared" });
+  await d.stop();
+});
+
+test("prepare が undefined を返すか落ちたら env を渡さない（process.env を引き継ぐ）", async () => {
+  for (const prepare of [async () => undefined, async () => { throw new Error("boom"); }]) {
+    const fake = makeFakeQuery();
+    const d = await NodeDriver.start({ cwd: "/tmp", prompt: "hi" }, { queryFn: fake.queryFn, nodeName: "vm", prepare });
+    expect(d.id).toBe("fake-session");
+    expect("env" in fake.lastOptions).toBe(false);
+    await d.stop();
+  }
+});
+
+test("prepare の間に止めたら claude を起動しない", async () => {
+  const fake = makeFakeQuery();
+  let release!: () => void;
+  const prepare = () => new Promise<undefined>((r) => { release = () => r(undefined); });
+  const d = await NodeDriver.start({ cwd: "/tmp", sessionId: "s-2" }, { queryFn: fake.queryFn, nodeName: "vm", prepare });
+  await d.send("hi");
+  await d.stop();
+  release();
+  await settle();
+  expect(fake.lastOptions).toBeUndefined();
+});
