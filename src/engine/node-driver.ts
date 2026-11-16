@@ -23,7 +23,12 @@ export type StartOptions = {
   settings?: string;
   mcpServers?: Record<string, unknown>;
 };
-export type NodeDeps = { queryFn: QueryFn; nodeName: string; caller?: string; initTimeoutMs?: number; claudePath?: string };
+export type NodeDeps = {
+  queryFn: QueryFn; nodeName: string; caller?: string; initTimeoutMs?: number; claudePath?: string;
+  // claude を起動する直前に呼ぶ。返した環境で起動する（アカウントの選択、src/engine/account.ts）。undefined なら process.env のまま。
+  // 遅延起動では1通目の send のときに呼ぶので、作ってから時間が空いても、その時点の使用率で選ぶ
+  prepare?: (cwd: string) => Promise<Record<string, string | undefined> | undefined>;
+};
 
 
 type Waiting = { p: PendingPermission; input: Record<string, unknown>; resolve: (r: PermissionResult) => void };
@@ -83,6 +88,12 @@ export class NodeDriver implements Driver {
     const opts = this.opts;
     this.init = new Promise<void>((resolve, reject) => { this.initResolve = resolve; this.initReject = reject; });
     this.init.catch(() => {}); // race の後に reject しても未処理にしない
+    if (!this.deps.prepare) { this.run(undefined); return; }
+    // 用意の間に止められたら起動しない。用意が落ちたら今まで通り（process.env）で起動する
+    void this.deps.prepare(opts.cwd).catch(() => undefined).then((env) => { if (this.state !== "exited") this.run(env); });
+  }
+  private run(env: Record<string, string | undefined> | undefined) {
+    const opts = this.opts;
     try {
       this.q = this.deps.queryFn({
         prompt: this.input,
@@ -103,6 +114,8 @@ export class NodeDriver implements Driver {
           abortController: this.abort,
           // 同梱の実行ファイルではなく、ログイン済みの PATH の claude を使う（版を揃えるため）
           pathToClaudeCodeExecutable: this.deps.claudePath,
+          // SDK の env は process.env を置き換える。prepare は process.env に足したものを返す
+          ...(env ? { env } : {}),
           canUseTool: (toolName, input, { signal, suggestions }) => this.onPermission(toolName, input, signal, suggestions),
         },
       });

@@ -1,6 +1,7 @@
 // 組み立て。どの実装を使うかはここだけで決める。本物の SDK、claude、受信ソケットをつないで 127.0.0.1 で待つ
 import { query, listSessions, getSessionMessages, getSessionInfo, importSessionToStore, forkSession, deleteSession } from "@anthropic-ai/claude-agent-sdk";
 import { homedir, loadavg, userInfo } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { loadConfig, type Config } from "./config";
 import { createApp, type Deps } from "./api/app";
@@ -14,6 +15,7 @@ import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
 import { PtyDriver, bunPtySpawn } from "./engine/pty-driver";
 import { listAgents, withoutHeadless, bunRunner } from "./engine/agents";
 import { claudeConfigFile, gitRootOf, trustDir } from "./engine/trust";
+import { accountPreparer, bunExec, camAccount } from "./engine/account";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
 import { Relay } from "./relay/relay";
@@ -24,6 +26,7 @@ import { claudeConfigDir } from "./teleport/transcript";
 
 export function buildDeps(cfg: Config, configFile?: string): Deps {
   const registry = registryFor(cfg);
+  const prepare = prepareAccount();
   return {
     nodeName: cfg.name,
     roots: cfg.roots,
@@ -31,9 +34,11 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     store: new SessionStore({ idleStopMs: (cfg.idleStopMinutes ?? DEFAULT_IDLE_STOP_MS / 60_000) * 60_000 }),
     identity: identityFor(cfg),
     history: new History({ listSessions, getSessionMessages, getSessionInfo }),
-    startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined }),
+    // 子の claude は cam auto と同じアカウントで起動する（src/engine/account.ts）。node の子は起動の直前（遅延起動なら1通目）に選ぶ
+    startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined, prepare }),
     // PTY の子。hooks はノード自身（127.0.0.1）に送らせる。状態の照らし合わせは `claude agents --json` の pid で引く
-    startPty: (opts, caller) => PtyDriver.start(opts, {
+    startPty: async (opts, caller) => PtyDriver.start(opts, {
+      env: await prepare(opts.cwd),
       spawn: bunPtySpawn, hookBase: `http://127.0.0.1:${cfg.port}`, caller: caller.id, claudePath: Bun.which("claude") ?? undefined,
       agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
       // dir は起動した cwd。見つからなければ（cwd の書き方が違うときなど）全部のプロジェクトから探す
@@ -54,6 +59,19 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     notifyParent: cfg.notifyParent === false ? false : undefined,
     teleport: { fns: { importSessionToStore, forkSession, deleteSession, getSessionInfo }, git: bunGit, configDir: claudeConfigDir() },
   };
+}
+
+// 子のアカウントの用意。cam は launchd の PATH（~/.cam/bin を含まない）でも見つかるよう、~/.cam/bin/cam も見る
+function prepareAccount() {
+  const home = homedir();
+  const fallback = join(home, ".cam", "bin", "cam");
+  const cam = Bun.which("cam") ?? (existsSync(fallback) ? fallback : undefined);
+  const pick = camAccount({ cam, profilesDir: join(home, ".cam", "profiles"), exec: bunExec, log: (m) => console.log(m) });
+  return accountPreparer({
+    pick, env: () => process.env,
+    sync: async (name) => { if (cam) await bunExec([cam, "sync", name], 5000); },
+    trust: (cwd, configFile) => trustDir(cwd, { configFile, gitRoot: gitRootOf(bunRunner) }),
+  });
 }
 
 // 呼び手。Access の teamDomain と aud があれば JWT を検証する（仕様 2.1）。無ければ 127.0.0.1 の試験用にヘッダだけを見る
