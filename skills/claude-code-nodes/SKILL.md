@@ -132,7 +132,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | `ccn:list_sessions` | 1つのノードのセッション一覧。既定は終わっていないものだけ | `peer`、`parent`、`include_exited`、`limit` |
 | `ccn:get_session` | 1つの詳細、保留中の承認、`cursor` | `peer`、`session` |
 | `ccn:list_places` | 受け口、許された根、最近使われた場所、行き先の候補（`places`） | `peer`、`limit`、`query`、`places_limit` |
-| `ccn:create_session` | 子を立てる。`cwd` を省くと受け口、`prompt` を省くと1通目を待つ。`terminal` で端末のセッション | `peer`、`cwd`、`prompt`、`permission_mode`、`model`、`resume`、`fork`、`terminal`、`name`、`cols`、`rows`、`as`、`as_session` |
+| `ccn:create_session` | 子を立てる。`cwd` を省くと受け口、`prompt` を省くと1通目を待つ。`terminal` で端末のセッション。`succeed` で止まったセッションを後継に引き継ぐ | `peer`、`cwd`、`prompt`、`permission_mode`、`model`、`resume`、`fork`、`succeed`、`terminal`、`name`、`cols`、`rows`、`as`、`as_session` |
 | `ccn:send_message` | 文を1つ送り、送る前の `cursor` を返す | `peer`、`session`、`text`、`as`、`as_session` |
 | `ccn:read_messages` | `after` より後を読み、ターンの終わりまで最大50秒待つ | `peer`、`session`、`after`、`wait_seconds`、`max_chars` |
 | `ccn:answer_permission` | 子（node、pty）の権限プロンプトに allow か deny で答える | `peer`、`session`、`behavior`、`request_id`、`message` |
@@ -189,6 +189,30 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 - 同じ子から続けて来るときは、まとめて間を空ける。読み済みの知らせには返事が要らない。ノードの設定 `notifyParent: false` で止まる。
 
 返事を急かす文は送らない。子のターンが乱れる。様子は `ccn:get_session` で見る。
+
+### 止まったセッションを引き継ぐ
+
+利用上限で止まったセッションは、同じセッションに文を送っても同じアカウントのまま止まり続ける。`ccn:create_session` に `resume=<止まったセッションの id>` と `succeed=true` を渡すと、ノードが会話を fork した後継を立て、前任の代わりにする。HTTP では `POST /api/sessions` に `resume`、`fork: true`、`succeed: true` を渡す。
+
+- 後継の id は新しい。後継は前任の `parent` と深さを継ぐ。呼び手の子にはならない。
+- `cwd`、権限モード、モデル、種類は、渡さなければ前任と同じになる。
+- 前任の子は後継の子になる。一覧の `parent` と、子の知らせの宛先が後継に移る。
+- 後継が起動したら、ノードが前任を止める。前任の `exitReason` は `succeeded: continued as <後継の id>` になる。前任は `resume` しない。同じ作業が二重に進むため。
+- 応答の `succeeded` は `{ from, stopped, adopted }`。`stopped` が false のときは `note` に理由がある。人が端末で起動した前任はノードが止められないので、自分で閉じる。
+- 後継が起動しなかったときは 502（`code: successor_failed`）で、前任と子は変わらない。
+- 枠の残るアカウントが無いときは 409（`code: no_account`）で断る。`nextAvailable` に、次に使えるアカウントと時刻（`at`、ミリ秒）が入る。
+- 同じ前任を2回は引き継げない。2回目は 409（`code: already_succeeded`）で、`successor` に後継の id が入る。
+- 後継の文脈には前任の id が残る。`prompt` で「セッションの id が変わった」と伝える。
+- 親が agent の後継は、ほかの子と同じく、待機のまま10分で自動で止まる。`prompt` を渡すか、立てた後に文を送る。
+- 付け替えはノードのメモリにだけある。ノードを起動し直すと、子の `parent` は前任の名前に戻る。
+
+### どのアカウントで動いているか
+
+cam（Claude Account Manager）がある機械では、ノードは子を cam が選んだアカウントで起動する。一覧と詳細の `account` に cam のコマンド名、`accountEmail` に email が載り、`ccn:create_session` の結果にも入る。
+
+- node の子は、claude を起動したときに選ぶ。`prompt` を省いて立てた子は、1通目が届くまで `account` が無い。
+- 人が端末で起動したセッションは、読めたときだけ載る。
+- 結果に `accountUnavailable` があれば、枠の残るアカウントが無く、子はノードのログインで起動している。利用上限で止まるかもしれない。
 
 ## 権限モード
 

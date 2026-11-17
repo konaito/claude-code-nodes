@@ -81,7 +81,15 @@ function accountSetup() {
     sync: async (name) => { if (cam) await bunExec([cam, "sync", name], 5000); },
     trust: (cwd, configFile) => trustDir(cwd, { configFile, gitRoot: gitRootOf(bunRunner) }),
   });
-  return { pick, prepare, ofPid: pidAccount({ profilesDir, run: bunRunner, emailOf: pick.emailOf }) };
+  // 端末のセッションの email。cam usage をまだ読んでいなければ（ノードの起動の直後）、プロファイルの .claude.json から読む
+  const fromFile = new Map<string, Promise<string | undefined>>();
+  const emailOf = (name: string) => {
+    const known = pick.emailOf(name);
+    if (known) return known;
+    if (!fromFile.has(name)) fromFile.set(name, emailIn(join(profilesDir, name, ".claude.json")));
+    return fromFile.get(name)!;
+  };
+  return { pick, prepare, ofPid: pidAccount({ profilesDir, run: bunRunner, emailOf }) };
 }
 
 // 呼び手。Access の teamDomain と aud があれば JWT を検証する（仕様 2.1）。無ければ 127.0.0.1 の試験用にヘッダだけを見る
@@ -98,10 +106,12 @@ function registryFor(cfg: Config): Registry {
   return new StaticRegistry([{ name: cfg.name, url: entryOf(cfg) ?? `http://127.0.0.1:${cfg.port}`, status: "healthy", self: true }]);
 }
 
-async function account(): Promise<string | undefined> {
+const account = () => emailIn(join(homedir(), ".claude.json"));
+// Claude Code の設定ファイルから、ログインしているアカウントの email を読む。読めなければ undefined
+async function emailIn(file: string): Promise<string | undefined> {
   try {
-    const j = (await Bun.file(join(homedir(), ".claude.json")).json()) as { oauthAccount?: { emailAddress?: string } };
-    return j.oauthAccount?.emailAddress;
+    const j = (await Bun.file(file).json()) as { oauthAccount?: { emailAddress?: string } };
+    return j.oauthAccount?.emailAddress || undefined;
   } catch { return undefined; }
 }
 

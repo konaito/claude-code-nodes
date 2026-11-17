@@ -41,6 +41,7 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
   ${CLI_NAME} show [<対象>]                           1つの詳細と保留中の承認（対象を省くと、Claude Code の中なら自分のセッション）
   ${CLI_NAME} new [<dir> [<文>]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--succeed] [--as <役割>]
                                                        dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
+                                                       --resume <id> --succeed は引き継ぎ。止まったセッションの会話を fork した後継を立て、親と子を後継へ移して前任を止める
   ${CLI_NAME} send <対象> <文|-> [--as <役割>]         文を送る（- は標準入力）。seq を控える
   ${CLI_NAME} read <対象> [--after <seq>] [--wait <秒>] 返事を読む。終了コード 0 返事、2 時間切れ、3 権限待ち、4 終了
   ${CLI_NAME} run <対象> <文> [--wait <秒>]            send のあと read

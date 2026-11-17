@@ -119,7 +119,7 @@ export function accountPreparer(d: PrepareDeps): (cwd: string) => Promise<Prepar
 export type PidAccountDeps = {
   profilesDir: string;
   run: (argv: string[]) => Promise<{ stdout: string; code: number | null }>;
-  emailOf?: (name: string) => string | undefined;
+  emailOf?: (name: string) => string | undefined | Promise<string | undefined>;
 };
 const PID_CACHE_MAX = 256;
 export function pidAccount(deps: PidAccountDeps): (pid: number | undefined, startedAt?: number) => Promise<{ account: string; accountEmail?: string } | undefined> {
@@ -139,7 +139,7 @@ export function pidAccount(deps: PidAccountDeps): (pid: number | undefined, star
     }
     const name = await p;
     if (!name) return undefined;
-    const email = deps.emailOf?.(name);
+    const email = await Promise.resolve(deps.emailOf?.(name)).catch(() => undefined);
     return { account: name, ...(email ? { accountEmail: email } : {}) };
   };
 }
