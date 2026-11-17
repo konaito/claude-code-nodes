@@ -39,7 +39,7 @@ export const USAGE = `使い方: ${CLI_NAME} <命令> [引数] [--旗]
                                                        行き先の候補（roots と Documents の直下、README の先頭、remote、最近使ったか）。語で絞る
   ${CLI_NAME} ls [--peer <名>] [--mine]               セッション一覧（--mine は自分が立てた子）
   ${CLI_NAME} show [<対象>]                           1つの詳細と保留中の承認（対象を省くと、Claude Code の中なら自分のセッション）
-  ${CLI_NAME} new [<dir> [<文>]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+  ${CLI_NAME} new [<dir> [<文>]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--succeed] [--as <役割>]
                                                        dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
   ${CLI_NAME} send <対象> <文|-> [--as <役割>]         文を送る（- は標準入力）。seq を控える
   ${CLI_NAME} read <対象> [--after <seq>] [--wait <秒>] 返事を読む。終了コード 0 返事、2 時間切れ、3 権限待ち、4 終了
@@ -190,7 +190,11 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
     case "new": {
       // ccn new → 受け口、ccn new <dir> → その場所、どちらも1通目は ccn send で送る。ccn new <dir> <文> は今までどおり
       const c = clientFor(ctx.cfg, str(flags.peer), str(flags.as), ctx.env);
-      const body: Record<string, unknown> = { permissionMode: str(flags.mode) ?? "bypassPermissions" };
+      // --succeed は引き継ぎ。前任（--resume）の会話を fork した後継を立て、親と子を後継へ移して前任を止める。
+      // 場所、権限モード、モデルは省けば前任のものを継ぐので、既定の bypassPermissions を付けない
+      const succeed = flags.succeed === true;
+      if (succeed && !str(flags.resume)) throw new CliError(1, "--succeed は --resume <前任の id> と一緒に使う");
+      const body: Record<string, unknown> = succeed ? { succeed: true, fork: true, ...(str(flags.mode) ? { permissionMode: str(flags.mode) } : {}) } : { permissionMode: str(flags.mode) ?? "bypassPermissions" };
       if (rest[0] !== undefined) {
         // 相対パスはノードの作業ディレクトリ（ホーム）で解かれてしまうので、手元なら CLI の場所で解き、相手なら断る
         let cwd = rest[0];
@@ -203,8 +207,9 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       if (rest[1] !== undefined) body.prompt = rest[1];
       if (str(flags.model)) body.model = str(flags.model);
       if (str(flags.resume)) body.resume = str(flags.resume);
-      let r: { id: string };
-      try { r = await api<{ id: string }>(c, "POST", "/api/sessions", body, ctx.fetchFn); }
+      type Created = { id: string; account?: string; succeeded?: { stopped?: boolean; adopted?: string[]; note?: string } };
+      let r: Created;
+      try { r = await api<Created>(c, "POST", "/api/sessions", body, ctx.fetchFn); }
       catch (e) {
         // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
         if (e instanceof CliError && body.prompt === undefined && !body.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
@@ -214,6 +219,11 @@ async function run(cmd: string | undefined, rest: string[], flags: Parsed["flags
       }
       rememberSeq(`${c.peer}/${r.id}`, 0, sendsPath(ctx));
       ctx.out(`${c.peer}/${r.id}`);
+      if (succeed) {
+        // succeed を知らない古い版のノードは、黙ってただの fork を立てる
+        if (!r.succeeded) throw new CliError(1, `${c.peer} のノードは引き継ぎ（--succeed）に対応していない古い版。fork だけが立ち、前任は止まらず、子も移っていない。${c.peer} で ${CLI_NAME} update する`);
+        ctx.out(`前任: ${r.succeeded.stopped ? "止めた" : `止められなかった（${r.succeeded.note ?? "理由は不明"}）`}、移した子: ${r.succeeded.adopted?.length ?? 0}${r.account ? `、アカウント: ${r.account}` : ""}`);
+      }
       return 0;
     }
     case "send": { need(2, "<対象> と <文>"); return send(ctx, rest[0]!, rest[1]!, flags); }

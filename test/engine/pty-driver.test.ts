@@ -531,3 +531,32 @@ test("a screen that stops reading before the live part does not stay subscribed"
   p.emit("x".repeat(100));
   expect((d as unknown as { subs: Set<unknown> }).subs.size).toBe(0);
 });
+
+test("summary にアカウントを載せ、setParent で parent を付け替える（引き継ぎ）", async () => {
+  const { d } = await start({}, { account: "coo", accountEmail: "coo@example.com" });
+  expect(d.summary()).toMatchObject({ account: "coo", accountEmail: "coo@example.com", parent: "agent:vm/abcd1234/town" });
+  d.setParent("agent:vm/ffff0000/town");
+  expect(d.summary().parent).toBe("agent:vm/ffff0000/town");
+  const plain = await start();
+  expect("account" in plain.d.summary()).toBe(false);
+  await d.stop();
+  await plain.d.stop();
+});
+
+test("started は最初の hook が届いたら true。届く前に時間切れか、claude が先に終わったら false", async () => {
+  const a = await start();
+  const waiting = a.d.started(1000);
+  await a.d.hook({ hook_event_name: "SessionStart" });
+  expect(await waiting).toBe(true);
+  expect(await a.d.started(1)).toBe(true); // 届いた後は待たない
+  await a.d.stop();
+
+  const b = await start();
+  expect(await b.d.started(10)).toBe(false);
+  await b.d.stop();
+
+  const c = await start();
+  const dying = c.d.started(1000);
+  c.p.exit(1);
+  expect(await dying).toBe(false);
+});

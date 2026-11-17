@@ -38,6 +38,8 @@ export type PtyDeps = {
   spawn: PtySpawn;
   hookBase: string;         // hooks の宛先。ノード自身（http://127.0.0.1:<port>）
   caller?: string;          // 立てた呼び手。一覧の parent
+  account?: string;         // 起動のときに選んだアカウント（cam のコマンド名）。一覧の account
+  accountEmail?: string;
   claudePath?: string;
   agentInfo?: (pid: number) => Promise<AgentInfo | undefined>; // 端末で答えた承認や Esc の後に状態を照らし合わせる
   maxBuffer?: number;       // 覚える末尾のバイト数。既定 2MB
@@ -169,12 +171,14 @@ export class PtyDriver implements Driver {
   private lastFlushAt = 0;
   // 今のターンの UserPromptSubmit を見た。見る前（起動の引数の文がまだ届いていない間）に agents が idle と言っても、ターンは終わっていない
   private turnSeen = false;
+  private parent?: string; // 立てた呼び手。引き継ぎで付け替わる（setParent）
 
   private constructor(private opts: PtyStartOptions, private deps: PtyDeps) {
     this.cols = opts.cols ?? 120;
     this.rows = opts.rows ?? 40;
     this.permissionMode = opts.permissionMode;
     this.screen = new Screen(this.cols, this.rows);
+    this.parent = deps.caller;
   }
 
   static async start(opts: PtyStartOptions, deps: PtyDeps): Promise<PtyDriver> {
@@ -206,8 +210,18 @@ export class PtyDriver implements Driver {
     return {
       id: this.id, kind: this.kind, capabilities: this.capabilities, cwd: this.opts.cwd, state: this.state,
       startedAt: this.startedAt, lastActivityAt: this.lastActivityAt, model: this.opts.model, permissionMode: this.permissionMode,
-      exitReason: this.exitReason, pid: this.proc?.pid, title: this.opts.name, parent: this.deps.caller,
+      exitReason: this.exitReason, pid: this.proc?.pid, title: this.opts.name, parent: this.parent,
+      ...(this.deps.account ? { account: this.deps.account } : {}), ...(this.deps.accountEmail ? { accountEmail: this.deps.accountEmail } : {}),
     };
+  }
+  setParent(parent: string) { this.parent = parent; }
+  // claude が起動した印（最初の hook。ふつうは SessionStart）を待つ。出れば true。先に終わったか、timeoutMs を過ぎたら false。
+  // 引き継ぎ（succeed）は、これが true になってから前任を止める
+  async started(timeoutMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ok = await Promise.race([this.ready.then(() => true), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), timeoutMs); })]);
+    clearTimeout(timer);
+    return ok && this.state !== "exited";
   }
 
   // 文は貼り付け（bracketed paste）で入れて Enter を押す。改行を含んでも1つの文になる（2026-11-12 に実機で確認）。

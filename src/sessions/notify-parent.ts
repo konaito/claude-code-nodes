@@ -8,6 +8,7 @@ import type { Driver, DriverEvent } from "../engine/driver";
 import { BusyError } from "../engine/driver";
 import type { PendingPermission, SessionSummary } from "./types";
 import { IDLE_STOP_PREFIX } from "./idle-stop";
+import { successorOf } from "./succeed";
 
 // 知らせの from 行の呼び手の頭。agent: で始めない（child.md は from agent: の文を親の依頼として扱う）
 export const NOTIFY_FROM_PREFIX = "ccn:";
@@ -168,7 +169,12 @@ export class ParentNotifier {
   private compose(s: SessionSummary, p: Pending): { text: string; turn?: boolean } | undefined {
     const who = `子 ${childLabel(s)}（${s.id.slice(0, 8)}）`;
     const node = this.d.nodeName;
-    if (p.exited) return { text: `${NOTIFY_TAG} ${who}が終わった: ${oneLine(p.exited, REASON_MAX)}。会話は create_session peer=${node} resume=${s.id} で続けられる` };
+    if (p.exited) {
+      // 引き継ぎで止まった前任。親が前任を resume して後継と同じ作業を二重に進めないよう、後継の id を伝える
+      const succ = successorOf(p.exited);
+      if (succ) return { text: `${NOTIFY_TAG} ${who}は ${succ.slice(0, 8)} に引き継がれて止まった。以後は send_message peer=${node} session=${succ} に送って（${s.id.slice(0, 8)} は resume しない）` };
+      return { text: `${NOTIFY_TAG} ${who}が終わった: ${oneLine(p.exited, REASON_MAX)}。会話は create_session peer=${node} resume=${s.id} で続けられる` };
+    }
     const perms = p.child.pending();
     if (perms.length) {
       const q = perms[0]!;

@@ -460,6 +460,45 @@ test("create_session terminal=true locally starts a pty session and returns its 
   expect(calls[0]).toMatchObject({ prompt: "from local via vm\n\ntask" });
 });
 
+test("create_session succeed=true は fork も付けて頼む。古い版の相手は succeeded を返さないので、ただの fork だったと伝える", async () => {
+  const { app, sent } = harness();
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "create_session", arguments: { peer: "pro", resume: "old-1", succeed: true, terminal: true, as: "meta", as_session: "abcd1234-0000" } }));
+  const post = sent.find((s) => s.method === "POST")!;
+  expect(JSON.parse(post.body)).toEqual({ terminal: true, resume: "old-1", fork: true, succeed: true });
+  expect(r.note).toContain("older ccn without succeed");
+  expect(r.succeeded).toBeUndefined();
+  // 古い版は parent を返さないので、呼び手を返す
+  expect(r.parent).toBe("agent:vm/abcd1234/meta");
+});
+
+test("create_session succeed=true は、ノードが返した parent、アカウント、succeeded をそのまま返す。断りの code と次に使えるアカウントも文に入る", async () => {
+  let none = false;
+  const forked = "22222222-0000-4000-8000-000000000000";
+  const { app, live } = harness({
+    account: async () => (none ? { none: { nextAvailable: { account: "b", at: 1794921000000 } } } : { name: "a" }),
+    teleport: { fns: { forkSession: async () => ({ sessionId: forked }), deleteSession: async () => {} } } as unknown as Deps["teleport"],
+    startNode: (async (opts: { resume?: string; cwd: string }) => { const d = new FakeDriver({ id: opts.resume ?? "new1", capabilities: caps(true) }); d.cwd = opts.cwd; d.state = "idle"; return d; }) as unknown as Deps["startNode"],
+  });
+  live.state = "idle";
+  live.cwd = realpathSync(tmpdir()); // 後継は前任の cwd を継ぐので、実在する場所にする
+  const c = await connect(app);
+  none = true;
+  const refused = await c.callTool({ name: "create_session", arguments: { resume: LIVE, succeed: true, as: "meta", as_session: "abcd1234-0000" } });
+  expect(refused.isError).toBe(true);
+  expect(text(refused)).toContain("409");
+  expect(text(refused)).toContain("code=no_account");
+  expect(text(refused)).toContain('nextAvailable={"account":"b","at":1794921000000}');
+  none = false;
+  const r = json(await c.callTool({ name: "create_session", arguments: { resume: LIVE, succeed: true, as: "meta", as_session: "abcd1234-0000" } }));
+  // 前任（LIVE）は parent を持たないので、後継の parent は呼び手になる
+  expect(r).toMatchObject({ id: forked, parent: "agent:vm/abcd1234/meta", succeeded: { from: LIVE, stopped: true, adopted: [] } });
+  expect(r.note).toBeUndefined();
+  const again = await c.callTool({ name: "create_session", arguments: { resume: LIVE, succeed: true } });
+  expect(text(again)).toContain("code=already_succeeded");
+  expect(text(again)).toContain(`successor=${forked}`);
+});
+
 // pty を resume で付け直したセッション（ノードの再起動の後に Claude Town が付け直すもの）。
 // 付ける前の会話は jsonl から履歴の位置で返し、付けた後は台帳の seq で返す。番号は会話の件数から続く
 const PTY = "77777777-aaaa-bbbb-cccc-dddddddddddd";

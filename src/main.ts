@@ -15,7 +15,7 @@ import { TerminalDriver, unixConnect } from "./engine/terminal-driver";
 import { PtyDriver, bunPtySpawn } from "./engine/pty-driver";
 import { listAgents, withoutHeadless, bunRunner } from "./engine/agents";
 import { claudeConfigFile, gitRootOf, trustDir } from "./engine/trust";
-import { accountPreparer, bunExec, camAccount } from "./engine/account";
+import { accountPreparer, bunExec, camAccount, pidAccount } from "./engine/account";
 import { StaticRegistry, type Registry } from "./registry/registry";
 import { CloudflareRegistry } from "./registry/cloudflare";
 import { Relay } from "./relay/relay";
@@ -26,7 +26,7 @@ import { claudeConfigDir } from "./teleport/transcript";
 
 export function buildDeps(cfg: Config, configFile?: string): Deps {
   const registry = registryFor(cfg);
-  const prepare = prepareAccount();
+  const acct = accountSetup();
   return {
     nodeName: cfg.name,
     roots: cfg.roots,
@@ -35,15 +35,22 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
     identity: identityFor(cfg),
     history: new History({ listSessions, getSessionMessages, getSessionInfo }),
     // 子の claude は cam auto と同じアカウントで起動する（src/engine/account.ts）。node の子は起動の直前（遅延起動なら1通目）に選ぶ
-    startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined, prepare }),
+    startNode: (opts, caller) => NodeDriver.start(opts, { queryFn: query, nodeName: cfg.name, caller: caller.id, claudePath: Bun.which("claude") ?? undefined, prepare: acct.prepare }),
+    // 作成の応答と引き継ぎが、選んだ結果（枠の残るアカウントが無いか）を読む。引き継ぎは fresh で取り直す
+    account: acct.pick,
+    // 端末のセッションのアカウントは、プロセスの環境の CLAUDE_CONFIG_DIR から読む
+    terminalAccount: (a) => acct.ofPid(a.pid, a.startedAt),
     // PTY の子。hooks はノード自身（127.0.0.1）に送らせる。状態の照らし合わせは `claude agents --json` の pid で引く
-    startPty: async (opts, caller) => PtyDriver.start(opts, {
-      env: await prepare(opts.cwd),
-      spawn: bunPtySpawn, hookBase: `http://127.0.0.1:${cfg.port}`, caller: caller.id, claudePath: Bun.which("claude") ?? undefined,
-      agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
-      // dir は起動した cwd。見つからなければ（cwd の書き方が違うときなど）全部のプロジェクトから探す
-      transcript: async (id, dir) => { const m = dir ? await getSessionMessages(id, { dir }).catch(() => []) : []; return m.length ? m : getSessionMessages(id); },
-    }),
+    startPty: async (opts, caller) => {
+      const p = await acct.prepare(opts.cwd);
+      return PtyDriver.start(opts, {
+        env: p.env, account: p.account, accountEmail: p.accountEmail,
+        spawn: bunPtySpawn, hookBase: `http://127.0.0.1:${cfg.port}`, caller: caller.id, claudePath: Bun.which("claude") ?? undefined,
+        agentInfo: async (pid) => (await listAgents(bunRunner)).find((a) => a.pid === pid),
+        // dir は起動した cwd。見つからなければ（cwd の書き方が違うときなど）全部のプロジェクトから探す
+        transcript: async (id, dir) => { const m = dir ? await getSessionMessages(id, { dir }).catch(() => []) : []; return m.length ? m : getSessionMessages(id); },
+      });
+    },
     // 子に渡すのと同じ環境（process.env。childEnv も SDK も CLAUDE_CONFIG_DIR を落とさない）から、claude が読む設定ファイルを決める
     trust: (cwd) => trustDir(cwd, { configFile: claudeConfigFile(process.env, homedir()), gitRoot: gitRootOf(bunRunner) }),
     // 一覧には裏方の `claude -p` を出さない。PTY の子の状態合わせ（agentInfo）には掛けない
@@ -61,17 +68,20 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
   };
 }
 
-// 子のアカウントの用意。cam は launchd の PATH（~/.cam/bin を含まない）でも見つかるよう、~/.cam/bin/cam も見る
-function prepareAccount() {
+// 子のアカウントの用意。cam は launchd の PATH（~/.cam/bin を含まない）でも見つかるよう、~/.cam/bin/cam も見る。
+// pick は選ぶ関数、prepare は起動の直前の用意、ofPid は端末のセッションのアカウント（プロセスの環境から読む）
+function accountSetup() {
   const home = homedir();
   const fallback = join(home, ".cam", "bin", "cam");
   const cam = Bun.which("cam") ?? (existsSync(fallback) ? fallback : undefined);
-  const pick = camAccount({ cam, profilesDir: join(home, ".cam", "profiles"), exec: bunExec, log: (m) => console.log(m) });
-  return accountPreparer({
+  const profilesDir = join(home, ".cam", "profiles");
+  const pick = camAccount({ cam, profilesDir, exec: bunExec, log: (m) => console.log(m) });
+  const prepare = accountPreparer({
     pick, env: () => process.env,
     sync: async (name) => { if (cam) await bunExec([cam, "sync", name], 5000); },
     trust: (cwd, configFile) => trustDir(cwd, { configFile, gitRoot: gitRootOf(bunRunner) }),
   });
+  return { pick, prepare, ofPid: pidAccount({ profilesDir, run: bunRunner, emailOf: pick.emailOf }) };
 }
 
 // 呼び手。Access の teamDomain と aud があれば JWT を検証する（仕様 2.1）。無ければ 127.0.0.1 の試験用にヘッダだけを見る

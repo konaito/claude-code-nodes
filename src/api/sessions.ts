@@ -13,7 +13,7 @@ import type { Identity, Caller } from "../identity/identity";
 import type { Registry } from "../registry/registry";
 import type { Relay } from "../relay/relay";
 import { withFromLine } from "../identity/from-line";
-import { parseAgent } from "../identity/agent-name";
+import { formatAgent, parseAgent } from "../identity/agent-name";
 import type { McpOptions } from "../mcp/server";
 import { HttpError } from "./errors";
 import { lobbySettingsFor, secretBases } from "../lobby/lobby";
@@ -23,6 +23,8 @@ import { DEPTH_HINT, DEPTH_HOPS, DEPTH_REFUSAL, DepthTracer, MAX_DEPTH, type Ses
 import { ListWatch, type ListFilter } from "./list-watch";
 import type { State } from "../sessions/types";
 import { ParentNotifier, type NotifyTiming } from "../sessions/notify-parent";
+import { succeededReason } from "../sessions/succeed";
+import type { AccountChoice } from "../engine/account";
 
 // jsonl（会話の履歴）から返す messages の番号の印。jsonl の位置はノードを起動し直しても変わらないので、決まった値にする
 export const HISTORY_EPOCH = "history";
@@ -59,7 +61,18 @@ export type Deps = {
   // エージェントが立てた子のターンの終わり、承認待ち、思わぬ終わり方を親のセッションに知らせる（src/sessions/notify-parent.ts）。
   // false で知らせない。無ければ既定の間隔で知らせる（試験は間隔を短くして渡す）
   notifyParent?: false | NotifyTiming;
+  // 子のアカウントの選択の結果（src/engine/account.ts の camAccount）。fresh は使い回さずに cam usage を取り直す。無ければ見ない
+  account?: (o?: { fresh?: boolean }) => Promise<Pick<AccountChoice, "name" | "none">>;
+  // 端末のセッションのアカウント（プロセスの環境から読む。src/engine/account.ts の pidAccount）。無ければ載せない
+  terminalAccount?: (a: AgentInfo) => Promise<{ account: string; accountEmail?: string } | undefined>;
+  // 引き継ぎ（succeed）で、後継の起動の印を待つ上限。既定 10 秒
+  succeedReadyMs?: number;
+  log?: (msg: string) => void; // 引き継ぎの記録を出す先。無ければ console.log
 };
+type CreateBody = Partial<StartOptions> & { cwd?: unknown; terminal?: unknown; name?: unknown; cols?: unknown; rows?: unknown; succeed?: unknown };
+// 引き継ぎ済みの前任を覚える数。メモリだけ
+const SUCCESSORS_MAX = 256;
+const SUCCEED_READY_MS = 10_000;
 
 // teleport の取り込みは clone を含むので、中継の最初の応答を長く待つ。Cloudflare は応答の無いまま 100 秒前後で切るので、その手前
 const TELEPORT_PEER_MS = 95_000;
@@ -250,12 +263,18 @@ export class Sessions {
     const seen = new Set(live.map((s) => s.id));
     // PTY の子は `claude agents --json` にも出る。id で除き、端末で /clear して id が変わっても pid で除く
     const ptyPids = new Set(live.filter((s) => s.kind === "pty" && s.state !== "exited" && s.pid).map((s) => s.pid));
-    const terms = (await this.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId) && !(a.pid && ptyPids.has(a.pid))).map((a) => this.d.terminalFor(a).summary());
+    const terms = await Promise.all((await this.agents()).filter((a) => a.sessionId && !seen.has(a.sessionId) && !(a.pid && ptyPids.has(a.pid))).map((a) => this.termSummary(a)));
     for (const t of terms) seen.add(t.id);
     // 台帳から掃いた後も、覚えている終わりの理由（自動で止めたことなど）を重ねる
     const past = !states || states.has("exited") ? (await this.past()).filter((h) => !seen.has(h.id)).map((h) => this.withReason(h)) : [];
     const all = [...live, ...terms, ...past];
     return all.filter((s) => (!parent || s.parent === parent) && (!states || states.has(s.state)));
+  }
+  // 端末のセッションの要約。アカウントが読めたら足す（読むのは pid ごとに1回で、以後は覚えた値）
+  private async termSummary(a: AgentInfo): Promise<SessionSummary> {
+    const s = this.d.terminalFor(a).summary();
+    const acct = await this.d.terminalAccount?.(a).catch(() => undefined);
+    return acct ? { ...s, ...acct } : s;
   }
   // 一覧の変化を流す SSE。購読がある間だけ、端末のセッションを LIST_TICK_MS ごとに取り直して比べる
   private watch?: ListWatch;
@@ -276,22 +295,18 @@ export class Sessions {
   }
   // cwd を省くと受け口に立てる。prompt も resume も無ければ id だけ先に決め、1通目（send）が来るまで claude を起動しない（state は idle）
   async create(req: Request, caller: Caller) {
-    const body = (await req.json().catch(() => ({}))) as Partial<StartOptions> & { cwd?: unknown; terminal?: unknown; name?: unknown; cols?: unknown; rows?: unknown };
-    const pty = body.terminal === true ? ptyFields(body) : undefined;
+    const body = (await req.json().catch(() => ({}))) as CreateBody;
+    if (body.succeed !== undefined && typeof body.succeed !== "boolean") throw new HttpError(400, { error: "succeed must be a boolean" });
+    const succeed = body.succeed === true;
+    const pty = !succeed && body.terminal === true ? ptyFields(body) : undefined;
     // 深さの上限。呼び手が孫（深さ2）なら断る。as_session を名乗らない呼び手は人と見分けられないので、暴走止めであって防御ではない
     const tracer = this.tracer(caller);
     const child = await tracer.childOf(caller.id);
     if (child.depth > MAX_DEPTH) {
       throw new HttpError(409, { error: `${DEPTH_REFUSAL}（呼び手 ${caller.id} の深さ: ${child.callerDepth}）`, hint: DEPTH_HINT, depth: child.callerDepth, limit: MAX_DEPTH });
     }
-    if (body.cwd !== undefined && (typeof body.cwd !== "string" || !body.cwd)) throw new HttpError(400, { error: "cwd must be a non-empty string or omitted (omit for the lobby)" });
-    const asked = typeof body.cwd === "string" ? body.cwd : this.d.lobby;
-    // symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
-    const cwd = await realpath(resolve(asked)).catch(() => null);
-    if (!cwd) throw new HttpError(400, body.cwd === undefined ? { error: "lobby does not exist", lobby: this.d.lobby, hint: "restart the node or run ccn update" } : { error: "cwd does not exist" });
-    if (!underRoot(cwd, await this.roots())) throw new HttpError(400, { error: "cwd is outside roots", roots: this.d.roots });
-    const st = await stat(cwd).catch(() => null);
-    if (!st?.isDirectory()) throw new HttpError(400, { error: "cwd is not a directory" });
+    if (succeed) return this.succeed(body, caller, tracer);
+    const cwd = await this.placeOf(body.cwd);
     // 生きている id を fork 無しで resume すると古いプロセスが孤児になるので断る
     if (body.resume && !body.fork) {
       const liveOne = this.d.store.get(body.resume);
@@ -313,7 +328,7 @@ export class Sessions {
       this.setDepth(driver.id, depth);
       this.d.store.add(driver, { historyBase });
       // cursor は read_messages の after に渡す値。0 だと resume した前の会話の返事を、今の返事として読んでしまう
-      return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth, cursor: historyBase };
+      return this.created(driver, cwd, depth, historyBase);
     }
     // sessionId は呼び手から受けない（既にある jsonl と重ねないため）。新規でプロンプトが無いときだけノードが決める
     const sessionId = !body.prompt && !body.resume ? crypto.randomUUID() : undefined;
@@ -327,7 +342,164 @@ export class Sessions {
     const driver = await this.d.startNode(opts, caller);
     this.setDepth(driver.id, depth);
     this.d.store.add(driver, { historyBase });
-    return { id: driver.id, cwd, state: driver.summary().state, kind: driver.kind, depth, cursor: historyBase };
+    return this.created(driver, cwd, depth, historyBase);
+  }
+  // cwd を決める。省けば受け口。symlink を解いた実体で根と比べる。存在しなければ realpath が失敗する
+  private async placeOf(given: unknown): Promise<string> {
+    if (given !== undefined && (typeof given !== "string" || !given)) throw new HttpError(400, { error: "cwd must be a non-empty string or omitted (omit for the lobby)" });
+    const asked = typeof given === "string" ? given : this.d.lobby;
+    const cwd = await realpath(resolve(asked)).catch(() => null);
+    if (!cwd) throw new HttpError(400, given === undefined ? { error: "lobby does not exist", lobby: this.d.lobby, hint: "restart the node or run ccn update" } : { error: "cwd does not exist" });
+    if (!underRoot(cwd, await this.roots())) throw new HttpError(400, { error: "cwd is outside roots", roots: this.d.roots });
+    const st = await stat(cwd).catch(() => null);
+    if (!st?.isDirectory()) throw new HttpError(400, { error: "cwd is not a directory" });
+    return cwd;
+  }
+  // 作成の応答。parent と、選んだアカウントを足す。枠の残るアカウントが無かった（cam の choice: none）ときは accountUnavailable で伝える。
+  // 1通目を待つ node の子はまだアカウントを選んでいないので、どちらも載らない。ここで読む選択は、起動のときに選んだ結果の使い回し
+  private async created(driver: Driver, cwd: string, depth: number, cursor: number) {
+    const s = driver.summary();
+    const pick = s.awaitingFirst ? undefined : await this.d.account?.().catch(() => undefined);
+    return {
+      id: driver.id, cwd, state: s.state, kind: driver.kind, depth, cursor,
+      ...(s.parent ? { parent: s.parent } : {}),
+      ...(s.account ? { account: s.account } : {}), ...(s.accountEmail ? { accountEmail: s.accountEmail } : {}),
+      ...(pick?.none ? { accountUnavailable: { nextAvailable: pick.none.nextAvailable } } : {}),
+    };
+  }
+
+  // ---- 引き継ぎ（succeed）。利用上限などで止まったセッションを、同じ段の後継に引き継ぐ ----
+  // 前任（resume）の会話を fork した後継を立て、前任の parent と depth を継がせ、前任の子を後継に付け替えてから、前任を止める。
+  // 後継が起動の印を返すまでは何も変えない。付け替えと「引き継ぎ済み」の覚えはメモリだけで、ノードを起動し直すと消える
+  // （起動し直すと、子の parent は最初の文の from 行に戻る。#39 の手での付け直しは、その名前で行う）
+  private succeeding = new Set<string>();         // 引き継ぎの途中の前任。同じ前任の2つ目の要求を断る
+  private successors = new Map<string, string>(); // 引き継ぎ済みの前任の id → 後継の id
+  private async succeed(body: CreateBody, caller: Caller, tracer: DepthTracer) {
+    if (typeof body.resume !== "string" || !body.resume || body.fork !== true) throw new HttpError(400, { error: "succeed requires resume (the predecessor's session id) and fork: true" });
+    const predId = body.resume;
+    // 画面の二度押しと、中継の待ち（15秒）が切れた後の送り直しで、後継を2体立てない
+    const done = this.successors.get(predId);
+    if (done) throw new HttpError(409, { error: `session ${predId} was already succeeded by ${done}`, code: "already_succeeded", successor: done });
+    if (this.succeeding.has(predId)) throw new HttpError(409, { error: `session ${predId} is being succeeded right now`, code: "succeeding", hint: "list the sessions to see the result" });
+    this.succeeding.add(predId);
+    try { return await this.succeedLocked(body, predId, caller, tracer); } finally { this.succeeding.delete(predId); }
+  }
+  private async succeedLocked(body: CreateBody, predId: string, caller: Caller, tracer: DepthTracer) {
+    // 前任を探す。台帳（生きているものと、終わって30分以内のもの）、端末、履歴の順
+    const inStore = this.d.store.get(predId);
+    const term = inStore ? undefined : (await this.agents()).find((a) => a.sessionId === predId);
+    const pred = inStore?.summary() ?? (term ? this.d.terminalFor(term).summary() : await this.d.history.get(predId).catch(() => undefined));
+    if (!pred) throw new HttpError(404, { error: "unknown session" });
+    if (pred.awaitingFirst) throw new HttpError(409, { error: "the session has no conversation yet", code: "empty" });
+    // 省いた項目は前任から継ぐ。cwd を省くと受け口になり、会話が見つからない。permissionMode を継がないと、前任が bypass でも後継が承認待ちで止まる。
+    // 種類は、前任が pty か端末なら pty。履歴だけの前任は種類が分からないので node（呼び手が terminal: true を渡せば pty）
+    if (body.terminal !== undefined && typeof body.terminal !== "boolean") throw new HttpError(400, { error: "terminal must be a boolean" });
+    if (body.terminal === true && !this.d.startPty) throw new HttpError(400, { error: "terminal sessions are not supported on this node" });
+    const wantPty = body.terminal ?? (!!this.d.startPty && (pred.kind === "pty" || pred.kind === "terminal"));
+    const title = (inStore || term) && typeof pred.title === "string" && pred.title.trim() && pred.title.length <= 200 ? pred.title : undefined;
+    const pty = wantPty ? ptyFields({ name: body.name ?? title, cols: body.cols, rows: body.rows }) : undefined;
+    if (body.cwd === undefined && !pred.cwd) throw new HttpError(400, { error: "cwd is required: the predecessor's directory is not recorded" });
+    const cwd = await this.placeOf(body.cwd ?? pred.cwd);
+    const permissionMode = body.permissionMode ?? (pred.permissionMode as StartOptions["permissionMode"]);
+    const model = body.model ?? pred.model;
+    // 後継は呼び手の子ではなく、前任の代わり。parent と depth は前任のものを継ぐ（呼び手が名乗らなくても local にならない）。前任に parent が無いときだけ呼び手を使う
+    const parent = pred.parent ?? caller.id;
+    const depth = (await tracer.of({ id: predId, cwd: pred.cwd, parent: pred.parent }).catch(() => undefined))?.depth ?? 0;
+    // アカウントは使い回さずに取り直す。枠の残るアカウントが無ければ、同じく止まる後継を立てて前任を止めることになるので、何も触らずに断る
+    const pick = await this.d.account?.({ fresh: true }).catch(() => undefined);
+    if (pick?.none) throw new HttpError(409, { error: "no account has quota left; the successor would stop the same way", code: "no_account", nextAvailable: pick.none.nextAvailable });
+    await this.d.trust?.(cwd).catch(() => {});
+    const settings = await lobbySettingsFor(cwd, this.d.lobby);
+    const prompt = body.prompt ? withFromLine(caller, this.d.nodeName, body.prompt) : undefined;
+    const as: Caller = { ...caller, id: parent };
+    let driver: Driver;
+    let cursor = 0;
+    let forked: string | undefined;
+    if (pty) {
+      driver = await this.d.startPty!({ cwd, prompt, permissionMode, model, resume: predId, fork: true, settings, ...pty }, as);
+    } else {
+      // node の後継は、SDK の forkSession で会話を写して id を先に決めてから、その id を resume する。
+      // query() の fork は、最初の文が無いと init が来ず、NodeDriver が前任の id を名乗る（台帳で前任の項目を置き換えてしまう）
+      const fns = this.d.teleport?.fns;
+      if (!fns) throw new HttpError(400, { error: "succeed without terminal is not supported on this node", hint: "pass terminal: true" });
+      forked = (await fns.forkSession(predId, pred.cwd ? { dir: pred.cwd } : undefined)).sessionId;
+      try {
+        cursor = await Promise.resolve().then(() => this.d.history.count(forked!)).catch(() => 0);
+        driver = await this.d.startNode({ cwd, resume: forked, defer: !prompt, prompt, permissionMode, model, settings }, as);
+      } catch (e) {
+        await fns.deleteSession(forked, pred.cwd ? { dir: pred.cwd } : undefined).catch(() => {});
+        throw e;
+      }
+    }
+    // 後継の id は新しいはず。前任の id のまま台帳に載せると、前任の項目を置き換え、下の「前任を止める」が後継を止める
+    let failed = driver.id === predId ? "the successor came up with the predecessor's id" : undefined;
+    if (!failed) {
+      this.setDepth(driver.id, depth);
+      this.d.store.add(driver, { historyBase: cursor }); // pty の hooks は台帳から Driver を引くので、起動の印を待つ前に載せる
+      const ok = driver.summary().state !== "exited" && (driver.started ? await driver.started(this.d.succeedReadyMs ?? SUCCEED_READY_MS) : true);
+      if (!ok) failed = driver.summary().exitReason ?? "claude gave no sign of starting in time";
+    }
+    if (failed) {
+      // 後継が立たなかった。後継を片付け、前任と子はそのままにする
+      this.notifier?.suppress(driver.id);
+      try { await driver.stop("the successor did not start").catch(() => {}); if (driver.id !== predId) this.d.store.remove(driver.id); } finally { this.notifier?.clear(driver.id); }
+      if (driver.id !== predId) this.depths.delete(driver.id);
+      if (forked) await this.d.teleport?.fns.deleteSession(forked, pred.cwd ? { dir: pred.cwd } : undefined).catch(() => {});
+      throw new HttpError(502, { error: "the successor did not start; the predecessor and its children were left as they were", code: "successor_failed", reason: failed });
+    }
+    const adopted = await this.adopt(predId, driver.id);
+    const retired = await this.retire(predId, !!term, driver.id);
+    this.successors.set(predId, driver.id);
+    if (this.successors.size > SUCCESSORS_MAX) this.successors.delete(this.successors.keys().next().value!);
+    this.expireHistory();
+    // 付け替えはメモリだけなので、ノードを起動し直した後に手で付け直すときの手がかりをログに残す
+    (this.d.log ?? console.log)(`succeed: ${predId} -> ${driver.id} (parent ${parent}, depth ${depth}, adopted ${adopted.join(",") || "-"}, stopped ${retired.stopped})`);
+    return { ...(await this.created(driver, cwd, depth, cursor)), succeeded: { from: predId, ...retired, adopted } };
+  }
+  // 前任の子を後継の子にする。台帳にあるセッション（終わって30分以内のものを含む）のうち、知らせの宛先（parentOf）が前任になるものが対象。
+  // parent が前任を名乗るものは、役割はそのままで後継の名前にする。受け口を挟んだ子は、受け口のセッションが台帳にあれば受け口の parent が
+  // 付け替わるので触らない。受け口が台帳から掃かれていれば（履歴の parent は書き換えられない）、子を後継の直接の子にする
+  private async adopt(predId: string, succId: string): Promise<string[]> {
+    const node = this.d.nodeName;
+    const p8 = predId.slice(0, 8);
+    const all = this.d.store.list();
+    let past: SessionSummary[] | undefined;
+    const out: string[] = [];
+    for (const s of all) {
+      if (s.id === predId || s.id === succId) continue;
+      const a = s.parent ? parseAgent(s.parent) : undefined;
+      if (!a?.sid || a.node !== node) continue;
+      let role: string | undefined;
+      if (a.sid === p8) role = a.role;
+      else if (a.role === "lobby") {
+        const lsid = a.sid;
+        if (all.some((x) => x.id.startsWith(lsid))) continue;
+        past ??= await this.past().catch(() => []);
+        const lobbies = past.filter((x) => x.id.startsWith(lsid));
+        const lp = lobbies.length === 1 && lobbies[0]!.parent ? parseAgent(lobbies[0]!.parent) : undefined;
+        if (lp?.sid === p8 && lp.node === node && lp.role !== "lobby") role = lp.role;
+      }
+      const d = role === undefined ? undefined : this.d.store.get(s.id);
+      if (!d?.setParent) continue;
+      d.setParent(formatAgent(node, succId, role));
+      this.d.store.touch(s.id);
+      out.push(s.id);
+    }
+    return out;
+  }
+  // 前任を止める。残すと、枠が戻ったあとに文が届いて前任が起き、後継と同じ作業を二重に進める。
+  // stopped は、この後に前任がこのノードで動いていないこと（もとから終わっていた前任も true）。止められなかったときは note に理由を入れる。
+  // 終わりの理由に後継の id を入れる。親への知らせ（notify-parent.ts）は、この理由を見て「引き継がれた」と伝える
+  private async retire(predId: string, terminal: boolean, succId: string): Promise<{ stopped: boolean; note?: string }> {
+    const live = this.d.store.get(predId);
+    if (live) {
+      if (live.summary().state === "exited") return { stopped: true };
+      if (!live.capabilities.stop) return { stopped: false, note: "the predecessor cannot be stopped by ccn; stop it yourself so it does not continue in two places" };
+      try { await live.stop(succeededReason(succId)); } catch (e) { return { stopped: false, note: `stopping the predecessor failed: ${e instanceof Error ? e.message : String(e)}` }; }
+      return live.summary().state === "exited" ? { stopped: true } : { stopped: false, note: "the predecessor did not stop; stop it yourself so it does not continue in two places" };
+    }
+    if (terminal) return { stopped: false, note: "the predecessor is a terminal session, which ccn cannot stop; close it yourself so it does not continue in two places" };
+    return { stopped: true };
   }
   // resume（転出の取り込みも同じ）では呼び手が新しい親になる。元の親（刻んだ値か最初の文の from 行）の深さと比べて大きいほうを刻む。
   // 人が孫を resume しても深さ0に戻さない
@@ -344,7 +516,11 @@ export class Sessions {
   // cursor は送る前の末尾。CLI の send が控え、read の after にする
   async detail(id: string) {
     const driver = await this.find(id);
-    if (driver) return { ...driver.summary(), ...(this.depths.has(driver.id) ? { depth: this.depths.get(driver.id) } : {}), pending: driver.pending(), cursor: await this.cursor(id) };
+    if (driver) {
+      const term = driver.kind === "terminal" ? (await this.agents()).find((x) => x.sessionId === id) : undefined;
+      const s = term ? await this.termSummary(term) : driver.summary();
+      return { ...s, ...(this.depths.has(driver.id) ? { depth: this.depths.get(driver.id) } : {}), pending: driver.pending(), cursor: await this.cursor(id) };
+    }
     const past = await this.d.history.get(id);
     if (past) return { ...this.withReason(past), pending: [], cursor: await this.cursor(id) };
     throw new HttpError(404, { error: "unknown session" });
@@ -380,7 +556,11 @@ export class Sessions {
   }
   async send(id: string, req: Request, caller: Caller) {
     const driver = await this.must(id);
-    if (driver.summary().state === "exited") throw new HttpError(409, { error: "session exited", hint: "resume" });
+    if (driver.summary().state === "exited") {
+      // 引き継がれた前任は resume を勧めない（後継と同じ作業を二重に進めるため）。後継の id を返す
+      const succ = this.successors.get(driver.id);
+      throw new HttpError(409, succ ? { error: "session exited", hint: `succeeded by ${succ}; send to that session and do not resume this one`, successor: succ } : { error: "session exited", hint: "resume" });
+    }
     const body = (await req.json().catch(() => ({}))) as { text?: unknown };
     if (typeof body.text !== "string" || !body.text.trim()) throw new HttpError(400, { error: "text is required" });
     return driver.send(withFromLine(caller, this.d.nodeName, body.text));

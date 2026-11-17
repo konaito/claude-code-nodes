@@ -32,8 +32,10 @@ const fail = (msg: string): CallToolResult => ({ content: [{ type: "text", text:
 async function call<T>(c: Ctx, method: string, peer: string | undefined, path: string, body?: unknown): Promise<T> {
   const r = await c.api(c.caller, method, peer, path, body);
   if (r.status >= 200 && r.status < 300) return r.body as T;
-  const b = (r.body ?? {}) as { error?: string; hint?: string };
-  throw new ToolError(`${peer ?? c.nodeName} ${method} ${path} → ${r.status} ${b.error ?? ""}${b.hint ? ` (hint: ${b.hint})` : ""}`.trim());
+  const b = (r.body ?? {}) as { error?: string; hint?: string } & Record<string, unknown>;
+  // 引き継ぎの断り（code、後継の id、次に使えるアカウント）は、モデルが次の手を決められるようにそのまま足す
+  const more = ["code", "successor", "nextAvailable", "reason"].filter((k) => b[k] !== undefined).map((k) => `${k}=${typeof b[k] === "string" ? b[k] : JSON.stringify(b[k])}`).join(" ");
+  throw new ToolError(`${peer ?? c.nodeName} ${method} ${path} → ${r.status} ${b.error ?? ""}${b.hint ? ` (hint: ${b.hint})` : ""}${more ? ` [${more}]` : ""}`.trim());
 }
 const run = (fn: () => Promise<unknown>) => async (): Promise<CallToolResult> => {
   try { return ok(await fn()); } catch (e) { return fail(e instanceof Error ? e.message : String(e)); }
@@ -66,7 +68,7 @@ const peerArg = z.string().optional().describe("Node name from list_peers. Omit 
 const sessionArg = z.string().describe("sessionId, its first 8+ characters, or <peer>/<sessionId>");
 const asArg = z.string().optional().describe("Role to sign as, e.g. lead. The child sees `from agent:<node>/<as_session first 8>/<role> via <node>` and its parent field becomes that name. Ignored for callers signed in by email");
 const asSessionArg = z.string().optional().describe("Your own Claude Code session id (e.g. $CLAUDE_CODE_SESSION_ID). Put into the agent name so list_sessions(parent=...) finds only your children, and so the node can count how deep you are. Always pass it with create_session");
-const compact = (s: SessionSummary, peer: string) => ({ peer, id: s.id, kind: s.kind, state: s.state, cwd: s.cwd, parent: s.parent, depth: s.depth, title: s.title, permissionMode: s.permissionMode, lastActivityAt: s.lastActivityAt, ...(s.state === "exited" && s.exitReason ? { exitReason: s.exitReason } : {}) });
+const compact = (s: SessionSummary, peer: string) => ({ peer, id: s.id, kind: s.kind, state: s.state, cwd: s.cwd, parent: s.parent, depth: s.depth, title: s.title, permissionMode: s.permissionMode, ...(s.account ? { account: s.account } : {}), lastActivityAt: s.lastActivityAt, ...(s.state === "exited" && s.exitReason ? { exitReason: s.exitReason } : {}) });
 // 一覧の既定に入れる、自動で止めた子の期間。親が止まったことに気づけるように、終わったものでも1日は出す
 const IDLE_STOPPED_SHOWN_MS = 24 * 3600_000;
 
@@ -173,6 +175,8 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       "Every message arrives with a from line naming you. Returns the session id, its cwd, the parent name it records, its depth, and the cursor to pass as `after` to read_messages (0, or the earlier transcript length when a terminal session is resumed, so the old reply is not read as the new one). Omit permission_mode to use that machine's Claude Code default (check permissionMode with get_session). default asks before every tool (answer with answer_permission); bypassPermissions runs unattended, as the ccn CLI does. The lobby gives its child the lobby's own mode.",
       "When a child started by an agent on the same node ends a turn, starts waiting for a permission, or exits unexpectedly, the node sends its parent session a short message (from line `from ccn:<node>/<child id first 8> via <node>`, text starting with [ccn]) with the read_messages or answer_permission call to make, so you do not have to poll. It needs as_session (without it the node cannot find you); a child of the lobby notifies the lobby's requester. Not sent for idle-stop or stop_session, nor across nodes; node setting notifyParent: false turns it off.",
       "A child started by an agent (a node or pty session whose parent is agent:...) that stays idle after its turn, with no messages, no terminal input and no open terminal view, is stopped by the node after 10 minutes by default (node setting idleStopMinutes). It then shows state exited with an exitReason starting with idle-stop:. The conversation is kept, and create_session resume=<id> continues it. Sessions started by a person and terminal sessions are never stopped this way.",
+      "On a machine with cam, the node starts the child under the account cam picks; the result and list_sessions carry it as account (and accountEmail). accountUnavailable in the result means no account had quota left, so the child runs on the node's own login and may stop at the usage limit; its nextAvailable names the account that comes back first and when (at, epoch milliseconds).",
+      "succeed=true with resume=<id> hands a session that is stuck (for example at its usage limit) over to a successor: a fork of its conversation under a new id, started under a freshly picked account. The successor takes the predecessor's parent and depth (not yours), cwd, permission mode, model and kind unless you pass them; the predecessor's children become the successor's children (their parent field and their [ccn] notifications move); then the node stops the predecessor. Nothing changes if the successor does not start. The result has succeeded: {from, stopped, adopted} (stopped false with a note when ccn could not stop the predecessor, e.g. a terminal session). It is refused with code no_account when no account has quota left, and with code already_succeeded (successor=<id>) when it was handed over before. The successor's context still holds the old session id: tell it in the prompt that its id changed. Give it a prompt, or send it a message soon: a successor whose parent is an agent is stopped after 10 idle minutes like any other child. The re-parenting is kept in memory only and is lost when the node restarts.",
     ].join(" "),
     inputSchema: {
       peer: peerArg,
@@ -182,6 +186,7 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       model: z.string().optional(),
       resume: z.string().optional().describe("Session id to continue instead of starting fresh"),
       fork: z.boolean().optional().describe("With resume, branch into a new session id"),
+      succeed: z.boolean().optional().describe("With resume: hand the session over to a successor (a fork under a new id) that takes its parent, depth and children, then stop it. Implies fork"),
       terminal: z.boolean().optional().describe("Run as an interactive claude in a pseudo-terminal on the node (kind pty), so a person can also see and type in it"),
       name: z.string().min(1).max(200).optional().describe("Display title (claude --name). With terminal only"),
       cols: z.number().int().min(10).max(1000).optional().describe("Initial terminal width. With terminal only. Default 120"),
@@ -201,8 +206,10 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
       if (a.model) body.model = a.model;
       if (a.resume) body.resume = a.resume;
       if (a.fork) body.fork = true;
-      let r: { id: string; cwd?: string; state?: string; kind?: string; depth?: number; cursor?: number };
-      try { r = await call<{ id: string; cwd?: string; state?: string; kind?: string; depth?: number; cursor?: number }>(ctx, "POST", a.peer, "/api/sessions", body); }
+      if (a.succeed) { body.succeed = true; body.fork = true; }
+      type Created = { id: string; cwd?: string; state?: string; kind?: string; depth?: number; cursor?: number; parent?: string; account?: string; accountEmail?: string; accountUnavailable?: unknown; succeeded?: unknown };
+      let r: Created;
+      try { r = await call<Created>(ctx, "POST", a.peer, "/api/sessions", body); }
       catch (e) {
         // 受け口とプロンプト無しの作成を知らない古い版のノードは、cwd か prompt が無いと 400 で断る
         if (e instanceof ToolError && (!a.cwd || !a.prompt) && !a.resume && /cwd is required|prompt or resume is required/.test(e.message)) {
@@ -211,8 +218,21 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
         throw e;
       }
       // terminal を知らない古い版のノードは、黙って SDK の子を立てる
-      const notes = [note, a.terminal && r.kind !== "pty" ? `${a.peer || base.nodeName} runs an older ccn without terminal sessions; it started a ${r.kind ?? "node"} session instead` : undefined].filter(Boolean);
-      return { peer: a.peer || base.nodeName, id: r.id, kind: r.kind, cwd: r.cwd ?? a.cwd, state: r.state, parent: ctx.caller.id, ...(r.depth !== undefined ? { depth: r.depth } : {}), cursor: typeof r.cursor === "number" ? r.cursor : 0, ...(notes.length ? { note: notes.join("; ") } : {}) };
+      const notes = [
+        note,
+        a.terminal && r.kind !== "pty" ? `${a.peer || base.nodeName} runs an older ccn without terminal sessions; it started a ${r.kind ?? "node"} session instead` : undefined,
+        // succeed を知らない古い版のノードは、黙ってただの fork を立てる
+        a.succeed && r.succeeded === undefined ? `${a.peer || base.nodeName} runs an older ccn without succeed; it only forked: the predecessor ${a.resume} was not stopped, its children were not moved, and the new session's parent is you` : undefined,
+      ].filter(Boolean);
+      // parent は、ノードが返したもの（引き継ぎでは前任の parent）。古い版のノードは返さないので、そのときは呼び手
+      return {
+        peer: a.peer || base.nodeName, id: r.id, kind: r.kind, cwd: r.cwd ?? a.cwd, state: r.state, parent: r.parent ?? ctx.caller.id,
+        ...(r.depth !== undefined ? { depth: r.depth } : {}), cursor: typeof r.cursor === "number" ? r.cursor : 0,
+        ...(r.account ? { account: r.account } : {}), ...(r.accountEmail ? { accountEmail: r.accountEmail } : {}),
+        ...(r.accountUnavailable ? { accountUnavailable: r.accountUnavailable } : {}),
+        ...(r.succeeded ? { succeeded: r.succeeded } : {}),
+        ...(notes.length ? { note: notes.join("; ") } : {}),
+      };
     })();
   });
 
