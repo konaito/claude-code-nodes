@@ -82,8 +82,9 @@ ccn peers                                           # 登録簿（ノード、he
 ccn places [<語>...] [--peer <名>] [--json]          # 行き先の候補（roots と Documents の直下、README の先頭、remote、最近使ったか）
 ccn ls [--peer <名>] [--mine]                        # セッション一覧。--mine は自分が立てた子だけ
 ccn show [<対象>]                                    # 1つの詳細と pending（保留中の承認）。Claude Code の中で対象を省くと自分のセッション
-ccn new [<dir> ["<文>"]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--as <役割>]
+ccn new [<dir> ["<文>"]] [--peer <名>] [--mode <permissionMode>] [--model <m>] [--resume <id>] [--succeed] [--as <役割>]
                                                     # dir を省くと受け口、文を省くと1通目を待つ（ccn send で送る）
+                                                    # --resume <id> --succeed は引き継ぎ。止まった子の会話を fork した後継を立て、親と子を後継へ移して前任を止める
 ccn send <対象> "<文>|-" [--as <役割>]                # 文を送る。- は標準入力。送る前の seq を控える
 ccn read <対象> [--after <seq>] [--wait <秒>]         # 返事を読む（既定 120 秒）。終了コード 0/2/3/4
 ccn run <対象> "<文>" [--wait <秒>]                   # send のあと read（子が1体のとき）
@@ -120,6 +121,8 @@ ccn teleport [<対象>] [--to <peer>] [--fork] [--cwd <dir>]
 - `ccn ls` の `parent` で、自分が立てていない子も探せる。
 - `state` が `waiting_permission` なら承認待ち。`ccn show` の `pending:` に requestId、ツール名、中身（Bash は `command="…"`、Write、Edit、Read は `file_path="…"`、ほかは主な入力）、子が書いた説明 `("…")` の順で出る。長い値は `…(+N字)` で切れる。答えるときは説明ではなく中身を見る。
 - `state` が `exited` なら終了。`exitReason` に理由。`ccn new <dir> "<文>" --resume <id>` で同じ会話を続けられる。
+- `exitReason` が `succeeded: continued as <id>` なら、その id の後継に引き継がれて止まった。前任は resume せず、後継に送る。
+- 利用上限で止まった子は、`ccn new --resume <id> --succeed` で後継に引き継ぐ。場所、権限モード、モデルは前任と同じになり、アカウントは選び直される。
 - 端末のセッションは `claude agents --json` の状態で、`running`、`waiting_permission`（権限か質問で止まっている）、`idle` のどれか。
 
 ## 設定

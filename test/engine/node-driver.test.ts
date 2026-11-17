@@ -186,13 +186,34 @@ test("resume with defer waits for the first send, then starts claude with resume
 test("prepare が返した環境で claude を起動する。遅延起動では1通目の send のときに呼ぶ（アカウントの選択）", async () => {
   const fake = makeFakeQuery();
   const calls: string[] = [];
-  const prepare = async (cwd: string) => { calls.push(cwd); return { PATH: "/bin", CLAUDE_CONFIG_DIR: "/p/shared" }; };
+  const prepare = async (cwd: string) => { calls.push(cwd); return { env: { PATH: "/bin", CLAUDE_CONFIG_DIR: "/p/shared" }, account: "shared", accountEmail: "shared@example.com" }; };
   const d = await NodeDriver.start({ cwd: "/tmp", sessionId: "s-1" }, { queryFn: fake.queryFn, nodeName: "vm", prepare });
   expect(calls).toEqual([]);
+  // 1通目を待つ間は、まだアカウントを選んでいない
+  expect(d.summary().account).toBeUndefined();
   await d.send("hi");
   await until(() => fake.received.length === 1);
   expect(calls).toEqual(["/tmp"]);
   expect(fake.lastOptions.env).toEqual({ PATH: "/bin", CLAUDE_CONFIG_DIR: "/p/shared" });
+  expect(d.summary()).toMatchObject({ account: "shared", accountEmail: "shared@example.com" });
+  await d.stop();
+});
+
+test("--default のコマンド（env なしでアカウントだけ返る）は env を渡さず、summary にアカウントを載せる", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", prompt: "hi" }, { queryFn: fake.queryFn, nodeName: "vm", prepare: async () => ({ account: "main" }) });
+  expect("env" in fake.lastOptions).toBe(false);
+  expect(d.summary().account).toBe("main");
+  expect(d.summary().accountEmail).toBeUndefined();
+  await d.stop();
+});
+
+test("setParent は summary の parent を付け替える（引き継ぎ）", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", prompt: "hi" }, { queryFn: fake.queryFn, nodeName: "vm", caller: "agent:vm/aaaaaaaa/lead" });
+  expect(d.summary().parent).toBe("agent:vm/aaaaaaaa/lead");
+  d.setParent("agent:vm/bbbbbbbb/lead");
+  expect(d.summary().parent).toBe("agent:vm/bbbbbbbb/lead");
   await d.stop();
 });
 

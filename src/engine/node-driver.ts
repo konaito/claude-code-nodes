@@ -5,6 +5,7 @@ import { ExitedError, NotFoundError } from "./driver";
 export { ExitedError, NotFoundError } from "./driver";
 import type { PendingPermission, PermissionAnswer, SessionSummary, State } from "../sessions/types";
 import { AsyncQueue } from "../sessions/async-queue";
+import type { Prepared } from "./account";
 
 export type QueryFn = typeof query;
 export type StartOptions = {
@@ -25,9 +26,9 @@ export type StartOptions = {
 };
 export type NodeDeps = {
   queryFn: QueryFn; nodeName: string; caller?: string; initTimeoutMs?: number; claudePath?: string;
-  // claude を起動する直前に呼ぶ。返した環境で起動する（アカウントの選択、src/engine/account.ts）。undefined なら process.env のまま。
-  // 遅延起動では1通目の send のときに呼ぶので、作ってから時間が空いても、その時点の使用率で選ぶ
-  prepare?: (cwd: string) => Promise<Record<string, string | undefined> | undefined>;
+  // claude を起動する直前に呼ぶ。返した環境で起動する（アカウントの選択、src/engine/account.ts）。env が無ければ process.env のまま。
+  // 返したアカウントは summary に載せる。遅延起動では1通目の send のときに呼ぶので、作ってから時間が空いても、その時点の使用率で選ぶ
+  prepare?: (cwd: string) => Promise<Prepared | undefined>;
 };
 
 
@@ -53,8 +54,11 @@ export class NodeDriver implements Driver {
   private usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
   private initResolve?: () => void;
   private initReject?: (e: Error) => void;
+  private parent?: string;       // 立てた呼び手。引き継ぎで付け替わる（setParent）
+  private account?: string;      // 起動のときに選んだアカウント。起動するまで無い
+  private accountEmail?: string;
 
-  private constructor(private opts: StartOptions, private deps: NodeDeps) {}
+  private constructor(private opts: StartOptions, private deps: NodeDeps) { this.parent = deps.caller; }
 
   static async start(opts: StartOptions, deps: NodeDeps): Promise<NodeDriver> {
     const d = new NodeDriver(opts, deps);
@@ -90,7 +94,12 @@ export class NodeDriver implements Driver {
     this.init.catch(() => {}); // race の後に reject しても未処理にしない
     if (!this.deps.prepare) { this.run(undefined); return; }
     // 用意の間に止められたら起動しない。用意が落ちたら今まで通り（process.env）で起動する
-    void this.deps.prepare(opts.cwd).catch(() => undefined).then((env) => { if (this.state !== "exited") this.run(env); });
+    void this.deps.prepare(opts.cwd).catch(() => undefined).then((p) => {
+      if (this.state === "exited") return;
+      this.account = p?.account;
+      this.accountEmail = p?.accountEmail;
+      this.run(p?.env);
+    });
   }
   private run(env: Record<string, string | undefined> | undefined) {
     const opts = this.opts;
@@ -130,10 +139,12 @@ export class NodeDriver implements Driver {
     return {
       id: this.id, kind: this.kind, capabilities: this.capabilities, cwd: this.opts.cwd, state: this.state,
       startedAt: this.startedAt, lastActivityAt: this.lastActivityAt, model: this.model, permissionMode: this.permissionMode,
-      usage: { ...this.usage }, exitReason: this.exitReason, parent: this.deps.caller,
+      usage: { ...this.usage }, exitReason: this.exitReason, parent: this.parent,
       ...(this.deferred ? { awaitingFirst: true } : {}),
+      ...(this.account ? { account: this.account } : {}), ...(this.accountEmail ? { accountEmail: this.accountEmail } : {}),
     };
   }
+  setParent(parent: string) { this.parent = parent; }
   async send(text: string) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
     this.enqueueUser(text);

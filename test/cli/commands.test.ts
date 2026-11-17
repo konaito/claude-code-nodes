@@ -11,7 +11,7 @@ const caps = (events: boolean) => ({ send: true, permissions: events, interrupt:
 const sess = (id: string, over: Partial<SessionSummary> = {}): SessionSummary => ({ id, kind: "node", capabilities: caps(true), cwd: "/home/u/proj", state: "idle", startedAt: 0, lastActivityAt: 0, ...over });
 
 // 偽のノード。URL ごとに応答を返し、受けた Request を記録する
-function fakeNode(opts: { sessions?: SessionSummary[]; pending?: unknown[]; sse?: string; messages?: unknown[]; detailState?: string; cursor?: number } = {}) {
+function fakeNode(opts: { sessions?: SessionSummary[]; pending?: unknown[]; sse?: string; messages?: unknown[]; detailState?: string; cursor?: number; created?: Record<string, unknown> } = {}) {
   const calls: Array<{ method: string; url: string; body?: unknown; headers: Headers }> = [];
   const sessions = opts.sessions ?? [sess("abcd1234-0000-0000-0000-000000000000")];
   const fetchFn = (async (i: RequestInfo | URL, init?: RequestInit) => {
@@ -22,7 +22,7 @@ function fakeNode(opts: { sessions?: SessionSummary[]; pending?: unknown[]; sse?
     const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
     if (u.pathname === "/api/peers") return json([{ name: "pro", url: "http://127.0.0.1:4323", status: "healthy", self: true }, { name: "vm", url: "https://vm.cc.fybe.jp", status: "healthy", self: false }]);
     if (u.pathname === "/api/sessions" && r.method === "GET") return json(sessions);
-    if (u.pathname === "/api/sessions" && r.method === "POST") return json({ id: "new00000-1111-2222-3333-444444444444" }, 201);
+    if (u.pathname === "/api/sessions" && r.method === "POST") return json({ id: "new00000-1111-2222-3333-444444444444", ...opts.created }, 201);
     const m = u.pathname.match(/^\/api\/sessions\/([^/]+)(?:\/(.*))?$/);
     if (!m) return json({ error: "nf" }, 404);
     const s = sessions.find((x) => x.id === m[1]);
@@ -80,6 +80,30 @@ test("new posts cwd, raw prompt and bypass mode by default", async () => {
   const d = ctx(n.fetchFn);
   await main(["new", "/home/u/proj", "x", "--mode", "default", "--model", "opus", "--resume", "old1"], d);
   expect(n.calls[1]!.body).toEqual({ cwd: "/home/u/proj", prompt: "x", permissionMode: "default", model: "opus", resume: "old1" });
+});
+
+test("new --succeed は引き継ぎを頼む。既定の権限モードを付けず、前任を止めたかと移した子の数を出す。古い版のノードなら失敗にする", async () => {
+  const n = fakeNode({ created: { account: "coo", succeeded: { from: "old1", stopped: true, adopted: ["c1", "c2"] } } });
+  const c = ctx(n.fetchFn);
+  expect(await main(["new", "--resume", "old1", "--succeed", "--peer", "vm"], c)).toBe(0);
+  expect(n.calls[0]!.body).toEqual({ succeed: true, fork: true, resume: "old1" });
+  expect(c.lines).toEqual(["vm/new00000-1111-2222-3333-444444444444", "前任: 止めた、移した子: 2、アカウント: coo"]);
+  // 止められなかったときは理由を出す。--mode を渡せば前任の権限モードより優先する
+  const n2 = fakeNode({ created: { succeeded: { from: "old1", stopped: false, adopted: [], note: "terminal session" } } });
+  const c2 = ctx(n2.fetchFn);
+  expect(await main(["new", "--resume", "old1", "--succeed", "--mode", "default"], c2)).toBe(0);
+  expect(n2.calls[0]!.body).toEqual({ succeed: true, fork: true, resume: "old1", permissionMode: "default" });
+  expect(c2.lines[1]).toBe("前任: 止められなかった（terminal session）、移した子: 0");
+  // succeed を知らない古い版のノードは、ただの fork を立てて succeeded を返さない
+  const old = fakeNode();
+  const errs: string[] = [];
+  const c3 = ctx(old.fetchFn, { err: (s: string) => errs.push(s) } as never);
+  expect(await main(["new", "--resume", "old1", "--succeed"], c3)).toBe(1);
+  // --resume が無ければ送らない
+  const c4 = ctx(old.fetchFn);
+  const before = old.calls.length;
+  expect(await main(["new", "--succeed"], c4)).toBe(1);
+  expect(old.calls.length).toBe(before);
 });
 
 test("send remembers the seq and read uses it", async () => {

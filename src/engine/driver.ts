@@ -17,6 +17,9 @@ export interface Driver {
   interrupt(): Promise<void>; // capabilities.interrupt が false なら throw
   setPermissionMode?(mode: string): Promise<void>; // NodeDriver だけが実装する。無ければ API は 409
   stop(reason?: string): Promise<void>; // reason は終わった理由（exitReason と exited の reason）。無ければ Driver が決める
+  // 引き継ぎ（src/api/sessions.ts の succeed）が使う。node と pty が実装する
+  setParent?(parent: string): void;             // summary の parent を付け替える。前任の子を後継の子にする
+  started?(timeoutMs: number): Promise<boolean>; // claude が起動した印を待つ。出れば true、先に終わるか時間切れなら false。無いものは待たない
   // 手が空いた子を止める仕組み（src/sessions/idle-stop.ts）が使う。無いものは数えない
   viewers?(): number;              // 今つながっている端末の画面の数。0 より多い間は止めない
   idleSince?(): number;            // summary の lastActivityAt に数えない動き（端末の画面の接続と切断）の最後の時刻

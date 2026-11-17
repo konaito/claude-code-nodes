@@ -5,11 +5,18 @@
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
 
+// いちばん早く枠が戻るコマンドと、その時刻（ミリ秒。cam は秒で返す）
+export type NextAvailable = { account: string; at: number };
 export type AccountChoice = {
   name?: string;      // 選んだ cam のコマンド。選べなければ無い
+  email?: string;     // そのコマンドの email（cam usage の accounts から）。分からなければ無い
   configDir?: string; // 子に渡す CLAUDE_CONFIG_DIR。--default のコマンドと、選べないときは無い（ノードの env のまま）
+  // cam が「枠の残るコマンドが無い」（choice: none）と答えた。cam が無い、落ちた、判定できないときは付かない
+  none?: { nextAvailable: NextAvailable | null };
   reason: string;     // ログに出す一言
 };
+// fresh は使い回しを使わずに cam usage を取り直す（引き継ぎ。上限で止まった直後に呼ばれるので、古い best だと前任と同じアカウントになる）
+export type Picker = ((o?: { fresh?: boolean }) => Promise<AccountChoice>) & { emailOf: (name: string) => string | undefined };
 export type Exec = (argv: string[], timeoutMs: number) => Promise<{ stdout: string; code: number | null }>;
 export type AccountDeps = {
   cam?: string;          // cam の実行ファイル。無ければ選ばない
@@ -25,20 +32,27 @@ export type AccountDeps = {
 const NAME = /^[a-z][a-z0-9_-]*$/; // cam のコマンド名の決まり（cam の valid_name）
 const isDirOf = async (p: string) => (await stat(p).catch(() => null))?.isDirectory() ?? false;
 
-// 選ぶ関数を返す。結果は ttl の間使い回し、同時の呼び出しは1回の cam usage にまとめる
-export function camAccount(deps: AccountDeps): () => Promise<AccountChoice> {
+// 選ぶ関数を返す。結果は ttl の間使い回し、同時の呼び出しは1回の cam usage にまとめる。
+// fresh を渡すと使い回さずに取り直す（走っている最中の cam usage があれば、それを待つ）。取り直した結果は次の呼び出しが使い回す。
+// emailOf は、最後に読めた cam usage の accounts から名前で email を引く（端末のセッションのアカウントに使う）
+export function camAccount(deps: AccountDeps): Picker {
   const now = deps.now ?? Date.now;
   const ttl = deps.ttlMs ?? 30_000;
+  const emails = new Map<string, string>();
   let cached: { at: number; p: Promise<AccountChoice> } | undefined;
-  return () => {
-    if (cached && now() - cached.at < ttl) return cached.p;
-    const p = pick(deps).then((c) => { deps.log?.(`account: ${c.name ?? "-"} (${c.reason})`); return c; });
+  let running: Promise<AccountChoice> | undefined;
+  const fn = (o?: { fresh?: boolean }) => {
+    if (running) return running;
+    if (!o?.fresh && cached && now() - cached.at < ttl) return cached.p;
+    const p: Promise<AccountChoice> = pick(deps, emails).then((c) => { deps.log?.(`account: ${c.name ?? "-"} (${c.reason})`); return c; }).finally(() => { if (running === p) running = undefined; });
+    running = p;
     cached = { at: now(), p };
     return p;
   };
+  return Object.assign(fn, { emailOf: (name: string) => emails.get(name) });
 }
 
-async function pick(deps: AccountDeps): Promise<AccountChoice> {
+async function pick(deps: AccountDeps, emails: Map<string, string>): Promise<AccountChoice> {
   if (!deps.cam) return { reason: "cam not found; using the node's claude config" };
   let r: { stdout: string; code: number | null };
   try {
@@ -47,22 +61,28 @@ async function pick(deps: AccountDeps): Promise<AccountChoice> {
     return { reason: `cam usage failed: ${e instanceof Error ? e.message : String(e)}; using the node's claude config` };
   }
   if (r.code !== 0) return { reason: `cam usage exited ${r.code}; using the node's claude config` };
-  let v: { best?: unknown; choice?: unknown; next_available?: { name?: unknown; at?: unknown } | null };
+  let v: { best?: unknown; choice?: unknown; next_available?: { name?: unknown; at?: unknown } | null; accounts?: unknown };
   try {
     v = JSON.parse(r.stdout);
   } catch {
     return { reason: "cam usage did not return JSON; using the node's claude config" };
   }
+  if (Array.isArray(v?.accounts)) {
+    for (const a of v.accounts as { name?: unknown; email?: unknown }[]) {
+      if (typeof a?.name === "string" && NAME.test(a.name) && typeof a.email === "string" && a.email) emails.set(a.name, a.email);
+    }
+  }
   if (typeof v?.best !== "string" || !v.best) {
-    const next = v?.next_available && typeof v.next_available.name === "string" && typeof v.next_available.at === "number"
-      ? `, next: ${v.next_available.name} at ${new Date(v.next_available.at * 1000).toISOString()}` : "";
-    return { reason: `cam has no usable account (choice: ${String(v?.choice)}${next}); using the node's claude config` };
+    const n = v?.next_available && typeof v.next_available.name === "string" && typeof v.next_available.at === "number" ? { account: v.next_available.name, at: v.next_available.at * 1000 } : null;
+    const next = n ? `, next: ${n.account} at ${new Date(n.at).toISOString()}` : "";
+    return { ...(v?.choice === "none" ? { none: { nextAvailable: n } } : {}), reason: `cam has no usable account (choice: ${String(v?.choice)}${next}); using the node's claude config` };
   }
   if (!NAME.test(v.best)) return { reason: `cam returned an invalid name: ${v.best}; using the node's claude config` };
+  const email = emails.get(v.best);
   // launcher と1字も違わないパスにする。Keychain の項目名がこのパスの sha256 で決まるので、realpath や末尾の / で変えない
   const dir = join(deps.profilesDir, v.best);
-  if (await (deps.isDir ?? isDirOf)(dir)) return { name: v.best, configDir: dir, reason: `cam usage best (${String(v.choice)})` };
-  return { name: v.best, reason: `cam usage best (${String(v.choice)}), a --default command; using the node's claude config` };
+  if (await (deps.isDir ?? isDirOf)(dir)) return { name: v.best, ...(email ? { email } : {}), configDir: dir, reason: `cam usage best (${String(v.choice)})` };
+  return { name: v.best, ...(email ? { email } : {}), reason: `cam usage best (${String(v.choice)}), a --default command; using the node's claude config` };
 }
 
 // 子に渡す環境。configDir があるときだけ CLAUDE_CONFIG_DIR を差し替える
@@ -72,21 +92,89 @@ export function withAccount<T extends Record<string, string | undefined>>(env: T
 
 // 起動の直前の用意。選んだプロファイルに launcher と同じく `cam sync` を掛け（共有のリンクと MCP と信頼済みフォルダの同期）、
 // cwd をそのプロファイルの .claude.json で信頼済みにする（#46。claude は CLAUDE_CONFIG_DIR の中の .claude.json を読む）。
-// 返すのは子の環境。プロファイルを選ばなかったときは undefined（ノードの env のまま）
+// 返すのは子の環境と、選んだアカウント（一覧に出す）。プロファイルを選ばなかったときは env が無い（ノードの env のまま）。
+// --default のコマンドは env を触らないが、ノードの設定がそのアカウントなので account は返す。選べなかったときは account も無い
+export type Prepared = { env?: Record<string, string | undefined>; account?: string; accountEmail?: string };
 export type PrepareDeps = {
   pick: () => Promise<AccountChoice>;
   env: () => Record<string, string | undefined>;
   sync?: (name: string) => Promise<unknown>;
   trust?: (cwd: string, configFile: string) => Promise<unknown>;
 };
-export function accountPreparer(d: PrepareDeps): (cwd: string) => Promise<Record<string, string | undefined> | undefined> {
+export function accountPreparer(d: PrepareDeps): (cwd: string) => Promise<Prepared> {
   return async (cwd) => {
     const a = await d.pick().catch(() => undefined);
-    if (!a?.configDir || !a.name) return undefined;
+    if (!a?.name) return {};
+    const who = { account: a.name, ...(a.email ? { accountEmail: a.email } : {}) };
+    if (!a.configDir) return who;
     await d.sync?.(a.name).catch(() => {});
     await d.trust?.(cwd, join(a.configDir, ".claude.json")).catch(() => {});
-    return withAccount(d.env(), a);
+    return { env: withAccount(d.env(), a), ...who };
   };
+}
+
+// 端末のセッション（人が起動した claude）のアカウント。プロセスの環境の CLAUDE_CONFIG_DIR が <profilesDir>/<名前> なら、その名前を返す。
+// ps の出力は引数の後ろに環境が続く。引数だけの出力を頭から除いた残りを環境として読むので、引数（最初の文など）の中の文字列には当たらない。
+// 読めないとき（ps が落ちる、返らない、環境が見えない、プロファイルの外）は undefined。pid と起動時刻ごとに1回だけ読む。
+// 一覧（Sessions.list）が毎回ここを待つので、ps と email の待ちは timeoutMs で打ち切る。返らない ps で一覧を止めない。
+// 読めた結果（プロファイルの外や環境に無いことを含む）は覚えたままにする。落ちたか打ち切った分は、retryMs を過ぎたら次の呼び出しで読み直す
+// （機械が混んでいて ps が遅かっただけのセッションに、ずっとアカウントが載らないままにしない）
+export type PidAccountDeps = {
+  profilesDir: string;
+  run: (argv: string[]) => Promise<{ stdout: string; code: number | null }>;
+  emailOf?: (name: string) => string | undefined | Promise<string | undefined>;
+  timeoutMs?: number; // ps と email を待つ上限。既定 2 秒
+  retryMs?: number;   // 読めなかった pid を読み直すまでの間隔。既定 60 秒
+  now?: () => number;
+};
+const PID_CACHE_MAX = 256;
+const PID_TIMEOUT_MS = 2000;
+const PID_RETRY_MS = 60_000;
+// ms を過ぎたら投げる。元の約束は止めない（止めるのは run の側。main.ts は同じ上限で ps を kill する）
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((ok, ng) => {
+    const t = setTimeout(() => ng(new Error(`timed out after ${ms}ms`)), ms);
+    p.then((v) => { clearTimeout(t); ok(v); }, (e) => { clearTimeout(t); ng(e); });
+  });
+}
+export function pidAccount(deps: PidAccountDeps): (pid: number | undefined, startedAt?: number) => Promise<{ account: string; accountEmail?: string } | undefined> {
+  const now = deps.now ?? Date.now;
+  const timeoutMs = deps.timeoutMs ?? PID_TIMEOUT_MS;
+  const retryMs = deps.retryMs ?? PID_RETRY_MS;
+  type Slot = { p: Promise<string | undefined>; failedAt?: number };
+  const cache = new Map<string, Slot>();
+  const read = async (pid: number) => {
+    const [argv, full] = await Promise.all([deps.run(["ps", "ww", "-o", "command=", "-p", String(pid)]), deps.run(["ps", "eww", "-o", "command=", "-p", String(pid)])]);
+    return accountFromPs(argv.stdout, full.stdout, deps.profilesDir);
+  };
+  return async (pid, startedAt) => {
+    if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
+    const key = `${pid}:${startedAt ?? 0}`;
+    let slot = cache.get(key);
+    if (slot?.failedAt !== undefined && now() - slot.failedAt >= retryMs) { cache.delete(key); slot = undefined; }
+    if (!slot) {
+      const s: Slot = { p: within(Promise.resolve().then(() => read(pid)), timeoutMs).catch(() => { s.failedAt = now(); return undefined; }) };
+      slot = s;
+      cache.set(key, s);
+      if (cache.size > PID_CACHE_MAX) cache.delete(cache.keys().next().value!);
+    }
+    const name = await slot.p;
+    if (!name) return undefined;
+    const email = await within(Promise.resolve().then(() => deps.emailOf?.(name)), timeoutMs).catch(() => undefined);
+    return { account: name, ...(email ? { accountEmail: email } : {}) };
+  };
+}
+// argv は `ps ww -o command=`、withEnv は `ps eww -o command=` の出力
+export function accountFromPs(argv: string, withEnv: string, profilesDir: string): string | undefined {
+  const a = argv.replace(/\n+$/, "");
+  const f = withEnv.replace(/\n+$/, "");
+  if (!a || !f.startsWith(a)) return undefined;
+  const m = /(?:^|\s)CLAUDE_CONFIG_DIR=(\S+)/.exec(f.slice(a.length));
+  if (!m) return undefined;
+  const base = profilesDir.endsWith("/") ? profilesDir : `${profilesDir}/`;
+  if (!m[1]!.startsWith(base)) return undefined;
+  const name = m[1]!.slice(base.length).replace(/\/$/, "");
+  return NAME.test(name) ? name : undefined;
 }
 
 // 上限時間つきで実行する。過ぎたら止めて投げる

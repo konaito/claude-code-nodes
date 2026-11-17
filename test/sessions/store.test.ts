@@ -173,3 +173,14 @@ test("add with historyBase numbers events after it, and a bigger old seq wins on
   expect(store.historyBase("p1")).toBe(10);
   expect(store.historyBase("unknown")).toBe(0);
 });
+
+test("touch は、イベント無しで変わった summary を一覧の購読に流す（引き継ぎで parent を付け替えたとき）", async () => {
+  const store = new SessionStore();
+  const d = new FakeDriver({ id: "s1", capabilities: { send: true, permissions: true, interrupt: true, stop: true, events: true } });
+  store.add(d);
+  const it = store.subscribeAll()[Symbol.asyncIterator]();
+  store.touch("s1");
+  const c = await it.next();
+  expect(c.value.id).toBe("s1");
+  store.touch("unknown"); // 台帳に無い id は何もしない
+});

@@ -93,6 +93,11 @@ export class SessionStore {
     e.subs.clear();
     this.emitChange(e.driver);
   }
+  // Driver の summary がイベント無しで変わった（引き継ぎで parent を付け替えた）ときに呼ぶ。一覧の購読に流す
+  touch(id: string) {
+    const e = this.entries.get(id);
+    if (e) this.emitChange(e.driver);
+  }
   eventsSince(id: string, after: number): DriverEvent[] {
     return this.must(id).events.filter((ev) => ev.seq > after);
   }
