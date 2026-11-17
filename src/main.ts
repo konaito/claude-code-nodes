@@ -68,6 +68,7 @@ export function buildDeps(cfg: Config, configFile?: string): Deps {
   };
 }
 
+const PS_TIMEOUT_MS = 2000; // 端末のセッションのアカウントを読む ps を待つ上限
 // 子のアカウントの用意。cam は launchd の PATH（~/.cam/bin を含まない）でも見つかるよう、~/.cam/bin/cam も見る。
 // pick は選ぶ関数、prepare は起動の直前の用意、ofPid は端末のセッションのアカウント（プロセスの環境から読む）
 function accountSetup() {
@@ -89,7 +90,8 @@ function accountSetup() {
     if (!fromFile.has(name)) fromFile.set(name, emailIn(join(profilesDir, name, ".claude.json")));
     return fromFile.get(name)!;
   };
-  return { pick, prepare, ofPid: pidAccount({ profilesDir, run: bunRunner, emailOf }) };
+  // ps は2秒で打ち切って kill する（pidAccount も同じ上限で待つのをやめる）。一覧が毎回ここを通るので、返らない ps で止めない
+  return { pick, prepare, ofPid: pidAccount({ profilesDir, run: (argv) => bunExec(argv, PS_TIMEOUT_MS), emailOf, timeoutMs: PS_TIMEOUT_MS }) };
 }
 
 // 呼び手。Access の teamDomain と aud があれば JWT を検証する（仕様 2.1）。無ければ 127.0.0.1 の試験用にヘッダだけを見る

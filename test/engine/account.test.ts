@@ -166,6 +166,58 @@ test("pidAccount は pid と起動時刻ごとに1回だけ ps を呼び、email
   expect(await of(0)).toBeUndefined();
 });
 
+test("pidAccount は返らない ps を上限で打ち切って undefined を返す（一覧を止めない）。同時の呼び出しも1回の ps を待つだけ", async () => {
+  let calls = 0;
+  const run = () => { calls++; return new Promise<{ stdout: string; code: number }>(() => {}); }; // 返らない
+  const of = pidAccount({ profilesDir: "/p", run, timeoutMs: 30 });
+  const t0 = Date.now();
+  expect(await Promise.all([of(7, 1), of(7, 1), of(8, 1)])).toEqual([undefined, undefined, undefined]);
+  expect(Date.now() - t0).toBeLessThan(1000);
+  expect(calls).toBe(4); // pid ごとに ps ww と ps eww を1回ずつ
+  // 打ち切った直後は読み直さず、すぐ undefined を返す
+  const t1 = Date.now();
+  expect(await of(7, 1)).toBeUndefined();
+  expect(Date.now() - t1).toBeLessThan(20);
+  expect(calls).toBe(4);
+});
+
+test("pidAccount は、落ちたか打ち切った pid を retryMs の後に読み直す。読めた結果（アカウント無しを含む）は読み直さない", async () => {
+  const P = "/h/.cam/profiles";
+  let t = 0;
+  let hang = true;
+  const calls: string[] = [];
+  const run = async (argv: string[]) => {
+    calls.push(argv.at(-1)!);
+    if (argv.at(-1) === "7" && hang) return new Promise<{ stdout: string; code: number }>(() => {});
+    // pid 7 はプロファイルの claude、pid 8 は CLAUDE_CONFIG_DIR を持たない claude
+    return { stdout: argv[1] === "eww" && argv.at(-1) === "7" ? `claude CLAUDE_CONFIG_DIR=${P}/coo\n` : "claude\n", code: 0 };
+  };
+  const of = pidAccount({ profilesDir: P, run, timeoutMs: 20, retryMs: 1000, now: () => t });
+  expect(await of(7, 1)).toBeUndefined(); // 機械が混んでいて ps が返らなかった
+  expect(await of(8, 1)).toBeUndefined(); // 読めたが、プロファイルの claude ではない
+  expect(calls.length).toBe(4);
+  hang = false;
+  t = 999;
+  expect(await of(7, 1)).toBeUndefined(); // まだ読み直さない
+  expect(calls.length).toBe(4);
+  t = 1000;
+  expect(await of(7, 1)).toEqual({ account: "coo" }); // 読み直して載る
+  expect(calls.length).toBe(6);
+  t = 100_000;
+  expect(await of(7, 1)).toEqual({ account: "coo" });
+  expect(await of(8, 1)).toBeUndefined();
+  expect(calls.length).toBe(6); // 読めた結果は覚えたまま
+});
+
+test("pidAccount は email の読み出しが返らなくても、上限でアカウントだけを返す", async () => {
+  const P = "/h/.cam/profiles";
+  const run = async (argv: string[]) => ({ stdout: argv[1] === "eww" ? `claude CLAUDE_CONFIG_DIR=${P}/coo\n` : "claude\n", code: 0 });
+  const of = pidAccount({ profilesDir: P, run, timeoutMs: 20, emailOf: () => new Promise<string>(() => {}) });
+  const t0 = Date.now();
+  expect(await of(7, 1)).toEqual({ account: "coo" });
+  expect(Date.now() - t0).toBeLessThan(1000);
+});
+
 test("bunExec は上限時間を過ぎたら止めて投げる", async () => {
   const t0 = Date.now();
   await expect(bunExec(["sleep", "5"], 100)).rejects.toThrow(/timed out/);

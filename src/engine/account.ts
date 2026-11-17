@@ -115,15 +115,34 @@ export function accountPreparer(d: PrepareDeps): (cwd: string) => Promise<Prepar
 
 // 端末のセッション（人が起動した claude）のアカウント。プロセスの環境の CLAUDE_CONFIG_DIR が <profilesDir>/<名前> なら、その名前を返す。
 // ps の出力は引数の後ろに環境が続く。引数だけの出力を頭から除いた残りを環境として読むので、引数（最初の文など）の中の文字列には当たらない。
-// 読めないとき（ps が落ちる、環境が見えない、プロファイルの外）は undefined。pid と起動時刻ごとに1回だけ読む
+// 読めないとき（ps が落ちる、返らない、環境が見えない、プロファイルの外）は undefined。pid と起動時刻ごとに1回だけ読む。
+// 一覧（Sessions.list）が毎回ここを待つので、ps と email の待ちは timeoutMs で打ち切る。返らない ps で一覧を止めない。
+// 読めた結果（プロファイルの外や環境に無いことを含む）は覚えたままにする。落ちたか打ち切った分は、retryMs を過ぎたら次の呼び出しで読み直す
+// （機械が混んでいて ps が遅かっただけのセッションに、ずっとアカウントが載らないままにしない）
 export type PidAccountDeps = {
   profilesDir: string;
   run: (argv: string[]) => Promise<{ stdout: string; code: number | null }>;
   emailOf?: (name: string) => string | undefined | Promise<string | undefined>;
+  timeoutMs?: number; // ps と email を待つ上限。既定 2 秒
+  retryMs?: number;   // 読めなかった pid を読み直すまでの間隔。既定 60 秒
+  now?: () => number;
 };
 const PID_CACHE_MAX = 256;
+const PID_TIMEOUT_MS = 2000;
+const PID_RETRY_MS = 60_000;
+// ms を過ぎたら投げる。元の約束は止めない（止めるのは run の側。main.ts は同じ上限で ps を kill する）
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((ok, ng) => {
+    const t = setTimeout(() => ng(new Error(`timed out after ${ms}ms`)), ms);
+    p.then((v) => { clearTimeout(t); ok(v); }, (e) => { clearTimeout(t); ng(e); });
+  });
+}
 export function pidAccount(deps: PidAccountDeps): (pid: number | undefined, startedAt?: number) => Promise<{ account: string; accountEmail?: string } | undefined> {
-  const cache = new Map<string, Promise<string | undefined>>();
+  const now = deps.now ?? Date.now;
+  const timeoutMs = deps.timeoutMs ?? PID_TIMEOUT_MS;
+  const retryMs = deps.retryMs ?? PID_RETRY_MS;
+  type Slot = { p: Promise<string | undefined>; failedAt?: number };
+  const cache = new Map<string, Slot>();
   const read = async (pid: number) => {
     const [argv, full] = await Promise.all([deps.run(["ps", "ww", "-o", "command=", "-p", String(pid)]), deps.run(["ps", "eww", "-o", "command=", "-p", String(pid)])]);
     return accountFromPs(argv.stdout, full.stdout, deps.profilesDir);
@@ -131,15 +150,17 @@ export function pidAccount(deps: PidAccountDeps): (pid: number | undefined, star
   return async (pid, startedAt) => {
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return undefined;
     const key = `${pid}:${startedAt ?? 0}`;
-    let p = cache.get(key);
-    if (!p) {
-      p = read(pid).catch(() => undefined);
-      cache.set(key, p);
+    let slot = cache.get(key);
+    if (slot?.failedAt !== undefined && now() - slot.failedAt >= retryMs) { cache.delete(key); slot = undefined; }
+    if (!slot) {
+      const s: Slot = { p: within(Promise.resolve().then(() => read(pid)), timeoutMs).catch(() => { s.failedAt = now(); return undefined; }) };
+      slot = s;
+      cache.set(key, s);
       if (cache.size > PID_CACHE_MAX) cache.delete(cache.keys().next().value!);
     }
-    const name = await p;
+    const name = await slot.p;
     if (!name) return undefined;
-    const email = await Promise.resolve(deps.emailOf?.(name)).catch(() => undefined);
+    const email = await within(Promise.resolve().then(() => deps.emailOf?.(name)), timeoutMs).catch(() => undefined);
     return { account: name, ...(email ? { accountEmail: email } : {}) };
   };
 }
