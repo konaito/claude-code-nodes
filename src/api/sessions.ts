@@ -184,7 +184,15 @@ export class Sessions {
 
   private withReason(s: SessionSummary): SessionSummary {
     const reason = this.d.store.exitReasonOf(s.id);
-    return reason && !s.exitReason ? { ...s, exitReason: reason } : s;
+    return this.withSuccessor(reason && !s.exitReason ? { ...s, exitReason: reason } : s);
+  }
+  // 引き継がれた前任の終わりの理由を、いまの後継の id にそろえる。もとから終わっていた前任（理由は前のまま）と、
+  // 引き継ぎ直した前任（理由は止まった前の後継を指す）でも、一覧と詳細から後継が読めるようにする
+  private withSuccessor(s: SessionSummary): SessionSummary {
+    const succ = this.successors.get(s.id);
+    if (!succ || s.state !== "exited") return s;
+    const reason = succeededReason(succ);
+    return s.exitReason === reason ? s : { ...s, exitReason: reason };
   }
 
   // 根も symlink（macOS の /var など）を解いて比べる。解けない根はそのまま
@@ -259,7 +267,7 @@ export class Sessions {
   }
   // states を渡すと、その状態のものだけを返す。exited を含まなければ、終わったセッションの一覧（listSessions）を読まない
   async list(parent: string | null, states: Set<State> | null = null): Promise<SessionSummary[]> {
-    const live = this.d.store.list().map((s) => (this.depths.has(s.id) ? { ...s, depth: this.depths.get(s.id) } : s));
+    const live = this.d.store.list().map((s) => this.withSuccessor(this.depths.has(s.id) ? { ...s, depth: this.depths.get(s.id) } : s));
     const seen = new Set(live.map((s) => s.id));
     // PTY の子は `claude agents --json` にも出る。id で除き、端末で /clear して id が変わっても pid で除く
     const ptyPids = new Set(live.filter((s) => s.kind === "pty" && s.state !== "exited" && s.pid).map((s) => s.pid));
@@ -378,13 +386,27 @@ export class Sessions {
     if (typeof body.resume !== "string" || !body.resume || body.fork !== true) throw new HttpError(400, { error: "succeed requires resume (the predecessor's session id) and fork: true" });
     const predId = body.resume;
     // 画面の二度押しと、中継の待ち（15秒）が切れた後の送り直しで、後継を2体立てない
-    const done = this.successors.get(predId);
+    const before = this.successors.get(predId);
+    const done = await this.successorOf(predId);
     if (done) throw new HttpError(409, { error: `session ${predId} was already succeeded by ${done}`, code: "already_succeeded", successor: done });
     if (this.succeeding.has(predId)) throw new HttpError(409, { error: `session ${predId} is being succeeded right now`, code: "succeeding", hint: "list the sessions to see the result" });
     this.succeeding.add(predId);
-    try { return await this.succeedLocked(body, predId, caller, tracer); } finally { this.succeeding.delete(predId); }
+    // before は、会話を残さずに止まった前の後継。前任の子はその後継に付け替えてあるので、そこからも新しい後継へ移す
+    try { return await this.succeedLocked(body, predId, caller, tracer, before); } finally { this.succeeding.delete(predId); }
   }
-  private async succeedLocked(body: CreateBody, predId: string, caller: Caller, tracer: DepthTracer) {
+  // 引き継ぎ済みの前任の、続きを持っている後継。後継が台帳で生きているか、後継に会話があるときだけ返す。
+  // pty の fork は1通目が届くまで jsonl が無い。1通も受けずに止まった後継（idle-stop、stop_session）は resume できず、
+  // 会話は前任にしか無いので、後継として案内せず、前任をもう一度引き継げるようにする。
+  // 覚えは消さない（前任の子はその後継の名前になっているので、引き継ぎ直しのときに子を探す手がかりにする）
+  private async successorOf(predId: string): Promise<string | undefined> {
+    const succ = this.successors.get(predId);
+    if (!succ) return undefined;
+    const live = this.d.store.get(succ);
+    if (live && live.summary().state !== "exited") return succ;
+    if (await Promise.resolve().then(() => this.d.history.get(succ)).catch(() => undefined)) return succ;
+    return undefined;
+  }
+  private async succeedLocked(body: CreateBody, predId: string, caller: Caller, tracer: DepthTracer, lost?: string) {
     // 前任を探す。台帳（生きているものと、終わって30分以内のもの）、端末、履歴の順
     const inStore = this.d.store.get(predId);
     const term = inStore ? undefined : (await this.agents()).find((a) => a.sessionId === predId);
@@ -447,7 +469,7 @@ export class Sessions {
       if (forked) await this.d.teleport?.fns.deleteSession(forked, pred.cwd ? { dir: pred.cwd } : undefined).catch(() => {});
       throw new HttpError(502, { error: "the successor did not start; the predecessor and its children were left as they were", code: "successor_failed", reason: failed });
     }
-    const adopted = await this.adopt(predId, driver.id);
+    const adopted = await this.adopt(lost ? [predId, lost] : [predId], driver.id);
     const retired = await this.retire(predId, !!term, driver.id);
     this.successors.set(predId, driver.id);
     if (this.successors.size > SUCCESSORS_MAX) this.successors.delete(this.successors.keys().next().value!);
@@ -459,25 +481,26 @@ export class Sessions {
   // 前任の子を後継の子にする。台帳にあるセッション（終わって30分以内のものを含む）のうち、知らせの宛先（parentOf）が前任になるものが対象。
   // parent が前任を名乗るものは、役割はそのままで後継の名前にする。受け口を挟んだ子は、受け口のセッションが台帳にあれば受け口の parent が
   // 付け替わるので触らない。受け口が台帳から掃かれていれば（履歴の parent は書き換えられない）、子を後継の直接の子にする
-  private async adopt(predId: string, succId: string): Promise<string[]> {
+  // from は前任の id。会話を残さずに止まった前の後継があれば、それも入る（子はその名前になっている）
+  private async adopt(from: string[], succId: string): Promise<string[]> {
     const node = this.d.nodeName;
-    const p8 = predId.slice(0, 8);
+    const olds = new Set(from.map((id) => id.slice(0, 8)));
     const all = this.d.store.list();
     let past: SessionSummary[] | undefined;
     const out: string[] = [];
     for (const s of all) {
-      if (s.id === predId || s.id === succId) continue;
+      if (from.includes(s.id) || s.id === succId) continue;
       const a = s.parent ? parseAgent(s.parent) : undefined;
       if (!a?.sid || a.node !== node) continue;
       let role: string | undefined;
-      if (a.sid === p8) role = a.role;
+      if (olds.has(a.sid)) role = a.role;
       else if (a.role === "lobby") {
         const lsid = a.sid;
         if (all.some((x) => x.id.startsWith(lsid))) continue;
         past ??= await this.past().catch(() => []);
         const lobbies = past.filter((x) => x.id.startsWith(lsid));
         const lp = lobbies.length === 1 && lobbies[0]!.parent ? parseAgent(lobbies[0]!.parent) : undefined;
-        if (lp?.sid === p8 && lp.node === node && lp.role !== "lobby") role = lp.role;
+        if (lp?.sid && olds.has(lp.sid) && lp.node === node && lp.role !== "lobby") role = lp.role;
       }
       const d = role === undefined ? undefined : this.d.store.get(s.id);
       if (!d?.setParent) continue;
@@ -518,7 +541,7 @@ export class Sessions {
     const driver = await this.find(id);
     if (driver) {
       const term = driver.kind === "terminal" ? (await this.agents()).find((x) => x.sessionId === id) : undefined;
-      const s = term ? await this.termSummary(term) : driver.summary();
+      const s = term ? await this.termSummary(term) : this.withSuccessor(driver.summary());
       return { ...s, ...(this.depths.has(driver.id) ? { depth: this.depths.get(driver.id) } : {}), pending: driver.pending(), cursor: await this.cursor(id) };
     }
     const past = await this.d.history.get(id);
@@ -558,7 +581,7 @@ export class Sessions {
     const driver = await this.must(id);
     if (driver.summary().state === "exited") {
       // 引き継がれた前任は resume を勧めない（後継と同じ作業を二重に進めるため）。後継の id を返す
-      const succ = this.successors.get(driver.id);
+      const succ = await this.successorOf(driver.id);
       throw new HttpError(409, succ ? { error: "session exited", hint: `succeeded by ${succ}; send to that session and do not resume this one`, successor: succ } : { error: "session exited", hint: "resume" });
     }
     const body = (await req.json().catch(() => ({}))) as { text?: unknown };

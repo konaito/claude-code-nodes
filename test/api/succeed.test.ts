@@ -268,6 +268,9 @@ test("前任が履歴だけで呼び手が名乗らなくても、後継の pare
   expect(r.body.depth).toBe(1);
   expect(r.body.succeeded).toEqual({ from: pred, stopped: true, adopted: [child] });
   expect((await h.get(child)).parent).toBe(agent(r.body.id, "lead"));
+  // 履歴だけの前任も、一覧と詳細の終わりの理由から後継が読める
+  expect((await h.get(pred)).exitReason).toBe(succeededReason(r.body.id));
+  expect((await h.list()).find((x) => x.id === pred)!.exitReason).toBe(succeededReason(r.body.id));
   // 履歴だけの前任は種類が分からないので、terminal を省くと node になる
   const h2 = harness({ past });
   const r2 = await h2.post({ resume: pred, fork: true, succeed: true });
@@ -309,6 +312,8 @@ test("もとから終わっていた前任（台帳に残っているもの）�
   const r = await h.post({ resume: f.parent, fork: true, succeed: true });
   expect(r.status).toBe(201);
   expect(r.body.succeeded).toEqual({ from: f.parent, stopped: true, adopted: [f.a, f.b] });
+  // 終わりの理由は前のまま（exit 1）だが、一覧と詳細では後継の id が読める
+  expect((await h.get(f.parent)).exitReason).toBe(succeededReason(r.body.id));
 });
 
 test("受け口を挟んだ子も後継に付く。受け口が台帳にあれば受け口を付け替え、履歴だけなら子を後継の直接の子にする", async () => {
@@ -469,6 +474,34 @@ test("同じ前任の引き継ぎは1回だけ。済んだ後は 409 で後継�
   expect(next.body.parent).toBe("local");
   expect(next.body.succeeded.adopted).toEqual([f.a, f.b]);
   expect((await h.get(f.a)).parent).toBe(agent(next.body.id, "meta"));
+});
+
+test("1通も受けずに止まった後継には会話が無い。そのときは同じ前任をもう一度引き継げる。後継に会話があれば断る", async () => {
+  const past: SessionSummary[] = [];
+  const h = harness({ past });
+  const f = await family(h);
+  const first = await h.post({ resume: f.parent, fork: true, succeed: true });
+  expect(first.status).toBe(201);
+  const send = async (id: string) => (await (await h.app.fetch(new Request(`http://127.0.0.1/api/sessions/${id}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "hi" }) }))).json()) as Record<string, any>;
+  expect((await send(f.parent)).successor).toBe(first.body.id);
+  // 後継を1通も送らずに止める（pty の fork は1通目まで jsonl が無いので、履歴にも残らない）
+  await h.app.fetch(new Request(`http://127.0.0.1/api/sessions/${first.body.id}`, { method: "DELETE" }));
+  // 前任への send は、もう後継を案内しない
+  expect(await send(f.parent)).toEqual({ error: "session exited", hint: "resume" });
+  const again = await h.post({ resume: f.parent, fork: true, succeed: true });
+  expect(again.status).toBe(201);
+  expect(again.body.id).not.toBe(first.body.id);
+  expect(again.body.succeeded.adopted).toEqual([f.a, f.b]); // 子は止まった後継から新しい後継へ移る
+  expect((await h.get(f.a)).parent).toBe(agent(again.body.id, "meta"));
+  // 前任の終わりの理由は、いまの後継を指す（止まった前の後継ではなく）
+  expect((await h.get(f.parent)).exitReason).toBe(succeededReason(again.body.id));
+  expect((await h.list()).find((x) => x.id === f.parent)!.exitReason).toBe(succeededReason(again.body.id));
+  // 止まった後継に会話が残っていれば（1通でも受けていれば）、続きはその後継にあるので断る
+  await h.app.fetch(new Request(`http://127.0.0.1/api/sessions/${again.body.id}`, { method: "DELETE" }));
+  past.push({ id: again.body.id, kind: "node", capabilities: termCaps, cwd: WORK, state: "exited", startedAt: 1, lastActivityAt: 1, parent: "local" });
+  const third = await h.post({ resume: f.parent, fork: true, succeed: true });
+  expect(third.status).toBe(409);
+  expect(third.body).toMatchObject({ code: "already_succeeded", successor: again.body.id });
 });
 
 test("孫（深さ2）の呼び手は、引き継ぎも作れない（深さの上限は呼び手で見る）", async () => {

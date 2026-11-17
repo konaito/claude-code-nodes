@@ -4,7 +4,7 @@
 
 ## 何をしたか
 
-- 単体試験を足した。`bun test`で499件が通り（liveの1件はskip）、`bunx tsc --noEmit -p .`も通った。
+- 単体試験を足した。`bun test`で500件が通り（liveの1件はskip）、`bunx tsc --noEmit -p .`も通った。
 - このMacに開発用のノードを別のポート（4391）と別の設定（`CCN_CONFIG`）で立てた。roots と受け口は`/private/tmp/ccn-succeed-dev`の下に置いた。
 - 開発用のノードは、本番のノード（launchd）と同じく、`CLAUDE_`で始まる環境変数を持たせずに起動した。
 - 試したのは捨てのセッションだけで、モデルはhaiku。同時に動かしたclaudeは3本まで。
@@ -83,6 +83,8 @@ Linuxでは、OrbStackのUbuntu（procps-ng 4.0.4）で`sleep`のプロセスに
 - ノードを起動し直すと、付け替えた子のparentは前任の名前（`agent:devnode/bab8f625/lead`）に戻った。付け替えはメモリだけにあるため。
 - 履歴だけの前任を、呼び手を名乗らずに引き継ぐと、後継のparentは履歴のparentになった。`local`にはならなかった。
 - 開発用のノードの捨てのセッションは、本番のノードの一覧に端末のセッションとして見えた。`claude agents --json`が機械の全部のclaudeを返すため。
+- 会話の無いidを`--resume`と`--fork-session`で起動すると、claudeは「No conversation found with session ID」を出してすぐ終わった。SessionStartのhookは届かなかった。起動の印が偽で通ることはない。
+- 前任と違うcwdで`--resume`と`--fork-session`を起動しても、会話は見つかった。SessionStartのhookは2.2秒で届いた。
 
 ## 要約から再開するかの確認画面
 
