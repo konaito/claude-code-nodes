@@ -37,6 +37,9 @@ export function render(m: ReturnType<typeof inner>, out: Out) {
   } else if (m.type === "permission_request") {
     // 中身（Bash の command、ファイルの道具の file_path）を出す。値の改行は逃がしてあるので1行に収まる
     out(`[permission] ${describePending(m)} requestId=${String(m.requestId)}`);
+  } else if (m.type === "command") {
+    // from 行を付けずに送った組み込みコマンド（#64）。誰が送ったかを出す
+    out(`[command] ${String((m as { text?: string }).text ?? "")} (from ${String((m as { from?: string }).from ?? "?")})`);
   } else if (m.type === "exited") {
     out(`[exited] ${String((m as { reason?: string }).reason ?? "")}`.trim());
   }

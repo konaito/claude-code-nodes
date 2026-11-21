@@ -89,7 +89,7 @@ test("initialize and tools/list expose the ten tools with annotations", async ()
   expect(c.getServerVersion()?.name).toBe("ccn");
   expect(c.getInstructions()).toContain("/skill.md");
   const { tools } = await c.listTools();
-  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "configure_session", "stop_session", "teleport_session"]);
+  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "run_command", "read_messages", "answer_permission", "interrupt_session", "configure_session", "stop_session", "teleport_session"]);
   const by = Object.fromEntries(tools.map((t) => [t.name, t]));
   expect(by.list_sessions!.annotations?.readOnlyHint).toBe(true);
   expect(by.read_messages!.annotations?.readOnlyHint).toBe(true);
@@ -710,5 +710,21 @@ test("configure_session sends PATCH with model and permissionMode and returns th
   expect(r).toMatchObject({ ok: true, id: LIVE });
   const none = await c.callTool({ name: "configure_session", arguments: { session: LIVE } });
   expect(none.isError).toBe(true);
+  await c.close();
+});
+
+test("run_command posts the command without a from line and returns the cursor (#64)", async () => {
+  const { app, store } = harness();
+  const live = store.get(LIVE) as unknown as FakeDriver & { command?: unknown };
+  const got: Array<[string, string]> = [];
+  live.command = async (text: string, from: string) => { got.push([text, from]); return { delivered: "stdin" }; };
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "run_command", arguments: { session: LIVE, command: "/context", as: "town", as_session: "abcd1234-0000-0000-0000-000000000000" } }));
+  expect(got).toEqual([["/context", "agent:vm/abcd1234/town"]]);
+  expect(r).toMatchObject({ id: LIVE, delivered: "stdin", from: "agent:vm/abcd1234/town" });
+  expect(typeof r.cursor).toBe("number");
+  const bad = await c.callTool({ name: "run_command", arguments: { session: LIVE, command: "/model sonnet" } });
+  expect(bad.isError).toBe(true);
+  expect((bad.content as Array<{ text: string }>)[0]!.text).toContain("use_configure");
   await c.close();
 });

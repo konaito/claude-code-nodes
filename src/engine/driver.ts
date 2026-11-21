@@ -22,6 +22,9 @@ export interface Driver {
   // モデルと権限モードを替える（PATCH /api/sessions/<id>、#64）。node は SDK の setModel と setPermissionMode、pty は同じ id で claude を起動し直す。
   // 無ければ API は 409。pty は待機中でなければ BusyError
   configure?(c: SessionConfig): Promise<void>;
+  // 組み込みコマンド（/compact、/context など）を from 行を付けずに送る（POST /api/sessions/<id>/command、#64）。
+  // from は送り手で、台帳に command のイベントとして残す。無ければ API は 409
+  command?(text: string, from: string): Promise<{ delivered: "stdin" | "pty" }>;
   stop(reason?: string): Promise<void>; // reason は終わった理由（exitReason と exited の reason）。無ければ Driver が決める
   // 引き継ぎ（src/api/sessions.ts の succeed）が使う。node と pty が実装する
   setParent?(parent: string): void;             // summary の parent を付け替える。前任の子を後継の子にする
@@ -44,6 +47,8 @@ export class ExitedError extends Error { constructor(reason?: string) { super(`s
 export class BusyError extends Error { constructor(msg: string) { super(msg); this.name = "BusyError"; } }
 // pty の configure で、新しい設定の claude が起動しなかった。rolledBack なら前の設定で起動し直してあり、セッションは続く。502
 export class RestartFailedError extends Error { constructor(msg: string, public rolledBack: boolean) { super(msg); this.name = "RestartFailedError"; } }
+// このセッションでは打てないコマンド（pty の /effort など、設定ファイルに保存されてしまうもの）。409
+export class CommandRefusedError extends Error { constructor(public code: string, msg: string) { super(msg); this.name = "CommandRefusedError"; } }
 export class NotFoundError extends Error { constructor(msg: string) { super(msg); this.name = "NotFoundError"; } }
 export class SocketGoneError extends Error {
   constructor(paths: string[]) { super(`no inbox socket: ${paths.join(", ") || "(no pid)"}`); this.name = "SocketGoneError"; }

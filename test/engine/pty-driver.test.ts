@@ -34,7 +34,7 @@ test("starts claude with --session-id, a 0600 settings file holding the hooks, a
   const h = s.hooks.PermissionRequest[0].hooks[0];
   expect(h.url).toBe(`http://127.0.0.1:9/hooks/pty/${d.id}`);
   expect(h.headers["x-ccn-hook-token"]).toBe(d.token);
-  expect(Object.keys(s.hooks).sort()).toEqual(["Notification", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
+  expect(Object.keys(s.hooks).sort()).toEqual(["Notification", "PermissionRequest", "PostCompact", "PostToolUse", "PostToolUseFailure", "PreCompact", "PreToolUse", "SessionStart", "Stop", "StopFailure", "UserPromptSubmit"]);
   // SessionStart は command の hook だけなので curl で送る。token は引数に出さず、0600 のヘッダのファイルから読む
   const ss = s.hooks.SessionStart[0].hooks[0];
   expect(ss.type).toBe("command");
@@ -672,4 +672,83 @@ test("an older transcript line read late does not overwrite the model set by con
   await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "x" });
   await d.hook({ hook_event_name: "Stop", last_assistant_message: "two" });
   expect(d.summary().model).toBe("claude-sonnet-5-5");
+});
+
+// ---- 組み込みコマンド（#64） ----
+test("command pastes the text without a from line, records the sender, and turns <local-command-stdout> into an assistant line and a result", async () => {
+  const lines: any[] = [];
+  const { d, p } = await start({}, { transcript: async () => lines, localDelaysMs: [5, 5, 5] });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "SessionStart" });
+  const r = await d.command("/context", "agent:vm/abcd1234/town");
+  expect(r.delivered).toBe("pty");
+  expect(p.writes).toContain("\x1b[200~/context\x1b[201~");
+  lines.push({ uuid: "c1", type: "user", timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: "user", content: "<command-name>/context</command-name>" } });
+  lines.push({ uuid: "c2", type: "user", timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: "user", content: "<local-command-stdout>\x1b[1mContext Usage\x1b[22m 6%</local-command-stdout>" } });
+  await waitFor(() => evs.some((e) => e.type === "result"));
+  const cmd = evs.find((e) => e.type === "command")!;
+  expect(cmd.data).toEqual({ text: "/context", from: "agent:vm/abcd1234/town" });
+  const a = evs.find((e) => e.type === "assistant")!.data as any;
+  expect(a.message.model).toBe("<synthetic>");
+  expect(a.message.content[0].text).toBe("Context Usage 6%");
+  expect((evs.find((e) => e.type === "result")!.data as any).result).toBe("Context Usage 6%");
+  expect(evs.filter((e) => e.type === "user")).toHaveLength(0); // <command-name> の行は流さない
+});
+
+test("command refuses /effort and /fast, which an interactive claude saves to the user's settings", async () => {
+  const { d, p } = await start();
+  await d.hook({ hook_event_name: "SessionStart" });
+  await expect(d.command("/effort low", "x")).rejects.toMatchObject({ name: "CommandRefusedError", code: "persists" });
+  await expect(d.command("/fast", "x")).rejects.toMatchObject({ code: "persists" });
+  expect(p.writes.join("")).not.toContain("/effort");
+});
+
+test("SessionStart with source clear moves the conversation to the new id; transcripts and restarts follow it", async () => {
+  const read: string[] = [];
+  const { d, f } = await start({}, { transcript: async (id) => { read.push(id); return id === "new-conv" ? [{ uuid: "u", type: "user" } as any] : []; } });
+  await d.hook({ hook_event_name: "SessionStart", source: "startup", session_id: d.id });
+  await d.hook({ hook_event_name: "SessionStart", source: "clear", session_id: "new-conv" });
+  expect(d.summary().conversationId).toBe("new-conv");
+  expect(d.summary().id).not.toBe("new-conv");
+  await d.hook({ hook_event_name: "Stop" });
+  expect(read.at(-1)).toBe("new-conv");
+  const done = d.configure({ model: "sonnet" });
+  await waitFor(() => f.procs.length === 2);
+  expect(f.procs[1]!.argv.slice(1, 3)).toEqual(["--resume", "new-conv"]);
+  await d.hook({ hook_event_name: "SessionStart", source: "resume", session_id: "new-conv" });
+  await done;
+});
+
+test("a manual /compact shows the session as running until PostCompact; an automatic one does not touch the state", async () => {
+  const { d } = await start({}, { transcript: async () => [], localDelaysMs: [1] });
+  await d.hook({ hook_event_name: "SessionStart" });
+  await d.hook({ hook_event_name: "PreCompact", trigger: "manual" });
+  expect(d.summary().state).toBe("running");
+  await d.hook({ hook_event_name: "PostCompact", trigger: "manual" });
+  expect(d.summary().state).toBe("idle");
+  await d.hook({ hook_event_name: "PreCompact", trigger: "auto" });
+  expect(d.summary().state).toBe("idle");
+});
+
+test("a command whose output never shows up in the transcript ends with an empty result; /clear ends at once", async () => {
+  const { d } = await start({}, { transcript: async () => [], localDelaysMs: [2, 2] });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "SessionStart" });
+  await d.command("/context", "x");
+  await waitFor(() => evs.some((e) => e.type === "result"));
+  expect((evs.find((e) => e.type === "result")!.data as any).result).toBe("");
+  await d.hook({ hook_event_name: "SessionStart", source: "clear", session_id: "c2" });
+  await tick();
+  expect(evs.filter((e) => e.type === "result")).toHaveLength(2);
+  expect(evs.some((e) => e.type === "conversation_reset")).toBe(true);
+});
+
+test("no empty result is sent while a manual /compact runs", async () => {
+  const { d } = await start({}, { transcript: async () => [], localDelaysMs: [2, 2] });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "SessionStart" });
+  await d.command("/compact", "x");
+  await d.hook({ hook_event_name: "PreCompact", trigger: "manual" });
+  await Bun.sleep(30);
+  expect(evs.some((e) => e.type === "result")).toBe(false);
 });

@@ -260,3 +260,38 @@ test("configure switches the model and the permission mode through the SDK, and 
   expect(fake2.calls.setModel).toEqual([]);
   await d2.stop();
 });
+
+test("command sends the text without a from line and records the sender as a command event (#64)", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", prompt: "hi" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  const evs: string[] = [];
+  void (async () => { for await (const e of d.events()) evs.push(`${e.type}:${JSON.stringify(e.data).slice(0, 60)}`); })();
+  await d.command("/compact keep it", "agent:vm/abcd1234/town");
+  await until(() => fake.received.length === 2);
+  expect(fake.received[1]).toBe("/compact keep it");
+  expect(evs.some((e) => e.startsWith("command:") && e.includes("agent:vm/abcd1234/town"))).toBe(true);
+  await d.stop();
+});
+
+test("after conversation_reset the next init's session_id becomes conversationId; the ccn id stays", async () => {
+  let push!: (m: unknown) => void;
+  const out: unknown[] = []; let wake: (() => void) | undefined;
+  push = (m) => { out.push(m); wake?.(); };
+  const queryFn = (() => {
+    const g = (async function* () { for (;;) { while (out.length) yield out.shift(); await new Promise<void>((r) => (wake = r)); } })() as any;
+    g.interrupt = async () => {}; g.setPermissionMode = async () => {}; g.setModel = async () => {};
+    return g;
+  }) as unknown as QueryFn;
+  push({ type: "system", subtype: "init", session_id: "s1", model: "m" });
+  const d = await NodeDriver.start({ cwd: "/tmp", prompt: "hi" }, { queryFn, nodeName: "vm" });
+  expect(d.id).toBe("s1");
+  push({ type: "system", subtype: "init", session_id: "s1", model: "m" });
+  await settle(10);
+  expect(d.summary().conversationId).toBeUndefined();
+  push({ type: "conversation_reset", new_conversation_id: "other" });
+  push({ type: "system", subtype: "init", session_id: "s2", model: "m" });
+  await settle(10);
+  expect(d.id).toBe("s1");
+  expect(d.summary().conversationId).toBe("s2");
+  await d.stop();
+});

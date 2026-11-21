@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Driver, RawEvent } from "./driver";
-import { BusyError, ExitedError, NotFoundError, RestartFailedError } from "./driver";
+import { BusyError, CommandRefusedError, ExitedError, NotFoundError, RestartFailedError } from "./driver";
 import type { SessionConfig } from "./driver";
 import type { AgentInfo } from "./agents";
 import type { Capabilities, PendingPermission, PermissionAnswer, SessionSummary, State } from "../sessions/types";
@@ -56,6 +56,7 @@ export type PtyDeps = {
   transcript?: (id: string, dir?: string) => Promise<TranscriptLine[]>;
   // PreToolUse と PostToolUse の後、その道具の tool_use か tool_result の行が出るまで読み直す間隔（ミリ秒）。全部待っても出なければあきらめる
   chaseDelaysMs?: number[];
+  localDelaysMs?: number[];
 };
 export type TranscriptLine = { type: string; uuid: string; message?: unknown; timestamp?: string };
 
@@ -68,11 +69,17 @@ const REPLAY_CHUNK = 64 * 1024;
 const DATA_GAP_MS = 17;
 const SUB_LIMIT = 8 * 1024 * 1024; // 1つの画面に溜めてよいバイト数。超えたら切り、画面は after で繋ぎ直す
 // PreToolUse は道具を使い始めた印。tool_use の行はこの時点で jsonl にある（2026-11-13 に実測、#43）。無いと承認の要らない道具の tool_use が、道具が終わるまで読まれない
-const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "Notification"] as const;
+// PreCompact と PostCompact は /compact の間の状態と、終わった後の出力の読み込みに使う（#64）
+const HOOK_EVENTS = ["UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "Notification", "PreCompact", "PostCompact"] as const;
 const PERMISSION_HOOK_TIMEOUT_S = 7 * 24 * 3600; // 承認は人が答えるまで待つ。切れると端末の承認画面だけが残る
 const EVENT_HOOK_TIMEOUT_S = 10;
 // PostToolUse の時点では tool_result の行はまだ jsonl に無い（2026-11-13 に実測、#43）。書かれるまで、この間隔で読み直す。合わせて約4.6秒
 const CHASE_DELAYS_MS = [150, 300, 600, 1200, 2400];
+// 組み込みコマンドの出力（<local-command-stdout> の行）は hook を伴わない（/context など）。貼った後、この間隔で読み直す。合わせて約9秒
+const LOCAL_DELAYS_MS = [300, 600, 1200, 2400, 4800];
+// 対話の claude では、設定ファイルに保存されてしまうコマンド（公式の文書 model-config、fast-mode。/model は API が先に断る）
+const PERSISTING_COMMANDS = new Set(["effort", "fast"]);
+const ANSI = /\x1b\[[0-9;?]*[ -\/]*[@-~]/g;
 
 type Waiting = { p: PendingPermission; resolve: (out: unknown) => void };
 type Sub = { q: AsyncQueue<TermFrame>; bytes: number };
@@ -173,6 +180,8 @@ export class PtyDriver implements Driver {
   // 今のターンの UserPromptSubmit を見た。見る前（起動の引数の文がまだ届いていない間）に agents が idle と言っても、ターンは終わっていない
   private turnSeen = false;
   private parent?: string; // 立てた呼び手。引き継ぎで付け替わる（setParent）
+  private conversationId?: string; // /clear の後の会話の id（SessionStart の source=clear の session_id）
+  private convId() { return this.conversationId ?? this.id; }
   private model?: string;          // 今のモデル。起動の指定、SessionStart の hook の model、応答の行の message.model の順に新しいもので替える
   private modelAt = 0;             // model を決めた時刻。これより古い応答の行では替えない
   private settingsFile?: string;
@@ -211,9 +220,9 @@ export class PtyDriver implements Driver {
     return d;
   }
   // claude を起動する。起動し直し（configure）でも使う。前のプロセスの終わりは finish に数えない（gen で見分ける）
-  private spawnProc(o: PtyStartOptions): { gen: number; exited: Promise<void> } {
+  private spawnProc(o: PtyStartOptions, sessionId = this.id): { gen: number; exited: Promise<void> } {
     const gen = ++this.gen;
-    this.proc = this.deps.spawn(ptyArgv(this.deps.claudePath ?? "claude", this.id, this.settingsFile!, o), {
+    this.proc = this.deps.spawn(ptyArgv(this.deps.claudePath ?? "claude", sessionId, this.settingsFile!, o), {
       cwd: o.cwd, env: childEnv(this.deps.env ?? process.env), cols: this.cols, rows: this.rows, onData: (u) => this.onData(u),
     });
     // 版が変わって ESC[?2004h が出なくなっても止まらないよう、上限を過ぎたら受け付けたものとして流す
@@ -267,10 +276,12 @@ export class PtyDriver implements Driver {
       if ((this.state as State) === "exited") return false;
       // 起動し直している間に stop が呼ばれた（前のプロセスの終わりは数えないので、ここで終える）
       if (this.stopReason) { this.finish(null, this.stopReason); return false; }
-      const hasTalk = !!(await this.deps.transcript?.(this.id, this.opts.cwd).catch(() => undefined))?.length;
-      const o: PtyStartOptions = { ...this.opts, prompt: undefined, fork: false, resume: hasTalk ? this.id : undefined, model: c.model, permissionMode: c.permissionMode };
+      // /clear の後なら、今の会話（conversationId）を続ける
+      const conv = this.convId();
+      const hasTalk = !!(await this.deps.transcript?.(conv, this.opts.cwd).catch(() => undefined))?.length;
+      const o: PtyStartOptions = { ...this.opts, prompt: undefined, fork: false, resume: hasTalk ? conv : undefined, model: c.model, permissionMode: c.permissionMode };
       let p: { gen: number; exited: Promise<void> };
-      try { p = this.spawnProc(o); } catch { return false; }
+      try { p = this.spawnProc(o, conv); } catch { return false; }
       this.probation = p.gen;
       gone = p.exited.then(() => false);
     } finally {
@@ -293,6 +304,7 @@ export class PtyDriver implements Driver {
       id: this.id, kind: this.kind, capabilities: this.capabilities, cwd: this.opts.cwd, state: this.state,
       startedAt: this.startedAt, lastActivityAt: this.lastActivityAt, model: this.model, permissionMode: this.permissionMode,
       exitReason: this.exitReason, pid: this.proc?.pid, title: this.opts.name, parent: this.parent,
+      ...(this.conversationId ? { conversationId: this.conversationId } : {}),
       ...(this.deps.account ? { account: this.deps.account } : {}), ...(this.deps.accountEmail ? { accountEmail: this.deps.accountEmail } : {}),
     };
   }
@@ -322,6 +334,33 @@ export class PtyDriver implements Driver {
     this.proc!.write("\r");
     this.lastActivityAt = Date.now();
     return { delivered: "pty" as const };
+  }
+  // 組み込みコマンドを from 行を付けずに貼る（#64）。待ち方と断り方は send と同じ。
+  // 出力は jsonl の <local-command-stdout> の行から、node と同じく合成の assistant の文と result にして流す
+  async command(text: string, from: string) {
+    const name = text.slice(1).split(/\s/, 1)[0]!.toLowerCase();
+    if (PERSISTING_COMMANDS.has(name)) throw new CommandRefusedError("persists", `/${name} on an interactive claude is saved to the user's settings for every session; it is not sent`);
+    this.push("command", { text, from });
+    const r = await this.send(text);
+    void this.chaseLocal();
+    return r;
+  }
+  private localSeen = 0;   // 流した組み込みコマンドの出力の数
+  private results = 0;     // 流した result の数
+  // 出力の行が出るまで読み直す。出ないまま終わったら、待つ側（read_messages、Claude Town）が止まらないよう空の result を出す。
+  // 出力が jsonl の system の行に書かれるコマンド（/context など）は、SDK の getSessionMessages が中身を返さないので読めない（2026-11-21 に実測）。
+  // /compact の間（PreCompact から PostCompact まで、state が running）は出さない。PostCompact がもう一度読む
+  private async chaseLocal() {
+    const n = this.localSeen;
+    const r = this.results;
+    for (const ms of this.deps.localDelaysMs ?? LOCAL_DELAYS_MS) {
+      await Bun.sleep(ms);
+      if (this.state === "exited" || this.localSeen > n || this.results > r) return;
+      await this.syncTranscript();
+    }
+    if (this.state === "idle" && this.localSeen === n && this.results === r) {
+      this.push("result", { type: "result", subtype: "success", is_error: false, result: "", note: "no command output in the transcript; it may be shown only in the terminal" });
+    }
   }
   events(): AsyncIterable<RawEvent> { return this.out; }
   pending(): PendingPermission[] { return [...this.waiting.values()].map((w) => w.p); }
@@ -450,6 +489,21 @@ export class PtyDriver implements Driver {
     this.readyResolve();
     switch (body.hook_event_name) {
       case "SessionStart":
+        // /clear の後は新しい会話の id で来る（2026-11-21 に実測）。ccn の id はそのままにし、会話はこの id から読む
+        if (body.source === "clear" && typeof body.session_id === "string" && body.session_id) {
+          this.conversationId = body.session_id === this.id ? undefined : body.session_id;
+          // -p の子と同じく、会話が替わったことと、コマンドが終わったことを流す（/clear は出力の行を書かない）
+          this.push("conversation_reset", { type: "conversation_reset", conversationId: body.session_id });
+          if (this.state === "idle") this.push("result", { type: "result", subtype: "success", is_error: false, result: "" });
+        }
+        return undefined;
+      case "PreCompact":
+        // 人や command の口が打った /compact（manual）の間は動いている。自動の圧縮はターンの途中なので触らない
+        if (body.trigger === "manual" && this.state === "idle") this.state = "running";
+        return undefined;
+      case "PostCompact":
+        if (body.trigger === "manual" && this.state === "running" && !this.waiting.size) this.state = "idle";
+        void this.chaseLocal();
         return undefined;
       case "UserPromptSubmit":
         // 新しい文が入った。前のターンの承認待ちは残っていても答えようがない
@@ -595,7 +649,7 @@ export class PtyDriver implements Driver {
       s.q.push(f);
     }
   }
-  private push(type: string, data: unknown) { this.out.push({ at: Date.now(), type, data }); }
+  private push(type: string, data: unknown) { if (type === "result") this.results++; this.out.push({ at: Date.now(), type, data }); }
 
   // 道具の tool_use か tool_result の行が出るまで、CHASE_DELAYS_MS の間隔で読み直す。サブエージェントの道具（agent_id がある）は、行が本体の会話に入らないので追わない
   private async chase(kind: "use" | "result", body: Record<string, unknown>) {
@@ -640,7 +694,7 @@ export class PtyDriver implements Driver {
   private async readTranscript(): Promise<boolean> {
     const read = this.deps.transcript!;
     if (this.state === "exited") return false;
-    const lines = await read(this.id, this.opts.cwd).catch(() => undefined);
+    const lines = await read(this.convId(), this.opts.cwd).catch(() => undefined);
     if (!lines) return false;
     for (const l of lines) {
       if (!l.uuid || this.seenLines.has(l.uuid)) continue;
@@ -661,6 +715,12 @@ export class PtyDriver implements Driver {
         }
         for (const b of blocks) if (b.type === "tool_use" && b.id) this.markTool(`use:${b.id}`);
         this.push("assistant", l);
+      } else if (l.type === "user" && typeof content === "string" && /^<local-command-std(out|err)>/.test(content)) {
+        // 組み込みコマンドの出力。-p の子と同じく、合成の assistant の文と result にする
+        const text = content.replace(/^<local-command-std(?:out|err)>/, "").replace(/<\/local-command-std(?:out|err)>\s*$/, "").replace(ANSI, "").trim();
+        this.localSeen++;
+        this.push("assistant", { type: "assistant", message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text }] } });
+        this.push("result", { type: "result", subtype: "success", is_error: false, result: text });
       } else if (l.type === "user" && blocks.some((b) => b.type === "tool_result")) {
         for (const b of blocks) if (b.type === "tool_result" && b.tool_use_id) this.markTool(`result:${b.tool_use_id}`);
         this.push("user", l);

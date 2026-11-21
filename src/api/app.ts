@@ -177,6 +177,8 @@ async function route(req: Request, s: Sessions, caller: Caller, store: Deps["sto
         return s.events(id, cursor(req, url));
       } else if (sub === "permissions" && rid && m === "POST") {
         return json(await s.answer(id, rid, req));
+      } else if (sub === "command" && !rid && m === "POST") {
+        return json(await s.command(id, req, caller));
       } else if (sub === "interrupt" && !rid && m === "POST") {
         return json(await s.interrupt(id));
       } else if (sub === "terminal") {

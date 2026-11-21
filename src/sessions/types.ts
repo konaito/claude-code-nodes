@@ -24,6 +24,8 @@ export type SessionSummary = {
   depth?: number;
   // プロンプト無しで立てて、まだ1通も届いていない（claude は起動していない）。届けば消える
   awaitingFirst?: boolean;
+  // /clear の後の会話の id（#64）。ccn の id（id）はそのままで、会話はこの id の jsonl に続く。/clear していなければ無い
+  conversationId?: string;
   // どのアカウントで動いているか。cam のコマンド名と、その email（src/engine/account.ts）。
   // pty と node はノードが起動のときに選んだもの（node は claude を起動してから載る）。端末のセッションはプロセスの環境から読めたときだけ。
   // cam で選べずノードの設定で起動したものと、過去のセッションには無い

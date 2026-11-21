@@ -55,6 +55,8 @@ export class NodeDriver implements Driver {
   private initResolve?: () => void;
   private initReject?: (e: Error) => void;
   private parent?: string;       // 立てた呼び手。引き継ぎで付け替わる（setParent）
+  private conversationId?: string; // /clear の後の会話の id。reset の後の system/init の session_id（jsonl の名前と同じ。conversation_reset の new_conversation_id とは違う）
+  private resetSeen = false;
   private account?: string;      // 起動のときに選んだアカウント。起動するまで無い
   private accountEmail?: string;
 
@@ -141,6 +143,7 @@ export class NodeDriver implements Driver {
       startedAt: this.startedAt, lastActivityAt: this.lastActivityAt, model: this.model, permissionMode: this.permissionMode,
       usage: { ...this.usage }, exitReason: this.exitReason, parent: this.parent,
       ...(this.deferred ? { awaitingFirst: true } : {}),
+      ...(this.conversationId ? { conversationId: this.conversationId } : {}),
       ...(this.account ? { account: this.account } : {}), ...(this.accountEmail ? { accountEmail: this.accountEmail } : {}),
     };
   }
@@ -175,6 +178,13 @@ export class NodeDriver implements Driver {
     if (this.q) await this.q.setModel(model);
     this.opts.model = model;
     this.model = model;
+  }
+  // 組み込みコマンドを from 行を付けずに入れる。-p では /compact、/context、/cost、/usage、/effort、/clear が効く（2026-11-21 に実測）。
+  // 送り手は command のイベントで台帳に残す
+  async command(text: string, from: string) {
+    if (this.state === "exited") throw new ExitedError(this.exitReason);
+    this.out.push({ at: Date.now(), type: "command", data: { text, from } });
+    return this.send(text);
   }
   async configure(c: SessionConfig) {
     if (this.state === "exited") throw new ExitedError(this.exitReason);
@@ -217,8 +227,10 @@ export class NodeDriver implements Driver {
     }
   }
   private handle(m: Record<string, unknown>) {
+    if (m.type === "conversation_reset") this.resetSeen = true;
     if (m.type === "system" && m.subtype === "init") {
       if (!this.id) this.id = String(m.session_id);
+      else if (this.resetSeen && typeof m.session_id === "string" && m.session_id !== (this.conversationId ?? this.id)) { this.conversationId = m.session_id; this.resetSeen = false; }
       if (typeof m.model === "string") this.model = m.model;
       if (typeof m.permissionMode === "string") this.permissionMode = m.permissionMode;
       this.initResolve?.();

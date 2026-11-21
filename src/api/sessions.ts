@@ -589,6 +589,25 @@ export class Sessions {
     if (typeof body.text !== "string" || !body.text.trim()) throw new HttpError(400, { error: "text is required" });
     return driver.send(withFromLine(caller, this.d.nodeName, body.text));
   }
+  // 組み込みコマンドを from 行を付けずに送る（#64）。send は本文の前に from 行を付けるので、/ で始まる文でもコマンドとして動かない。
+  // from 行を後ろへ回すとコマンドの引数（/compact の指示など）に混ざり、1通目が / で始まると過去の一覧の親を from 行から導けなくなるため、口を分けた。
+  // 送り手は Driver が command のイベントで台帳に残す
+  async command(id: string, req: Request, caller: Caller) {
+    const driver = await this.must(id);
+    if (driver.summary().state === "exited") {
+      const succ = await this.successorOf(driver.id);
+      throw new HttpError(409, succ ? { error: "session exited", hint: `succeeded by ${succ}; send to that session and do not resume this one`, successor: succ } : { error: "session exited", hint: "resume" });
+    }
+    const body = (await req.json().catch(() => ({}))) as { text?: unknown };
+    const text = typeof body.text === "string" ? body.text.trim() : "";
+    const name = /^\/([^\s/]+)/.exec(text)?.[1]?.toLowerCase();
+    if (!name) throw new HttpError(400, { error: "text must be a slash command, e.g. /compact", code: "not_command", hint: "send other text with POST /api/sessions/<id>/messages" });
+    if (name === "model") throw new HttpError(400, { error: "change the model with PATCH /api/sessions/<id> {model} (MCP configure_session)", code: "use_configure" });
+    if (name === "exit" || name === "quit") throw new HttpError(400, { error: "stop the session with DELETE /api/sessions/<id> (MCP stop_session)", code: "use_stop" });
+    if (driver.summary().awaitingFirst) throw new HttpError(409, { error: "send the first message with POST /api/sessions/<id>/messages before running commands", code: "first_message_required" });
+    if (!driver.command) throw new HttpError(409, { error: "this session cannot run commands (only node and pty sessions can)", code: "no_commands", kind: driver.kind });
+    return driver.command(text, caller.id);
+  }
   async answer(id: string, requestId: string, req: Request) {
     const driver = await this.must(id);
     if (!driver.capabilities.permissions) throw new HttpError(409, { error: "capability permissions not available" });

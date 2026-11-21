@@ -598,3 +598,30 @@ test("PATCH refuses a session that cannot be configured, and a model change wher
   expect(modes).toEqual(["acceptEdits"]);
   expect((await patch("live1", { model: "sonnet" })).status).toBe(409);
 });
+
+test("POST /api/sessions/:id/command sends a slash command without the from line and refuses the rest (#64)", async () => {
+  const { app, live } = harness();
+  const got: Array<[string, string]> = [];
+  (live as any).command = async (text: string, from: string) => { got.push([text, from]); return { delivered: "stdin" }; };
+  const cmd = (id: string, text: unknown, headers: Record<string, string> = {}) => app.fetch(post(`/api/sessions/${id}/command`, { text }, headers));
+  const r = await cmd("live1", "  /compact keep the API notes ", { "x-ccn-from": "agent:vm/abcd1234/town" });
+  expect(r.status).toBe(200);
+  expect(got).toEqual([["/compact keep the API notes", "agent:vm/abcd1234/town"]]);
+  const code = async (res: Response) => ((await res.json()) as { code?: string }).code;
+  let x = await cmd("live1", "hello"); expect(x.status).toBe(400); expect(await code(x)).toBe("not_command");
+  x = await cmd("live1", "/"); expect(x.status).toBe(400);
+  x = await cmd("live1", "/model sonnet"); expect(x.status).toBe(400); expect(await code(x)).toBe("use_configure");
+  x = await cmd("live1", "/exit"); expect(x.status).toBe(400); expect(await code(x)).toBe("use_stop");
+  x = await cmd("term1", "/compact"); expect(x.status).toBe(409); expect(await code(x)).toBe("no_commands");
+  expect(got).toHaveLength(1);
+});
+
+test("command is refused before the first message of a session started without a prompt", async () => {
+  const { app, live } = harness();
+  (live as any).command = async () => ({ delivered: "stdin" });
+  const orig = live.summary.bind(live);
+  live.summary = () => ({ ...orig(), awaitingFirst: true });
+  const r = await app.fetch(post("/api/sessions/live1/command", { text: "/context" }));
+  expect(r.status).toBe(409);
+  expect(((await r.json()) as { code: string }).code).toBe("first_message_required");
+});

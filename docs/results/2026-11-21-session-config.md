@@ -31,3 +31,18 @@ worktree の版で、別ポート（4395）と別設定のノードを立てた�
 ## 片付け
 
 開発用ノードが立てた pty と node のセッションは `stop_session` で止めた。
+
+## 組み込みコマンドの口（POST /api/sessions/<id>/command、MCP の run_command）
+
+開発用ノード（4395）で、MCP から haiku の子に送った。どちらも1通目は from 行つきの send。
+
+| コマンド | pty | node |
+| --- | --- | --- |
+| `/context` | 効く。出力は jsonl の system の行に書かれ、SDK の `getSessionMessages` が中身を返さない（`includeSystemMessages` でも content と subtype が無い）。ccn には約9秒後に空の result が出る | 効く。`## Context Usage` の表が read_messages に出た |
+| `/compact` | 効く。`Compacted (ctrl+o to see full summary)` と hook の結果の行が出て stop=result。間は running | 効く。stop=result（文は無い） |
+| `/effort low` | 409（`persists`）で送らない | 効く。「this session only」 |
+| `/model sonnet` | 400（`use_configure`） | 400（`use_configure`） |
+| `hello` | 400（`not_command`） | 400（`not_command`） |
+| `/clear` | 効く。`conversationId` が新しい id になり、すぐ stop=result。次の文の返事も読めた | 効く。`conversationId` が新しい id になった。次の文の返事も読めた |
+
+pty は `/clear` の後に `configure_session` で sonnet に替え、新しい会話の id で `--resume` して3ターン目が `claude-sonnet-5-5` で動いた（jsonl で確認）。read_messages には `[command] /context (from agent:ctprobe/ccccdddd/check)` のように送り手が出た。終わった後の settings.json の sha は始める前と同じだった。
