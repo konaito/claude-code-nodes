@@ -647,10 +647,9 @@ test("when neither restart starts, the session ends", async () => {
   const { d, f } = await start({}, { transcript: async () => [], readyTimeoutMs: 100 });
   await d.hook({ hook_event_name: "SessionStart" });
   const done = d.configure({ model: "x" }).catch((e) => e);
-  await waitFor(() => f.procs.length === 2);
-  f.procs[1]!.exit(1);
-  await waitFor(() => f.procs.length === 3);
-  f.procs[2]!.exit(1);
+  // 会話が見えないので、新しい設定で --session-id、--resume、前の設定で --session-id、--resume の順に試す
+  for (let n = 2; n <= 5; n++) { await waitFor(() => f.procs.length === n); f.procs[n - 1]!.exit(1); }
+  expect(f.procs.map((p) => p.argv[1])).toEqual(["--session-id", "--session-id", "--resume", "--session-id", "--resume"]);
   const e = await done;
   expect(e).toBeInstanceOf(ExitedError);
   expect(d.summary().state).toBe("exited");
@@ -751,4 +750,19 @@ test("no empty result is sent while a manual /compact runs", async () => {
   await d.hook({ hook_event_name: "PreCompact", trigger: "manual" });
   await Bun.sleep(30);
   expect(evs.some((e) => e.type === "result")).toBe(false);
+});
+
+test("a session-id restart that claude refuses at once is retried with --resume (a file with only /context in it)", async () => {
+  const { d, f } = await start({}, { transcript: async () => [] });
+  await d.hook({ hook_event_name: "SessionStart" });
+  const done = d.configure({ model: "sonnet" });
+  await waitFor(() => f.procs.length === 2);
+  expect(f.procs[1]!.argv.slice(1, 3)).toEqual(["--session-id", d.id]);
+  f.procs[1]!.exit(1);
+  await waitFor(() => f.procs.length === 3);
+  expect(f.procs[2]!.argv.slice(1, 3)).toEqual(["--resume", d.id]);
+  await d.hook({ hook_event_name: "SessionStart", source: "resume" });
+  await done;
+  expect(d.summary().state).toBe("idle");
+  expect(d.summary().model).toBe("sonnet");
 });

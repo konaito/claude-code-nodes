@@ -46,3 +46,13 @@ worktree の版で、別ポート（4395）と別設定のノードを立てた�
 | `/clear` | 効く。`conversationId` が新しい id になり、すぐ stop=result。次の文の返事も読めた | 効く。`conversationId` が新しい id になった。次の文の返事も読めた |
 
 pty は `/clear` の後に `configure_session` で sonnet に替え、新しい会話の id で `--resume` して3ターン目が `claude-sonnet-5-5` で動いた（jsonl で確認）。read_messages には `[command] /context (from agent:ctprobe/ccccdddd/check)` のように送り手が出た。終わった後の settings.json の sha は始める前と同じだった。
+
+## プロンプト無しの pty で起動し直す（#71）
+
+main（b2bda6e）の開発用ノードで、Claude Town で起きやすい順を試した。
+
+- プロンプト無しで pty を作り、すぐ `PATCH {"model":"sonnet"}`、1通送る: 効いた。
+- プロンプト無しで pty を作り、`/context` だけ打ってから `PATCH {"model":"sonnet"}`: セッションが `restart failed` で終わった。
+  - `/context` は jsonl に system の行だけを書く。SDK の `getSessionMessages` は空を返し、`getSessionInfo` も undefined を返した。そのため ccn は「会話が無い」と見て `--session-id <同じ id>` で起動し、claude はすぐ終わった。同じ jsonl に `claude -p --resume <id>` は効いた。
+  - 会話が読めないときは `--session-id` で起動し、すぐ終わったら `--resume` を試すように直した。直した後は2つとも、次の応答が jsonl で `claude-sonnet-5-5` になった。
+- 端末の SSE（`/terminal`）をつないだまま pty の `PATCH {"permissionMode":"plan"}` を送った。20秒の間に `size`、`replay`、`data`（14回）が届き、`exit` は届かなかった。
