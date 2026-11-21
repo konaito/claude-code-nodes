@@ -5,7 +5,7 @@ import type { QueryFn } from "../../src/engine/node-driver";
 export function makeFakeQuery(opts: { permission?: boolean } = {}) {
   const received: string[] = [];
   const permissionResults: PermissionResult[] = [];
-  const calls = { interrupt: 0, setPermissionMode: [] as string[] };
+  const calls = { interrupt: 0, setPermissionMode: [] as string[], setModel: [] as (string | undefined)[] };
   let lastOptions: any;
   let die!: () => void;
   const dead = new Promise<void>((r) => (die = r));
@@ -32,6 +32,7 @@ export function makeFakeQuery(opts: { permission?: boolean } = {}) {
     const g = gen() as any;
     g.interrupt = async () => { calls.interrupt++; };
     g.setPermissionMode = async (m: string) => { calls.setPermissionMode.push(m); };
+    g.setModel = async (m?: string) => { calls.setModel.push(m); };
     return g as Query;
   }) as unknown as QueryFn;
 

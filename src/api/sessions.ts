@@ -2,7 +2,8 @@
 import { resolve, sep } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import type { Driver } from "../engine/driver";
+import type { Driver, SessionConfig } from "../engine/driver";
+import { PERMISSION_MODES } from "../engine/driver";
 import type { AgentInfo } from "../engine/agents";
 import type { StartOptions } from "../engine/node-driver";
 import type { PtyDriver, PtyStartOptions } from "../engine/pty-driver";
@@ -604,11 +605,24 @@ export class Sessions {
   }
   async patch(id: string, req: Request) {
     const driver = await this.must(id);
-    const body = (await req.json().catch(() => ({}))) as { permissionMode?: unknown };
-    if (typeof body.permissionMode === "string") {
-      if (!driver.setPermissionMode) throw new HttpError(409, { error: "permission mode cannot be changed on this session" });
-      await driver.setPermissionMode(body.permissionMode);
+    const body = (await req.json().catch(() => ({}))) as { permissionMode?: unknown; model?: unknown };
+    const c: SessionConfig = {};
+    if (body.permissionMode !== undefined) {
+      if (typeof body.permissionMode !== "string" || !(PERMISSION_MODES as readonly string[]).includes(body.permissionMode)) {
+        throw new HttpError(400, { error: `permissionMode must be one of ${PERMISSION_MODES.join(", ")}` });
+      }
+      c.permissionMode = body.permissionMode;
     }
+    if (body.model !== undefined) {
+      // claude の引数（--model）にもなるので、名前に使う文字だけを受ける（opus、claude-sonnet-5-5、claude-fable-5[1m] など）
+      if (typeof body.model !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:\-\[\]]{0,99}$/.test(body.model)) throw new HttpError(400, { error: "model must be a model name or alias, e.g. sonnet or claude-sonnet-5-5" });
+      c.model = body.model;
+    }
+    if (c.model === undefined && c.permissionMode === undefined) return driver.summary();
+    if (driver.summary().state === "exited") throw new HttpError(409, { error: "session exited", hint: "resume" });
+    if (driver.configure) await driver.configure(c);
+    else if (c.model === undefined && driver.setPermissionMode) await driver.setPermissionMode(c.permissionMode!);
+    else throw new HttpError(409, { error: `${c.model !== undefined ? "model" : "permission mode"} cannot be changed on this session`, kind: driver.kind });
     return driver.summary();
   }
   async remove(id: string) {

@@ -560,3 +560,116 @@ test("started は最初の hook が届いたら true。届く前に時間切れ�
   c.p.exit(1);
   expect(await dying).toBe(false);
 });
+
+// ---- configure（#64）：待機中に同じ id で起動し直す ----
+const waitFor = async (f: () => boolean) => { for (let i = 0; i < 100 && !f(); i++) await tick(); expect(f()).toBe(true); };
+
+test("SessionStart's model becomes the summary's model, and so does the model of a transcript line", async () => {
+  const lines: any[] = [];
+  const { d } = await start({}, { transcript: async () => lines });
+  expect(d.summary().model).toBeUndefined();
+  await d.hook({ hook_event_name: "SessionStart", source: "startup", model: "claude-haiku-5-5" });
+  expect(d.summary().model).toBe("claude-haiku-5-5");
+  lines.push({ uuid: "a1", type: "assistant", timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: "x" }] } });
+  lines.push({ uuid: "a2", type: "assistant", timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: "assistant", model: "<synthetic>", content: [{ type: "text", text: "y" }] } });
+  await d.hook({ hook_event_name: "Stop", last_assistant_message: "y" });
+  expect(d.summary().model).toBe("claude-sonnet-5-5");
+});
+
+test("configure restarts an idle claude with --resume, the new model and mode; the old process's exit does not end the session", async () => {
+  const { d, p, f } = await start({ model: "haiku", permissionMode: "default", name: "t" }, { transcript: async () => [{ uuid: "u", type: "user" } as any] });
+  const evs = collect(d);
+  await d.hook({ hook_event_name: "SessionStart", source: "startup", model: "claude-haiku-5-5" });
+  const done = d.configure({ model: "sonnet", permissionMode: "plan" });
+  await waitFor(() => f.procs.length === 2);
+  expect(p.kills).toEqual(["SIGTERM"]);
+  const q = f.procs[1]!;
+  expect(q.argv.slice(0, 3)).toEqual(["claude", "--resume", d.id]);
+  expect(q.argv.slice(q.argv.indexOf("--model"), q.argv.indexOf("--model") + 2)).toEqual(["--model", "sonnet"]);
+  expect(q.argv.slice(q.argv.indexOf("--permission-mode"), q.argv.indexOf("--permission-mode") + 2)).toEqual(["--permission-mode", "plan"]);
+  expect(q.argv).toContain("--name");
+  expect(q.argv).not.toContain("--fork-session");
+  expect(q.argv[q.argv.indexOf("--settings") + 1]).toBe(p.argv[p.argv.indexOf("--settings") + 1]); // 同じ hooks の設定（同じ token）
+  await d.hook({ hook_event_name: "SessionStart", source: "resume" });
+  await done;
+  const s = d.summary();
+  expect(s.state).toBe("idle");
+  expect(s.model).toBe("sonnet");
+  expect(s.permissionMode).toBe("plan");
+  expect(evs.map((e) => e.type)).toContain("config");
+  expect(evs.map((e) => e.type)).not.toContain("exited");
+  // 新しいプロセスに送る
+  await d.send("hello");
+  expect(q.writes.join("")).toContain("hello");
+  // 新しいプロセスの終わりはセッションの終わり
+  q.exit(0);
+  await waitFor(() => d.summary().state === "exited");
+});
+
+test("configure keeps the unset half; a session with no conversation restarts with --session-id", async () => {
+  const { d, f } = await start({ permissionMode: "acceptEdits" }, { transcript: async () => [] });
+  await d.hook({ hook_event_name: "SessionStart", source: "startup" });
+  const done = d.configure({ model: "opus" });
+  await waitFor(() => f.procs.length === 2);
+  const q = f.procs[1]!;
+  expect(q.argv.slice(1, 3)).toEqual(["--session-id", d.id]);
+  expect(q.argv).toContain("acceptEdits");
+  await d.hook({ hook_event_name: "SessionStart", source: "startup" });
+  await done;
+  expect(d.summary().permissionMode).toBe("acceptEdits");
+});
+
+test("configure is refused while a turn runs or a permission is pending", async () => {
+  const { d } = await start({}, { transcript: async () => [] });
+  await d.hook({ hook_event_name: "SessionStart" });
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "x" });
+  await expect(d.configure({ model: "sonnet" })).rejects.toBeInstanceOf(BusyError);
+});
+
+test("when claude does not start with the new settings, configure restarts it with the previous ones and says so", async () => {
+  const { d, f } = await start({ model: "haiku", permissionMode: "default" }, { transcript: async () => [{ uuid: "u", type: "user" } as any], readyTimeoutMs: 200 });
+  await d.hook({ hook_event_name: "SessionStart" });
+  const done = d.configure({ model: "nosuch" }).catch((e) => e);
+  await waitFor(() => f.procs.length === 2);
+  f.procs[1]!.exit(1); // 新しい設定の claude がすぐ終わる
+  await waitFor(() => f.procs.length === 3);
+  const r = f.procs[2]!;
+  expect(r.argv).toContain("haiku");
+  await d.hook({ hook_event_name: "SessionStart", source: "resume" });
+  const e = await done;
+  expect(e.name).toBe("RestartFailedError");
+  expect(e.rolledBack).toBe(true);
+  expect(d.summary().state).toBe("idle");
+  expect(d.summary().model).toBe("haiku");
+});
+
+test("when neither restart starts, the session ends", async () => {
+  const { d, f } = await start({}, { transcript: async () => [], readyTimeoutMs: 100 });
+  await d.hook({ hook_event_name: "SessionStart" });
+  const done = d.configure({ model: "x" }).catch((e) => e);
+  await waitFor(() => f.procs.length === 2);
+  f.procs[1]!.exit(1);
+  await waitFor(() => f.procs.length === 3);
+  f.procs[2]!.exit(1);
+  const e = await done;
+  expect(e).toBeInstanceOf(ExitedError);
+  expect(d.summary().state).toBe("exited");
+  expect(d.summary().exitReason).toBe("restart failed");
+});
+
+test("an older transcript line read late does not overwrite the model set by configure", async () => {
+  const lines: any[] = [{ uuid: "u", type: "user" }];
+  const { d, f } = await start({ model: "haiku" }, { transcript: async () => lines });
+  await d.hook({ hook_event_name: "SessionStart" });
+  const before = new Date(Date.now() + 5).toISOString();
+  await Bun.sleep(10);
+  const done = d.configure({ model: "sonnet" });
+  await waitFor(() => f.procs.length === 2);
+  await d.hook({ hook_event_name: "SessionStart", source: "resume" });
+  await done;
+  lines.push({ uuid: "old", type: "assistant", timestamp: before, message: { role: "assistant", model: "claude-haiku-5-5", content: [{ type: "thinking", thinking: "" }] } });
+  lines.push({ uuid: "new", type: "assistant", timestamp: new Date(Date.now() + 1000).toISOString(), message: { role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: "two" }] } });
+  await d.hook({ hook_event_name: "UserPromptSubmit", prompt: "x" });
+  await d.hook({ hook_event_name: "Stop", last_assistant_message: "two" });
+  expect(d.summary().model).toBe("claude-sonnet-5-5");
+});

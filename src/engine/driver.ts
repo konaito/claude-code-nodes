@@ -4,6 +4,9 @@ import type { Capabilities, Kind, PendingPermission, PermissionAnswer, SessionSu
 // Driver が出す生のイベント。seq は台帳（SessionStore）が振る
 export type RawEvent = { at: number; type: string; data: unknown };
 export type DriverEvent = RawEvent & { seq: number };
+// 起動の後に替えられる設定。どちらも省ける
+export type SessionConfig = { model?: string; permissionMode?: string };
+export const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"] as const;
 
 export interface Driver {
   readonly kind: Kind;
@@ -16,6 +19,9 @@ export interface Driver {
   answer(requestId: string, a: PermissionAnswer): Promise<void>; // capabilities.permissions が false なら throw
   interrupt(): Promise<void>; // capabilities.interrupt が false なら throw
   setPermissionMode?(mode: string): Promise<void>; // NodeDriver だけが実装する。無ければ API は 409
+  // モデルと権限モードを替える（PATCH /api/sessions/<id>、#64）。node は SDK の setModel と setPermissionMode、pty は同じ id で claude を起動し直す。
+  // 無ければ API は 409。pty は待機中でなければ BusyError
+  configure?(c: SessionConfig): Promise<void>;
   stop(reason?: string): Promise<void>; // reason は終わった理由（exitReason と exited の reason）。無ければ Driver が決める
   // 引き継ぎ（src/api/sessions.ts の succeed）が使う。node と pty が実装する
   setParent?(parent: string): void;             // summary の parent を付け替える。前任の子を後継の子にする
@@ -36,6 +42,8 @@ export class CapabilityError extends Error {
 export class ExitedError extends Error { constructor(reason?: string) { super(`session exited${reason ? `: ${reason}` : ""}`); this.name = "ExitedError"; } }
 // 今は受けられない（PTY のセッションが承認画面を出している間の send など）。409
 export class BusyError extends Error { constructor(msg: string) { super(msg); this.name = "BusyError"; } }
+// pty の configure で、新しい設定の claude が起動しなかった。rolledBack なら前の設定で起動し直してあり、セッションは続く。502
+export class RestartFailedError extends Error { constructor(msg: string, public rolledBack: boolean) { super(msg); this.name = "RestartFailedError"; } }
 export class NotFoundError extends Error { constructor(msg: string) { super(msg); this.name = "NotFoundError"; } }
 export class SocketGoneError extends Error {
   constructor(paths: string[]) { super(`no inbox socket: ${paths.join(", ") || "(no pid)"}`); this.name = "SocketGoneError"; }
