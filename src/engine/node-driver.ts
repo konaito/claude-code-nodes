@@ -1,6 +1,6 @@
 // SDK を包む NodeDriver。query() に非同期の入力を渡し、権限要求を保留して API から答えられるようにする。完全制御のセッション
 import type { query, Query, PermissionMode, PermissionResult, SDKUserMessage, SettingSource } from "@anthropic-ai/claude-agent-sdk";
-import type { Driver, RawEvent } from "./driver";
+import type { Driver, RawEvent, SessionConfig } from "./driver";
 import { ExitedError, NotFoundError } from "./driver";
 export { ExitedError, NotFoundError } from "./driver";
 import type { PendingPermission, PermissionAnswer, SessionSummary, State } from "../sessions/types";
@@ -168,6 +168,19 @@ export class NodeDriver implements Driver {
   // 起動前は止めるターンが無い。権限モードは起動のときに渡す
   async interrupt() { if (this.q) await this.q.interrupt(); }
   async setPermissionMode(mode: string) { if (this.q) await this.q.setPermissionMode(mode as PermissionMode); this.permissionMode = mode; }
+  // SDK の setModel はセッションだけに効き、設定ファイルを書き換えない（2026-11-21 に実測、#64）。
+  // 起動の値（opts.model）も替える。/clear の後は起動の値に戻るため。起動の前なら起動の値だけを替える
+  async setModel(model: string) {
+    if (this.state === "exited") throw new ExitedError(this.exitReason);
+    if (this.q) await this.q.setModel(model);
+    this.opts.model = model;
+    this.model = model;
+  }
+  async configure(c: SessionConfig) {
+    if (this.state === "exited") throw new ExitedError(this.exitReason);
+    if (c.model !== undefined) await this.setModel(c.model);
+    if (c.permissionMode !== undefined) await this.setPermissionMode(c.permissionMode);
+  }
   async stop(reason = "stopped") { this.input.close(); this.abort.abort(); this.finish(reason); }
 
   private enqueueUser(text: string) {

@@ -5,7 +5,8 @@ import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Driver, RawEvent } from "./driver";
-import { BusyError, ExitedError, NotFoundError } from "./driver";
+import { BusyError, ExitedError, NotFoundError, RestartFailedError } from "./driver";
+import type { SessionConfig } from "./driver";
 import type { AgentInfo } from "./agents";
 import type { Capabilities, PendingPermission, PermissionAnswer, SessionSummary, State } from "../sessions/types";
 import { AsyncQueue } from "../sessions/async-queue";
@@ -172,11 +173,19 @@ export class PtyDriver implements Driver {
   // 今のターンの UserPromptSubmit を見た。見る前（起動の引数の文がまだ届いていない間）に agents が idle と言っても、ターンは終わっていない
   private turnSeen = false;
   private parent?: string; // 立てた呼び手。引き継ぎで付け替わる（setParent）
+  private model?: string;          // 今のモデル。起動の指定、SessionStart の hook の model、応答の行の message.model の順に新しいもので替える
+  private modelAt = 0;             // model を決めた時刻。これより古い応答の行では替えない
+  private settingsFile?: string;
+  private gen = 0;                 // 起動したプロセスの通し番号。起動し直す前のプロセスの終わりを数えない
+  private restarting = false;      // configure が起動し直している間。前のプロセスの hook を受けない
+  private probation?: number;
+  private procDead = false;        // 今の gen のプロセスが終わった      // 起動し直して印を待っているプロセスの gen。その間に終わっても finish しない
 
   private constructor(private opts: PtyStartOptions, private deps: PtyDeps) {
     this.cols = opts.cols ?? 120;
     this.rows = opts.rows ?? 40;
     this.permissionMode = opts.permissionMode;
+    this.model = opts.model;
     this.screen = new Screen(this.cols, this.rows);
     this.parent = deps.caller;
   }
@@ -191,25 +200,98 @@ export class PtyDriver implements Driver {
     const headerFile = join(d.dir, "hook-headers");
     await writeFile(headerFile, `${PTY_HOOK_TOKEN_HEADER}: ${d.token}\n`, { mode: 0o600 });
     await writeFile(file, JSON.stringify(ptySettings(`${deps.hookBase}${PTY_HOOK_PATH}/${d.id}`, d.token, headerFile, base)), { mode: 0o600 });
+    d.settingsFile = file;
     if (opts.prompt) d.state = "running";
     try {
-      d.proc = deps.spawn(ptyArgv(deps.claudePath ?? "claude", d.id, file, opts), {
-        cwd: opts.cwd, env: childEnv(deps.env ?? process.env), cols: d.cols, rows: d.rows, onData: (u) => d.onData(u),
-      });
+      d.spawnProc(opts);
     } catch (e) {
       await rm(d.dir, { recursive: true, force: true }).catch(() => {});
       throw e;
     }
-    // 版が変わって ESC[?2004h が出なくなっても止まらないよう、上限を過ぎたら受け付けたものとして流す
-    d.inputTimer = setTimeout(() => d.markInputOn(), deps.inputTimeoutMs ?? 10_000);
-    d.exitedP = d.proc.exited.then((code) => d.finish(code, d.stopReason ?? (code === 0 || code === null ? "ended" : `exit ${code}`)), (e) => d.finish(null, d.stopReason ?? String(e)));
     return d;
+  }
+  // claude を起動する。起動し直し（configure）でも使う。前のプロセスの終わりは finish に数えない（gen で見分ける）
+  private spawnProc(o: PtyStartOptions): { gen: number; exited: Promise<void> } {
+    const gen = ++this.gen;
+    this.proc = this.deps.spawn(ptyArgv(this.deps.claudePath ?? "claude", this.id, this.settingsFile!, o), {
+      cwd: o.cwd, env: childEnv(this.deps.env ?? process.env), cols: this.cols, rows: this.rows, onData: (u) => this.onData(u),
+    });
+    // 版が変わって ESC[?2004h が出なくなっても止まらないよう、上限を過ぎたら受け付けたものとして流す
+    this.inputTimer = setTimeout(() => this.markInputOn(), this.deps.inputTimeoutMs ?? 10_000);
+    this.procDead = false;
+    const end = (code: number | null, reason: string) => {
+      if (gen === this.gen) this.procDead = true;
+      if (gen !== this.gen) return;            // 起動し直す前のプロセス
+      if (gen === this.probation) return;      // 起動し直して確かめている間。configure が前の設定に戻す
+      this.finish(code, this.stopReason ?? reason);
+    };
+    this.exitedP = this.proc.exited.then((code) => end(code, code === 0 || code === null ? "ended" : `exit ${code}`), (e) => end(null, String(e)));
+    return { gen, exited: this.exitedP };
+  }
+
+  // モデルと権限モードを替える（#64）。対話の claude には、確かめられる替え方が無い。
+  // `/model <名前>` は ~/.claude/settings.json の既定まで書き換え、Shift+Tab は hook も statusLine も出さず、着いたかが分からない（2026-11-21 に実測）。
+  // そこで待機中のときだけ、同じ id で `--resume <id> --model <名前> --permission-mode <モード>` として起動し直す。会話がまだ無ければ `--session-id <id>` で起動する
+  // （会話の無い id を --resume すると claude はすぐ終わる）。端末の画面、SSE、台帳の項目はそのまま続く。
+  // 裏のシェルとサブエージェント、起動の指定ではないセッションだけの設定は消える。起動の印が出なければ、前のモデルとモードで起動し直す
+  async configure(c: SessionConfig) {
+    if (this.state === "exited") throw new ExitedError(this.exitReason);
+    if (this.restarting) throw new BusyError("session is restarting; try again shortly");
+    if (!(await this.started(this.deps.readyTimeoutMs ?? 10_000))) throw new BusyError("claude has not started yet; if the terminal shows a trust prompt, answer it there first");
+    if (this.state !== "idle" || this.waiting.size) throw new BusyError("session is busy; change the model or permission mode while it is idle (interrupt it first)");
+    const prev: SessionConfig = { model: this.opts.model, permissionMode: this.permissionMode };
+    const next: SessionConfig = { model: c.model ?? prev.model, permissionMode: c.permissionMode ?? prev.permissionMode };
+    if (await this.respawn(next)) return;
+    const alive = () => (this.state as State) !== "exited";
+    if (alive() && (await this.respawn(prev))) throw new RestartFailedError("claude did not start with the new settings; restarted with the previous ones", true);
+    // 前の設定でも起動しなかった。プロセスが残っていれば止め、もう終わっていれば（確かめの間に終わった分は finish していない）ここで終える
+    if (alive()) { if (this.procDead) this.finish(null, "restart failed"); else await this.stop("restart failed"); }
+    throw new ExitedError("restart failed");
+  }
+  private async respawn(c: SessionConfig): Promise<boolean> {
+    this.restarting = true;
+    let gone: Promise<boolean> = Promise.resolve(false);
+    try {
+      const old = this.proc!;
+      const oldExited = this.exitedP!;
+      this.gen++; // 前のプロセスの終わりを finish に数えない
+      // 印を作り直す。前のプロセスの hook（SessionEnd）は restarting の間は受けない
+      this.ready = new Promise<void>((r) => { this.readyResolve = r; });
+      this.inputReady = new Promise<void>((r) => { this.inputOnResolve = r; });
+      this.inputOn = false;
+      this.scanTail = "";
+      clearTimeout(this.inputTimer);
+      old.kill("SIGTERM");
+      const ended = await Promise.race([oldExited.then(() => true), Bun.sleep(3000).then(() => false)]);
+      if (!ended) { old.kill("SIGKILL"); await oldExited; }
+      if ((this.state as State) === "exited") return false;
+      // 起動し直している間に stop が呼ばれた（前のプロセスの終わりは数えないので、ここで終える）
+      if (this.stopReason) { this.finish(null, this.stopReason); return false; }
+      const hasTalk = !!(await this.deps.transcript?.(this.id, this.opts.cwd).catch(() => undefined))?.length;
+      const o: PtyStartOptions = { ...this.opts, prompt: undefined, fork: false, resume: hasTalk ? this.id : undefined, model: c.model, permissionMode: c.permissionMode };
+      let p: { gen: number; exited: Promise<void> };
+      try { p = this.spawnProc(o); } catch { return false; }
+      this.probation = p.gen;
+      gone = p.exited.then(() => false);
+    } finally {
+      this.restarting = false;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ok = await Promise.race([this.ready.then(() => true), gone, new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 10_000); })]);
+    clearTimeout(timer);
+    this.probation = undefined;
+    if (!ok) return false;
+    this.opts.model = c.model;
+    if (c.model) { this.model = c.model; this.modelAt = Date.now(); }
+    this.permissionMode = c.permissionMode;
+    this.push("config", { model: c.model, permissionMode: c.permissionMode });
+    return true;
   }
 
   summary(): SessionSummary {
     return {
       id: this.id, kind: this.kind, capabilities: this.capabilities, cwd: this.opts.cwd, state: this.state,
-      startedAt: this.startedAt, lastActivityAt: this.lastActivityAt, model: this.opts.model, permissionMode: this.permissionMode,
+      startedAt: this.startedAt, lastActivityAt: this.lastActivityAt, model: this.model, permissionMode: this.permissionMode,
       exitReason: this.exitReason, pid: this.proc?.pid, title: this.opts.name, parent: this.parent,
       ...(this.deps.account ? { account: this.deps.account } : {}), ...(this.deps.accountEmail ? { accountEmail: this.deps.accountEmail } : {}),
     };
@@ -359,9 +441,11 @@ export class PtyDriver implements Driver {
 
   // --- hooks の受け口。api が token を確かめてから呼ぶ。返り値は hook の応答の JSON（無ければ空の 200） ---
   async hook(body: Record<string, unknown>): Promise<unknown> {
-    if (this.state === "exited") return undefined;
+    if (this.state === "exited" || this.restarting) return undefined;
     this.lastActivityAt = Date.now();
     if (typeof body.permission_mode === "string") this.permissionMode = body.permission_mode;
+    // SessionStart の model は startup と compact のときだけ来る（resume のときは無い。2026-11-21 に実測）
+    if (typeof body.model === "string" && body.model) { this.model = body.model; this.modelAt = Date.now(); }
     // どの hook が来ても、claude は動いている
     this.readyResolve();
     switch (body.hook_event_name) {
@@ -566,6 +650,9 @@ export class PtyDriver implements Driver {
       const content = (l.message as { content?: unknown } | undefined)?.content;
       const blocks = Array.isArray(content) ? (content as { type?: string; text?: string; id?: string; tool_use_id?: string }[]) : [];
       if (l.type === "assistant") {
+        // 応答の行のモデルを今のモデルにする。遅れて読んだ古い行（起動し直す前のターンの行など）では戻さない。<synthetic> は組み込みコマンドの出力
+        const m = (l.message as { model?: unknown } | undefined)?.model;
+        if (typeof m === "string" && m && !m.startsWith("<") && Number.isFinite(at) && at > this.modelAt) { this.model = m; this.modelAt = at; }
         const text = blocks.length === 1 && blocks[0]!.type === "text" ? blocks[0]!.text ?? "" : undefined;
         if (text !== undefined) {
           const i = this.fallbackTexts.indexOf(text);

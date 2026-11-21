@@ -34,7 +34,7 @@ async function call<T>(c: Ctx, method: string, peer: string | undefined, path: s
   if (r.status >= 200 && r.status < 300) return r.body as T;
   const b = (r.body ?? {}) as { error?: string; hint?: string } & Record<string, unknown>;
   // 引き継ぎの断り（code、後継の id、次に使えるアカウント）は、モデルが次の手を決められるようにそのまま足す
-  const more = ["code", "successor", "nextAvailable", "reason"].filter((k) => b[k] !== undefined).map((k) => `${k}=${typeof b[k] === "string" ? b[k] : JSON.stringify(b[k])}`).join(" ");
+  const more = ["code", "successor", "nextAvailable", "reason", "rolledBack"].filter((k) => b[k] !== undefined).map((k) => `${k}=${typeof b[k] === "string" ? b[k] : JSON.stringify(b[k])}`).join(" ");
   throw new ToolError(`${peer ?? c.nodeName} ${method} ${path} → ${r.status} ${b.error ?? ""}${b.hint ? ` (hint: ${b.hint})` : ""}${more ? ` [${more}]` : ""}`.trim());
 }
 const run = (fn: () => Promise<unknown>) => async (): Promise<CallToolResult> => {
@@ -68,7 +68,7 @@ const peerArg = z.string().optional().describe("Node name from list_peers. Omit 
 const sessionArg = z.string().describe("sessionId, its first 8+ characters, or <peer>/<sessionId>");
 const asArg = z.string().optional().describe("Role to sign as, e.g. lead. The child sees `from agent:<node>/<as_session first 8>/<role> via <node>` and its parent field becomes that name. Ignored for callers signed in by email");
 const asSessionArg = z.string().optional().describe("Your own Claude Code session id (e.g. $CLAUDE_CODE_SESSION_ID). Put into the agent name so list_sessions(parent=...) finds only your children, and so the node can count how deep you are. Always pass it with create_session");
-const compact = (s: SessionSummary, peer: string) => ({ peer, id: s.id, kind: s.kind, state: s.state, cwd: s.cwd, parent: s.parent, depth: s.depth, title: s.title, permissionMode: s.permissionMode, ...(s.account ? { account: s.account } : {}), lastActivityAt: s.lastActivityAt, ...(s.state === "exited" && s.exitReason ? { exitReason: s.exitReason } : {}) });
+const compact = (s: SessionSummary, peer: string) => ({ peer, id: s.id, kind: s.kind, state: s.state, cwd: s.cwd, parent: s.parent, depth: s.depth, title: s.title, permissionMode: s.permissionMode, ...(s.model ? { model: s.model } : {}), ...(s.account ? { account: s.account } : {}), lastActivityAt: s.lastActivityAt, ...(s.state === "exited" && s.exitReason ? { exitReason: s.exitReason } : {}) });
 // 一覧の既定に入れる、自動で止めた子の期間。親が止まったことに気づけるように、終わったものでも1日は出す
 const IDLE_STOPPED_SHOWN_MS = 24 * 3600_000;
 
@@ -303,6 +303,29 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     const t = await resolve(base, a.peer, a.session);
     await call(base, "POST", t.peer, `/api/sessions/${t.id}/interrupt`);
     return { ok: true, peer: t.peer, id: t.id };
+  })());
+
+  server.registerTool("configure_session", {
+    title: "Configure session",
+    description: [
+      "Change the model and/or permission mode of a live node child or pty session, for this session only (settings files are not touched). Returns the session's model and permissionMode afterwards.",
+      "A node child switches at once, even mid-turn (the next model call uses it). A pty session is idle-only: the node restarts its claude under the same id with --resume, --model and --permission-mode (the terminal view stays connected); background shells and sub-agents of that claude end, and session-only settings picked in the terminal (effort and the like) are reset. It is refused with code busy while the pty session is running or waiting for a permission (interrupt it first), and with code restart_failed (rolledBack true: still running with the previous settings) when claude does not start with the new ones.",
+      "Terminal sessions (started by a person) cannot be configured (409). Do not send /model as a message: on a pty session it also changes the machine's default model.",
+    ].join(" "),
+    inputSchema: {
+      peer: peerArg, session: sessionArg,
+      model: z.string().min(1).max(100).optional().describe("Model alias or id, e.g. opus, sonnet, haiku, claude-sonnet-5-5"),
+      permission_mode: z.enum(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk", "auto"]).optional(),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (a) => run(async () => {
+    if (a.model === undefined && a.permission_mode === undefined) throw new Error("pass model, permission_mode, or both");
+    const t = await resolve(base, a.peer, a.session);
+    const body: Record<string, unknown> = {};
+    if (a.model !== undefined) body.model = a.model;
+    if (a.permission_mode !== undefined) body.permissionMode = a.permission_mode;
+    const s = await call<SessionSummary>(base, "PATCH", t.peer, `/api/sessions/${t.id}`, body);
+    return { ok: true, peer: t.peer, id: t.id, kind: s.kind, state: s.state, model: s.model, permissionMode: s.permissionMode };
   })());
 
   server.registerTool("stop_session", {

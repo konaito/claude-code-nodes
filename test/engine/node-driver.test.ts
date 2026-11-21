@@ -238,3 +238,25 @@ test("prepare の間に止めたら claude を起動しない", async () => {
   await settle();
   expect(fake.lastOptions).toBeUndefined();
 });
+
+test("configure switches the model and the permission mode through the SDK, and keeps the model for a deferred start (#64)", async () => {
+  const fake = makeFakeQuery();
+  const d = await NodeDriver.start({ cwd: "/tmp", prompt: "hi" }, { queryFn: fake.queryFn, nodeName: "vm" });
+  await d.configure({ model: "sonnet", permissionMode: "plan" });
+  expect(fake.calls.setModel).toEqual(["sonnet"]);
+  expect(fake.calls.setPermissionMode).toEqual(["plan"]);
+  expect(d.summary().model).toBe("sonnet");
+  expect(d.summary().permissionMode).toBe("plan");
+  await d.stop();
+  await expect(d.configure({ model: "haiku" })).rejects.toThrow("session exited");
+
+  // 起動の前なら、起動のときに渡す
+  const fake2 = makeFakeQuery();
+  const d2 = await NodeDriver.start({ cwd: "/tmp", sessionId: "33333333-3333-4333-8333-333333333333" }, { queryFn: fake2.queryFn, nodeName: "vm" });
+  await d2.configure({ model: "haiku" });
+  expect(d2.summary().model).toBe("haiku");
+  await d2.send("first");
+  expect(fake2.lastOptions.model).toBe("haiku");
+  expect(fake2.calls.setModel).toEqual([]);
+  await d2.stop();
+});

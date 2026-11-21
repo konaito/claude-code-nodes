@@ -95,7 +95,7 @@ konaitoは複数の機械（Mac 2台とOrbStackのUbuntu VM）でClaude Codeを�
 | POST /api/sessions/:id/messages | 文を送る。nodeはstdin、terminalは受信ソケット |
 | POST /api/sessions/:id/permissions/:requestId | allow（updatedInput、updatedPermissions）かdeny（message）。能力permissionsが無いセッションは409 |
 | POST /api/sessions/:id/interrupt | 今のターンを止める。能力interruptが無いセッションは409 |
-| PATCH /api/sessions/:id | 権限モード、モデルを変える |
+| PATCH /api/sessions/:id | 権限モード、モデルを変える（`permissionMode`、`model`。node は SDK、pty は待機中に同じ id で起動し直す。#64） |
 | DELETE /api/sessions/:id | プロセスを止める。jsonlは残り、再開できる |
 
 ### 1.3 呼び手の表し方

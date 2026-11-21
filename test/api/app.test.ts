@@ -570,3 +570,31 @@ test("the Service Worker and the page stay behind the identity check", async () 
   expect(page).toContain('navigator.serviceWorker.register("/sw.js", { scope: "/" })');
   expect(page).not.toContain("%%");
 });
+
+test("PATCH /api/sessions/:id validates model and permissionMode and passes them to configure (#64)", async () => {
+  const { app, live } = harness();
+  const got: unknown[] = [];
+  (live as any).configure = async (c: unknown) => { got.push(c); };
+  const patch = (body: unknown) => app.fetch(req("/api/sessions/live1", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+  expect((await patch({ model: "sonnet", permissionMode: "plan" })).status).toBe(200);
+  expect(got).toEqual([{ model: "sonnet", permissionMode: "plan" }]);
+  expect((await patch({ model: "claude-fable-5[1m]" })).status).toBe(200);
+  expect((await patch({ permissionMode: "yolo" })).status).toBe(400);
+  expect((await patch({ model: "--dangerously-skip-permissions" })).status).toBe(400);
+  expect((await patch({ model: "a b" })).status).toBe(400);
+  expect(got).toHaveLength(2);
+  // 何も替えなければ今の要約を返す
+  expect((await patch({})).status).toBe(200);
+});
+
+test("PATCH refuses a session that cannot be configured, and a model change where only the mode can change", async () => {
+  const { app, live } = harness();
+  const patch = (id: string, body: unknown) => app.fetch(req(`/api/sessions/${id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+  const r = await patch("term1", { model: "sonnet" });
+  expect(r.status).toBe(409);
+  const modes: string[] = [];
+  (live as any).setPermissionMode = async (m: string) => { modes.push(m); };
+  expect((await patch("live1", { permissionMode: "acceptEdits" })).status).toBe(200);
+  expect(modes).toEqual(["acceptEdits"]);
+  expect((await patch("live1", { model: "sonnet" })).status).toBe(409);
+});

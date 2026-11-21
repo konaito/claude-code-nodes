@@ -89,7 +89,7 @@ test("initialize and tools/list expose the ten tools with annotations", async ()
   expect(c.getServerVersion()?.name).toBe("ccn");
   expect(c.getInstructions()).toContain("/skill.md");
   const { tools } = await c.listTools();
-  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "stop_session", "teleport_session"]);
+  expect(tools.map((t) => t.name)).toEqual(["list_peers", "list_sessions", "get_session", "list_places", "create_session", "send_message", "read_messages", "answer_permission", "interrupt_session", "configure_session", "stop_session", "teleport_session"]);
   const by = Object.fromEntries(tools.map((t) => [t.name, t]));
   expect(by.list_sessions!.annotations?.readOnlyHint).toBe(true);
   expect(by.read_messages!.annotations?.readOnlyHint).toBe(true);
@@ -697,4 +697,18 @@ test("a resumed node session also returns the earlier conversation from history,
   const fresh = await app.fetch(new Request("http://127.0.0.1/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: realpathSync(tmpdir()), prompt: "hi" }) }));
   expect(await fresh.json()).toMatchObject({ cursor: 0 });
   expect(counted).toEqual([]);
+});
+
+test("configure_session sends PATCH with model and permissionMode and returns the result (#64)", async () => {
+  const { app, store } = harness();
+  const live = store.get(LIVE) as unknown as FakeDriver & { configure?: unknown };
+  const got: unknown[] = [];
+  live.configure = async (c: unknown) => { got.push(c); };
+  const c = await connect(app);
+  const r = json(await c.callTool({ name: "configure_session", arguments: { session: LIVE, model: "sonnet", permission_mode: "plan" } }));
+  expect(got).toEqual([{ model: "sonnet", permissionMode: "plan" }]);
+  expect(r).toMatchObject({ ok: true, id: LIVE });
+  const none = await c.callTool({ name: "configure_session", arguments: { session: LIVE } });
+  expect(none.isError).toBe(true);
+  await c.close();
 });
