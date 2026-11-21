@@ -57,6 +57,9 @@ export type PtyDeps = {
   // PreToolUse と PostToolUse の後、その道具の tool_use か tool_result の行が出るまで読み直す間隔（ミリ秒）。全部待っても出なければあきらめる
   chaseDelaysMs?: number[];
   localDelaysMs?: number[];
+  // 会話のファイル（jsonl）があるか。起動し直すときに --resume と --session-id を分ける（SDK の getSessionInfo）。
+  // /context だけを打った会話は jsonl に system の行しか無く、transcript は空を返すが、--session-id は使えない（2026-11-21 に実測）
+  exists?: (id: string, dir?: string) => Promise<boolean>;
 };
 export type TranscriptLine = { type: string; uuid: string; message?: unknown; timestamp?: string };
 
@@ -254,49 +257,68 @@ export class PtyDriver implements Driver {
     const alive = () => (this.state as State) !== "exited";
     if (alive() && (await this.respawn(prev))) throw new RestartFailedError("claude did not start with the new settings; restarted with the previous ones", true);
     // 前の設定でも起動しなかった。プロセスが残っていれば止め、もう終わっていれば（確かめの間に終わった分は finish していない）ここで終える
-    if (alive()) { if (this.procDead) this.finish(null, "restart failed"); else await this.stop("restart failed"); }
+    if (alive()) this.finish(null, this.stopReason ?? "restart failed"); // 失敗した起動のプロセスは spawnAndWait が止めてある
     throw new ExitedError("restart failed");
   }
   private async respawn(c: SessionConfig): Promise<boolean> {
     this.restarting = true;
-    let gone: Promise<boolean> = Promise.resolve(false);
     try {
       const old = this.proc!;
       const oldExited = this.exitedP!;
       this.gen++; // 前のプロセスの終わりを finish に数えない
-      // 印を作り直す。前のプロセスの hook（SessionEnd）は restarting の間は受けない
-      this.ready = new Promise<void>((r) => { this.readyResolve = r; });
-      this.inputReady = new Promise<void>((r) => { this.inputOnResolve = r; });
-      this.inputOn = false;
-      this.scanTail = "";
       clearTimeout(this.inputTimer);
       old.kill("SIGTERM");
       const ended = await Promise.race([oldExited.then(() => true), Bun.sleep(3000).then(() => false)]);
       if (!ended) { old.kill("SIGKILL"); await oldExited; }
-      if ((this.state as State) === "exited") return false;
-      // 起動し直している間に stop が呼ばれた（前のプロセスの終わりは数えないので、ここで終える）
-      if (this.stopReason) { this.finish(null, this.stopReason); return false; }
-      // /clear の後なら、今の会話（conversationId）を続ける
-      const conv = this.convId();
-      const hasTalk = !!(await this.deps.transcript?.(conv, this.opts.cwd).catch(() => undefined))?.length;
-      const o: PtyStartOptions = { ...this.opts, prompt: undefined, fork: false, resume: hasTalk ? conv : undefined, model: c.model, permissionMode: c.permissionMode };
-      let p: { gen: number; exited: Promise<void> };
-      try { p = this.spawnProc(o, conv); } catch { return false; }
-      this.probation = p.gen;
-      gone = p.exited.then(() => false);
     } finally {
       this.restarting = false;
     }
+    if ((this.state as State) === "exited") return false;
+    // 起動し直している間に stop が呼ばれた（前のプロセスの終わりは数えないので、ここで終える）
+    if (this.stopReason) { this.finish(null, this.stopReason); return false; }
+    // /clear の後なら、今の会話（conversationId）を続ける。
+    // 会話の行が読めれば --resume。読めなければ --session-id で起動し、すぐ終わったら --resume を試す。
+    // /context だけを打った会話は jsonl に system の行しか無く、SDK（getSessionMessages、getSessionInfo）からは見えないが、
+    // その id を --session-id にすると claude は起動しない。--resume なら起動する（2026-11-21 に実測）
+    const conv = this.convId();
+    const hasTalk = !!(await this.deps.transcript?.(conv, this.opts.cwd).catch(() => undefined))?.length;
+    const tries: (string | undefined)[] = hasTalk ? [conv] : [undefined, conv];
+    for (const resume of tries) {
+      if ((this.state as State) === "exited" || this.stopReason) break;
+      if (await this.spawnAndWait({ ...this.opts, prompt: undefined, fork: false, resume, model: c.model, permissionMode: c.permissionMode }, conv)) {
+        this.opts.model = c.model;
+        if (c.model) { this.model = c.model; this.modelAt = Date.now(); }
+        this.permissionMode = c.permissionMode;
+        this.push("config", { model: c.model, permissionMode: c.permissionMode });
+        return true;
+      }
+    }
+    if (this.stopReason && (this.state as State) !== "exited") this.finish(null, this.stopReason);
+    return false;
+  }
+  // 1回起動して起動の印を待つ。出なければ、残っているプロセスを止めて false
+  private async spawnAndWait(o: PtyStartOptions, sessionId: string): Promise<boolean> {
+    this.restarting = true;
+    // 印を作り直す。前のプロセスの hook（SessionEnd）は restarting の間は受けない
+    this.ready = new Promise<void>((r) => { this.readyResolve = r; });
+    this.inputReady = new Promise<void>((r) => { this.inputOnResolve = r; });
+    this.inputOn = false;
+    this.scanTail = "";
+    let p: { gen: number; exited: Promise<void> };
+    try { p = this.spawnProc(o, sessionId); } catch { this.restarting = false; return false; }
+    this.probation = p.gen;
+    this.restarting = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const ok = await Promise.race([this.ready.then(() => true), gone, new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 10_000); })]);
+    const ok = await Promise.race([this.ready.then(() => true), p.exited.then(() => false), new Promise<boolean>((r) => { timer = setTimeout(() => r(false), this.deps.readyTimeoutMs ?? 10_000); })]);
     clearTimeout(timer);
+    if (!ok && !this.procDead) {
+      this.gen++; // このプロセスの終わりも数えない
+      clearTimeout(this.inputTimer);
+      this.proc!.kill("SIGKILL");
+      await p.exited;
+    }
     this.probation = undefined;
-    if (!ok) return false;
-    this.opts.model = c.model;
-    if (c.model) { this.model = c.model; this.modelAt = Date.now(); }
-    this.permissionMode = c.permissionMode;
-    this.push("config", { model: c.model, permissionMode: c.permissionMode });
-    return true;
+    return ok;
   }
 
   summary(): SessionSummary {

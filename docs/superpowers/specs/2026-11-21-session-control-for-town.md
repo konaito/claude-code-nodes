@@ -25,10 +25,10 @@ MCP では `configure_session`（`session`、`model`、`permission_mode`）を�
 | | node（-p の子） | pty（対話の claude） |
 | --- | --- | --- |
 | 替え方 | SDK の `setModel` と `setPermissionMode` | 同じ id で `claude --resume <id> --model <名前> --permission-mode <モード>` として起動し直す |
-| 受けるとき | いつでも。ターンの途中なら、次のモデルの呼び出しから効く | 待機中（`state` が `idle`）のときだけ |
+| 受けるとき | いつでも受ける。ターンの間で効くことは確かめた。ターンの途中で替えたときの効き方は未確認 | 待機中（`state` が `idle`）のときだけ |
 | かかる時間 | すぐ | 約3秒（実測 2.9秒） |
 | 失うもの | 無い | 裏で動いているシェルとサブエージェント、端末で選んだセッションだけの設定（effort など）、プロンプトのキャッシュ |
-| 端末の画面 | 無い | つながったまま。画面は起動し直した claude の画面に替わる |
+| 端末の画面 | 無い | つながったまま（端末の SSE に `exit` は流れず、`data` が続いた。実測）。画面は起動し直した claude の画面に替わる |
 | 台帳のイベント | 無い | `config`（`{model, permissionMode}`） |
 
 ### 断られるとき
@@ -61,6 +61,7 @@ MCP では `run_command`（`session`、`command`、`as`、`as_session`）を使�
 - 文は from 行を付けずに、そのまま入力として送る。`POST /api/sessions/<id>/messages` は本文の前に from 行を付けるので、組み込みコマンドが動かない。
 - 送り手は台帳の `command` のイベント（`{text, from}`）に残る。
 - 応答は `{ "delivered": "stdin" | "pty" }`。MCP は send_message と同じく `cursor` を返すので、`read_messages` の `after` に渡す。
+- `!`（シェルの実行）は扱わない。`!` で始まる文は 400（`not_command`）になる。
 - コマンドの出力は、合成の assistant の行（`message.model` が `<synthetic>`）と、その後の `result` で届く。
 
 ### 断られるとき
@@ -70,8 +71,8 @@ MCP では `run_command`（`session`、`command`、`as`、`as_session`）を使�
 | 400 | `not_command` | 文が `/` で始まらない。ふつうの文は messages で送る |
 | 400 | `use_configure` | `/model`。1 の口を使う |
 | 400 | `use_stop` | `/exit`、`/quit`。`DELETE /api/sessions/<id>` を使う |
-| 409 | `first_message_required` | プロンプト無しで立てたセッションに、まだ1通目が届いていない。先に messages で送る |
-| 409 | `persists` | pty の `/effort`、`/fast`。対話の claude は全セッションの設定に保存するので送らない |
+| 409 | `first_message_required` | プロンプト無しで立てた node のセッションに、まだ1通目が届いていない。先に messages で送る。pty は1通目の前でも受ける（その会話が終わった後、過去の一覧で親が分からなくなることがある） |
+| 409 | `persists` | pty の `/effort`、`/fast`。対話の claude は全セッションの設定に保存するので送らない（公式の文書による）。`/config`、`/output-style`、`/logout` など、ほかに保存されたり機械全体に効いたりするコマンドは確かめておらず、断らない |
 | 409 | `no_commands` | 端末のセッション |
 | 409 | なし | 終わっている（`hint: resume`）、pty が承認待ち（answer してから送る） |
 
@@ -97,6 +98,7 @@ MCP では `run_command`（`session`、`command`、`as`、`as_session`）を使�
 - pty の台帳には `conversation_reset`（`{conversationId}`）のイベントが出る。
 - セッションが終わった後に続きをするときは、`conversationId` を resume する。元の `id` を resume すると `/clear` の前の会話に戻る。
 - `/clear` の後の会話は、次に messages で送った文の from 行から親を導く。
+- `conversationId` を追うのは、pty の会話の読み込みと configure（起動し直し）だけ。引き継ぎ（succeed）、teleport、idle-stop の後の `resume=<id>` の案内は元の `id` を使うので、`/clear` の前の会話に戻る。
 
 ## 3. Town で使うときの勧め
 
