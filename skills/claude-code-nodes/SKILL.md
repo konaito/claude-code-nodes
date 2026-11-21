@@ -47,6 +47,7 @@ terminal に届いた文は「別のセッションからのメッセージ」�
 - 承認の中身はノードが hooks で受けるので、`ccn:get_session` の `pending` と `ccn:answer_permission` が node の子と同じに使える。人が端末の承認画面で答えてもよい。
 - 返事は、ターンの終わりの文と使った道具の名前だけが `ccn:read_messages` に出る。途中の文は端末の画面にしか出ない。
 - `ccn:interrupt_session` は端末に Esc を送る。
+- `ccn:run_command` は文を貼って Enter を押す。`/compact` と `/clear` は出力か終わりの印が `ccn:read_messages` に出る。`/context` のように出力が端末にしか出ないコマンドは、約9秒後に空の result が出る。`/effort` と `/fast` は機械の設定に保存されてしまうので、409（`code: persists`）で断る。
 - `ccn:configure_session` でモデルと権限モードを替えると、ノードは待機中の claude を同じ id で起動し直す（`--resume`、`--model`、`--permission-mode`）。動いている間と承認待ちの間は 409（`code: busy`）で断る。裏のシェルとサブエージェントは止まる。`/model` を文で送らない。対話の claude は機械の既定のモデルまで書き換える。
 - ノードを止めるか再起動すると、ノードは pty の claude を止める。会話は残るので、`resume` と `terminal: true` で続けられる。
 - 初めて使うディレクトリでは、`claude` が端末に信頼の確認を出す。人が端末で答えるまで、承認も返事も届かない。
@@ -138,6 +139,7 @@ claude.ai では、設定のコネクタに `{{ORIGIN}}/mcp` を足してログ�
 | `ccn:read_messages` | `after` より後を読み、ターンの終わりまで最大50秒待つ | `peer`、`session`、`after`、`wait_seconds`、`max_chars` |
 | `ccn:answer_permission` | 子（node、pty）の権限プロンプトに allow か deny で答える | `peer`、`session`、`behavior`、`request_id`、`message` |
 | `ccn:interrupt_session` | 子の今のターンを止める。子は生きたまま | `peer`、`session` |
+| `ccn:run_command` | 組み込みコマンド（`/compact`、`/context` など）を、from 行を付けずに子へ送る。出力は `ccn:read_messages` で読む | `peer`、`session`、`command`、`as`、`as_session` |
 | `ccn:configure_session` | 子（node、pty）のモデルと権限モードを、そのセッションだけ替える | `peer`、`session`、`model`、`permission_mode` |
 | `ccn:stop_session` | 子のプロセスを止める。会話は残り、`resume` で続けられる | `peer`、`session` |
 | `ccn:teleport_session` | セッションを会話と git の作業ツリーごと別のノードへ移す。移動先は remote で探し、無ければ `~/Documents/<リポジトリ名>` に clone する。既定は move（移動元を止める）、`fork` で移動元を残して別の id にする。移動先の作業ツリーが汚れていれば何も変えずに止まる | `peer`、`session`、`to`、`fork`、`cwd` |

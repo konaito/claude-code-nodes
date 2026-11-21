@@ -1,5 +1,5 @@
 // API のエラーを HTTP の応答に統一する。境界の例外（能力なし、終了済み、ソケット無し、見つからない）をここで状態コードに変える
-import { BusyError, CapabilityError, ExitedError, NotFoundError, RestartFailedError, SocketGoneError } from "../engine/driver";
+import { BusyError, CapabilityError, CommandRefusedError, ExitedError, NotFoundError, RestartFailedError, SocketGoneError } from "../engine/driver";
 import { AccessDenied } from "../identity/identity";
 import { RegistryError } from "../registry/registry";
 import { PeerUnreachableError, RelayNotConfiguredError, UnknownPeerError } from "../relay/relay";
@@ -26,6 +26,7 @@ export function toResponse(e: unknown): Response {
   if (e instanceof SocketGoneError) return json({ error: e.message }, 410);
   if (e instanceof NotFoundError) return json({ error: e.message }, 404);
   if (e instanceof BusyError) return json({ error: e.message, code: "busy" }, 409);
+  if (e instanceof CommandRefusedError) return json({ error: e.message, code: e.code }, 409);
   if (e instanceof RestartFailedError) return json({ error: e.message, code: "restart_failed", rolledBack: e.rolledBack }, 502);
   // teleport。移動先の状態で断るもの（汚れ、分岐、同じ id）は 409、入力の誤りは 400
   if (e instanceof GitError) return json({ error: e.message, code: e.code, detail: e.detail }, e.code === "failed" ? 500 : e.code === "not_repo" || e.code === "no_commits" ? 400 : 409);

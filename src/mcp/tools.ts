@@ -251,6 +251,27 @@ export function registerTools(server: McpServer, base: Omit<Ctx, never>) {
     })();
   });
 
+  server.registerTool("run_command", {
+    title: "Run command",
+    description: [
+      "Run a slash command (built-in, skill or custom command) in a node child or a pty session, exactly as if typed at its prompt: unlike send_message, no from line is added (a from line in front stops a command from running). The node records who sent it as a command event. Returns cursor like send_message; read the output with read_messages (built-in command output comes as an assistant line followed by stop=result).",
+      "Measured on 2026-11-21: in a node child /compact, /context, /cost, /usage, /effort (this session only) and /clear work and their output comes back; /status is not available. In a pty session /compact and /clear work and report back; /context runs but its output appears only in the terminal, so read_messages gets an empty result after about 9 seconds. Commands that open a picker in the terminal (for example /resume, /permissions, /mcp) were not measured: they may wait in the picker, and interrupt_session (Esc) should close it.",
+      "/clear starts a new conversation: the session keeps its id here and get_session shows the new conversation as conversationId (resume that id after the session exits).",
+      "Refused: text not starting with / (code not_command), /model (use configure_session), /exit and /quit (use stop_session), any command before the first message of a session started without a prompt (code first_message_required), /effort and /fast in a pty session (code persists: an interactive claude saves them to the user's settings), and terminal sessions.",
+      "Send requests meant for Claude itself with send_message, so they carry the from line.",
+    ].join(" "),
+    inputSchema: { peer: peerArg, session: sessionArg, command: z.string().min(2).describe("The command line, e.g. /compact keep the API decisions"), as: asArg, as_session: asSessionArg },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  }, async (a) => {
+    const { ctx, note } = callerWith(base, a.as, a.as_session);
+    return run(async () => {
+      const t = await resolve(ctx, a.peer, a.session);
+      const before = await call<Detail>(ctx, "GET", t.peer, `/api/sessions/${t.id}`);
+      const r = await call<{ delivered: string }>(ctx, "POST", t.peer, `/api/sessions/${t.id}/command`, { text: a.command });
+      return { peer: t.peer, id: t.id, delivered: r.delivered, cursor: before.cursor ?? 0, from: ctx.caller.id, ...(note ? { note } : {}) };
+    })();
+  });
+
   server.registerTool("read_messages", {
     title: "Read messages",
     description: `Read a session's messages after a cursor and wait up to wait_seconds (max ${MAX_WAIT_SECONDS}, default ${DEFAULT_WAIT_SECONDS}) for the turn to end. Shows assistant text, tool names, permission requests and exit. Ends with stop: result (turn finished), permission (answer it with answer_permission), exited (the [exited] line gives the reason, and idle-stop: means the node stopped an idle child; resume with create_session resume=<id>), timeout (still working; call again with after=cursor), or truncated (output limit; call again with after=cursor). For your own children the node also sends you a [ccn] message when a turn ends or a permission is pending; if you already read past it, no reply is needed.`,
